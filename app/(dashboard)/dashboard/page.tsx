@@ -10,7 +10,7 @@ import Link from "next/link";
 import { NewProjectButton } from "@/components/dashboard/new-project-button";
 import { Button } from "@/components/ui/button";
 import { canEditProjects, getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function DashboardPage() {
   let ctx: Awaited<ReturnType<typeof getSessionContext>>;
@@ -34,11 +34,22 @@ export default async function DashboardPage() {
     throw err;
   }
 
-  const projects = await prisma.project.findMany({
-    where: { orgId: ctx.orgId },
-    select: { id: true, name: true, updatedAt: true },
-    orderBy: { updatedAt: "desc" },
-  });
+  const supabase = await createSupabaseServerClient();
+  const projectsRes = await supabase
+    .from("projects")
+    .select("id, name, updated_at")
+    .eq("org_id", ctx.orgId)
+    .order("updated_at", { ascending: false });
+
+  if (projectsRes.error) {
+    throw new Error("Failed to load projects");
+  }
+
+  const projects = (projectsRes.data ?? []).map((p) => ({
+    id: p.id as string,
+    name: p.name as string,
+    updatedAt: new Date(p.updated_at as string),
+  }));
 
   return (
     <div className="mx-auto w-full max-w-4xl">

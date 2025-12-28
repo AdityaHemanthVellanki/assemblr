@@ -9,8 +9,8 @@ import {
   requireUserRole,
 } from "@/lib/auth/permissions";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z
   .object({
@@ -51,31 +51,41 @@ export async function PATCH(
 
   const { id } = await params;
 
-  const project = await prisma.project.findFirst({
-    where: { id, orgId: ctx.orgId },
-    select: { id: true },
-  });
-
-  if (!project) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const supabase = await createSupabaseServerClient();
 
   try {
     const spec = parseDashboardSpec(bodyResult.data.spec);
 
-    const updated = await prisma.project.update({
-      where: { id },
-      data: { spec },
-      select: {
-        id: true,
-        name: true,
-        spec: true,
-        createdAt: true,
-        updatedAt: true,
+    const updatedRes = await supabase
+      .from("projects")
+      .update({ spec })
+      .eq("id", id)
+      .eq("org_id", ctx.orgId)
+      .select("id, name, spec, created_at, updated_at")
+      .maybeSingle();
+
+    if (updatedRes.error) {
+      console.error("update-spec failed", {
+        userId: ctx.userId,
+        orgId: ctx.orgId,
+        projectId: id,
+        message: updatedRes.error.message,
+      });
+      return NextResponse.json({ error: "Failed to save spec" }, { status: 500 });
+    }
+    if (!updatedRes.data) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      project: {
+        id: updatedRes.data.id as string,
+        name: updatedRes.data.name as string,
+        spec: updatedRes.data.spec,
+        createdAt: new Date(updatedRes.data.created_at as string),
+        updatedAt: new Date(updatedRes.data.updated_at as string),
       },
     });
-
-    return NextResponse.json({ project: updated });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("update-spec failed", {

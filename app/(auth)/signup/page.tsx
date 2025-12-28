@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { signIn } from "next-auth/react";
 import { Github } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -14,16 +13,51 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function SignupPage() {
   const [email, setEmail] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
+  const [status, setStatus] = React.useState<
+    | { kind: "idle" }
+    | { kind: "sent" }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
 
   async function onEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
     setIsLoading(true);
     try {
-      await signIn("email", { email, callbackUrl: "/dashboard" });
+      const supabase = createSupabaseBrowserClient();
+      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
+        "/dashboard",
+      )}`;
+      const res = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: redirectTo },
+      });
+      if (res.error) {
+        setStatus({ kind: "error", message: res.error.message });
+        return;
+      }
+      setStatus({ kind: "sent" });
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function onGithub() {
+    setIsLoading(true);
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
+        "/dashboard",
+      )}`;
+      const res = await supabase.auth.signInWithOAuth({
+        provider: "github",
+        options: { redirectTo },
+      });
+      if (res.error) setStatus({ kind: "error", message: res.error.message });
     } finally {
       setIsLoading(false);
     }
@@ -36,6 +70,18 @@ export default function SignupPage() {
         <CardDescription>Create your Assemblr workspace.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {status.kind === "error" ? (
+          <div className="rounded-md border border-border bg-accent px-3 py-2 text-sm">
+            {status.message}
+          </div>
+        ) : null}
+
+        {status.kind === "sent" ? (
+          <div className="rounded-md border border-border bg-accent px-3 py-2 text-sm">
+            Check your email for a sign-in link.
+          </div>
+        ) : null}
+
         <form onSubmit={onEmailSubmit} className="space-y-2">
           <Input
             name="email"
@@ -61,7 +107,8 @@ export default function SignupPage() {
           type="button"
           variant="outline"
           className="w-full"
-          onClick={() => signIn("github", { callbackUrl: "/dashboard" })}
+          onClick={onGithub}
+          disabled={isLoading}
         >
           <Github />
           Continue with GitHub

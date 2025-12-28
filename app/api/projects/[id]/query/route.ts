@@ -12,10 +12,10 @@ import { buildQueryForView } from "@/lib/data/queryBuilder";
 import { getPostgresPool, runReadOnlyQuery } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
 import { decryptJson, type EncryptedJson } from "@/lib/security/encryption";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z
   .object({
@@ -93,20 +93,50 @@ export async function POST(
     );
   }
 
-  const project = await prisma.project.findFirst({
-    where: { id, orgId: ctx.orgId },
-    select: { id: true, spec: true, dataSourceId: true },
-  });
+  const supabase = await createSupabaseServerClient();
+  const projectRes = await supabase
+    .from("projects")
+    .select("id, spec, data_source_id")
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .maybeSingle();
+
+  if (projectRes.error) {
+    console.error("load project failed", {
+      orgId: ctx.orgId,
+      projectId: id,
+      message: projectRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to load project" }, { status: 500 });
+  }
+  const project = projectRes.data as
+    | { id: string; spec: unknown; data_source_id: string | null }
+    | null;
 
   if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (!project.dataSourceId) {
+  if (!project.data_source_id) {
     return NextResponse.json({ error: "No data source connected" }, { status: 400 });
   }
 
-  const dataSource = await prisma.dataSource.findFirst({
-    where: { id: project.dataSourceId, orgId: ctx.orgId },
-    select: { id: true, type: true, config: true },
-  });
+  const dataSourceRes = await supabase
+    .from("data_sources")
+    .select("id, type, config")
+    .eq("id", project.data_source_id)
+    .eq("org_id", ctx.orgId)
+    .maybeSingle();
+
+  if (dataSourceRes.error) {
+    console.error("load data source failed", {
+      orgId: ctx.orgId,
+      projectId: id,
+      dataSourceId: project.data_source_id,
+      message: dataSourceRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to load data source" }, { status: 500 });
+  }
+  const dataSource = dataSourceRes.data as
+    | { id: string; type: string; config: unknown }
+    | null;
 
   if (!dataSource) return NextResponse.json({ error: "No data source connected" }, { status: 400 });
   if (dataSource.type !== "postgres") {
@@ -196,7 +226,7 @@ export async function POST(
     console.error("query failed", {
       orgId: ctx.orgId,
       projectId: id,
-      dataSourceId: project.dataSourceId,
+      dataSourceId: project.data_source_id,
       viewId: parsed.data.viewId,
       message,
     });

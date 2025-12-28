@@ -4,6 +4,8 @@ import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
 
+export const dynamic = "force-dynamic";
+
 export default async function DashboardLayout({
   children,
 }: {

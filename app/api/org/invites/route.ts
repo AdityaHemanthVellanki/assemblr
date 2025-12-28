@@ -10,8 +10,8 @@ import {
   PermissionError,
   requireUserRole,
 } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z
   .object({
@@ -25,7 +25,7 @@ function hashToken(token: string) {
 }
 
 export async function POST(req: Request) {
-  getServerEnv();
+  const env = getServerEnv();
 
   let ctx: Awaited<ReturnType<typeof getSessionContext>>;
   try {
@@ -53,11 +53,22 @@ export async function POST(req: Request) {
   const email = parsed.data.email.trim().toLowerCase();
   const role = parsed.data.role;
 
-  const existingMember = await prisma.membership.findFirst({
-    where: { orgId: ctx.orgId, user: { email } },
-    select: { id: true },
-  });
-  if (existingMember) {
+  const supabase = await createSupabaseServerClient();
+  const existingMemberRes = await supabase
+    .from("memberships")
+    .select("id, profiles!inner(email)")
+    .eq("org_id", ctx.orgId)
+    .eq("profiles.email", email)
+    .maybeSingle();
+  if (existingMemberRes.error) {
+    console.error("check existing member failed", {
+      orgId: ctx.orgId,
+      email,
+      message: existingMemberRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to validate invite" }, { status: 500 });
+  }
+  if (existingMemberRes.data) {
     return NextResponse.json(
       { error: "User is already a member of this organization" },
       { status: 400 },
@@ -68,34 +79,38 @@ export async function POST(req: Request) {
   const tokenHash = hashToken(token);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  await prisma.invite.create({
-    data: {
+  const inviteCreate = await supabase.from("invites").insert({
+    org_id: ctx.orgId,
+    email,
+    role,
+    token_hash: tokenHash,
+    expires_at: expiresAt.toISOString(),
+  });
+  if (inviteCreate.error) {
+    console.error("create invite failed", {
       orgId: ctx.orgId,
       email,
-      role,
-      tokenHash,
-      expiresAt,
-    },
-    select: { id: true },
-  });
+      message: inviteCreate.error.message,
+    });
+    return NextResponse.json({ error: "Failed to create invite" }, { status: 500 });
+  }
 
-  const baseUrl =
-    process.env.NEXTAUTH_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
+  const baseUrl = env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
   const acceptUrl = `${baseUrl}/dashboard/members?invite=${encodeURIComponent(
     token,
   )}`;
 
   if (process.env.NODE_ENV === "production") {
-    if (!process.env.EMAIL_SERVER || !process.env.EMAIL_FROM) {
+    if (!env.EMAIL_SERVER || !env.EMAIL_FROM) {
       return NextResponse.json(
         { error: "Email is not configured" },
         { status: 500 },
       );
     }
-    const transport = nodemailer.createTransport(process.env.EMAIL_SERVER);
+    const transport = nodemailer.createTransport(env.EMAIL_SERVER);
     await transport.sendMail({
       to: email,
-      from: process.env.EMAIL_FROM,
+      from: env.EMAIL_FROM,
       subject: "You’ve been invited to Assemblr",
       text: `You have been invited to join an Assemblr organization. Accept: ${acceptUrl}`,
       html: `<p>You have been invited to join an Assemblr organization.</p><p><a href="${acceptUrl}">Accept invite</a></p>`,

@@ -8,10 +8,10 @@ import {
   PermissionError,
   requireUserRole,
 } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
 import { SpecEditorPanel } from "@/components/dashboard/spec-editor-panel";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ProjectPage({
   params,
@@ -41,29 +41,35 @@ export default async function ProjectPage({
 
   const { id } = await params;
 
-  const project = await prisma.project.findFirst({
-    where: { id, orgId: ctx.orgId },
-    select: { id: true, name: true, spec: true, dataSourceId: true },
-  });
+  const supabase = await createSupabaseServerClient();
+  const projectRes = await supabase
+    .from("projects")
+    .select("id, name, spec, data_source_id")
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .maybeSingle();
 
-  if (!project) notFound();
+  if (projectRes.error) {
+    throw new Error("Failed to load project");
+  }
+  if (!projectRes.data) notFound();
 
-  const spec = parseDashboardSpec(project.spec);
+  const spec = parseDashboardSpec(projectRes.data.spec);
 
   return (
     <div className="mx-auto w-full max-w-5xl">
       <div className="mb-6 space-y-1">
         <div className="text-sm text-muted-foreground">Project</div>
         <div className="text-xl font-semibold tracking-tight">
-          {project.name}
+          {projectRes.data.name}
         </div>
       </div>
       <SpecEditorPanel
         project={{
-          id: project.id,
-          name: project.name,
+          id: projectRes.data.id as string,
+          name: projectRes.data.name as string,
           spec,
-          dataSourceId: project.dataSourceId ?? null,
+          dataSourceId: (projectRes.data.data_source_id as string | null) ?? null,
         }}
         permissions={{
           canEdit: canEditProjects(role),

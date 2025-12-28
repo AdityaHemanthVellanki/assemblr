@@ -8,8 +8,8 @@ import {
   PermissionError,
   requireUserRole,
 } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z
   .object({
@@ -47,29 +47,70 @@ export async function PATCH(
 
   const { id } = await params;
 
-  const project = await prisma.project.findFirst({
-    where: { id, orgId: ctx.orgId },
-    select: { id: true },
-  });
-
-  if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const supabase = await createSupabaseServerClient();
+  const projectRes = await supabase
+    .from("projects")
+    .select("id")
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .maybeSingle();
+  if (projectRes.error) {
+    console.error("load project failed", {
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      projectId: id,
+      message: projectRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to load project" }, { status: 500 });
+  }
+  if (!projectRes.data) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const dataSourceId = parsed.data.dataSourceId;
   if (dataSourceId) {
-    const ds = await prisma.dataSource.findFirst({
-      where: { id: dataSourceId, orgId: ctx.orgId },
-      select: { id: true },
-    });
-    if (!ds) {
+    const dsRes = await supabase
+      .from("data_sources")
+      .select("id")
+      .eq("id", dataSourceId)
+      .eq("org_id", ctx.orgId)
+      .maybeSingle();
+    if (dsRes.error) {
+      console.error("validate data source failed", {
+        userId: ctx.userId,
+        orgId: ctx.orgId,
+        projectId: id,
+        dataSourceId,
+        message: dsRes.error.message,
+      });
+      return NextResponse.json({ error: "Failed to validate data source" }, { status: 500 });
+    }
+    if (!dsRes.data) {
       return NextResponse.json({ error: "Invalid data source" }, { status: 400 });
     }
   }
 
-  const updated = await prisma.project.update({
-    where: { id },
-    data: { dataSourceId },
-    select: { id: true, name: true, dataSourceId: true },
-  });
+  const updatedRes = await supabase
+    .from("projects")
+    .update({ data_source_id: dataSourceId })
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .select("id, name, data_source_id")
+    .maybeSingle();
+  if (updatedRes.error) {
+    console.error("update project data source failed", {
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      projectId: id,
+      message: updatedRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to update project" }, { status: 500 });
+  }
+  if (!updatedRes.data) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json({ project: updated });
+  return NextResponse.json({
+    project: {
+      id: updatedRes.data.id as string,
+      name: updatedRes.data.name as string,
+      dataSourceId: (updatedRes.data.data_source_id as string | null) ?? null,
+    },
+  });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import crypto from "crypto";
 
 import {
   canManageDataSources,
@@ -8,11 +9,11 @@ import {
   PermissionError,
   requireUserRole,
 } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
-import { decryptJson, encryptJson, type EncryptedJson } from "@/lib/security/encryption";
+import { encryptJson, type EncryptedJson } from "@/lib/security/encryption";
 import { getPostgresPool, testPostgresConnection } from "@/lib/data/postgres";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const createSchema = z
   .object({
@@ -52,11 +53,28 @@ export async function GET() {
     return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
   }
 
-  const dataSources = await prisma.dataSource.findMany({
-    where: { orgId: ctx.orgId },
-    select: { id: true, type: true, name: true, createdAt: true },
-    orderBy: { createdAt: "desc" },
-  });
+  const supabase = await createSupabaseServerClient();
+  const dataSourcesRes = await supabase
+    .from("data_sources")
+    .select("id, type, name, created_at")
+    .eq("org_id", ctx.orgId)
+    .order("created_at", { ascending: false });
+
+  if (dataSourcesRes.error) {
+    console.error("list data sources failed", {
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      message: dataSourcesRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to load data sources" }, { status: 500 });
+  }
+
+  const dataSources = (dataSourcesRes.data ?? []).map((ds) => ({
+    id: ds.id as string,
+    type: ds.type as string,
+    name: ds.name as string,
+    createdAt: new Date(ds.created_at as string),
+  }));
 
   return NextResponse.json({ dataSources });
 }
@@ -105,6 +123,19 @@ export async function POST(req: Request) {
   const input = parsed.data;
 
   try {
+    const pool = getPostgresPool({
+      dataSourceId: crypto.randomUUID(),
+      credentials: {
+        host: input.host,
+        port: input.port,
+        database: input.database,
+        user: input.user,
+        password: input.password,
+        ssl: input.ssl ?? false,
+      },
+    });
+    await testPostgresConnection(pool);
+
     const envelope: PostgresConfigEnvelope = {
       v: 1,
       kind: "postgres",
@@ -118,30 +149,33 @@ export async function POST(req: Request) {
       }),
     };
 
-    const created = await prisma.dataSource.create({
-      data: {
-        orgId: ctx.orgId,
+    const supabase = await createSupabaseServerClient();
+    const createdRes = await supabase
+      .from("data_sources")
+      .insert({
+        org_id: ctx.orgId,
         type: input.type,
         name: input.name,
         config: envelope,
-      },
-      select: { id: true, type: true, name: true, createdAt: true, config: true },
-    });
+      })
+      .select("id, type, name, created_at")
+      .single();
 
-    const creds = decryptJson<{
-      host: string;
-      port: number;
-      database: string;
-      user: string;
-      password: string;
-      ssl?: boolean;
-    }>((created.config as PostgresConfigEnvelope).payload);
-
-    const pool = getPostgresPool({ dataSourceId: created.id, credentials: creds });
-    await testPostgresConnection(pool);
+    if (createdRes.error || !createdRes.data?.id) {
+      console.error("create data source failed", {
+        orgId: ctx.orgId,
+        message: createdRes.error?.message,
+      });
+      return NextResponse.json({ error: "Failed to create data source" }, { status: 500 });
+    }
 
     return NextResponse.json({
-      dataSource: { id: created.id, type: created.type, name: created.name, createdAt: created.createdAt },
+      dataSource: {
+        id: createdRes.data.id as string,
+        type: createdRes.data.type as string,
+        name: createdRes.data.name as string,
+        createdAt: new Date(createdRes.data.created_at as string),
+      },
     }, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

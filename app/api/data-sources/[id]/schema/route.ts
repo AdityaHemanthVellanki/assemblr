@@ -10,10 +10,10 @@ import {
 } from "@/lib/auth/permissions";
 import { getPostgresPool } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
 import { decryptJson, type EncryptedJson } from "@/lib/security/encryption";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET(
   _req: Request,
@@ -51,10 +51,26 @@ export async function GET(
     );
   }
 
-  const dataSource = await prisma.dataSource.findFirst({
-    where: { id, orgId: ctx.orgId },
-    select: { id: true, type: true, config: true },
-  });
+  const supabase = await createSupabaseServerClient();
+  const dataSourceRes = await supabase
+    .from("data_sources")
+    .select("id, type, config")
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .maybeSingle();
+
+  if (dataSourceRes.error) {
+    console.error("load data source failed", {
+      orgId: ctx.orgId,
+      dataSourceId: id,
+      message: dataSourceRes.error.message,
+    });
+    return NextResponse.json({ error: "Failed to load data source" }, { status: 500 });
+  }
+
+  const dataSource = dataSourceRes.data as
+    | { id: string; type: string; config: unknown }
+    | null;
 
   if (!dataSource) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (dataSource.type !== "postgres") {

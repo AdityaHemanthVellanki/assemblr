@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import crypto from "crypto";
 
-import { getSessionContext, PermissionError } from "@/lib/auth/permissions";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z
   .object({
@@ -19,14 +18,13 @@ function hashToken(token: string) {
 export async function POST(req: Request) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  try {
-    ctx = await getSessionContext();
-  } catch (err) {
-    if (err instanceof PermissionError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
-    }
-    throw err;
+  const supabase = await createSupabaseServerClient();
+  const userRes = await supabase.auth.getUser();
+  if (userRes.error) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!userRes.data.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const json = await req.json().catch(() => null);
@@ -37,76 +35,28 @@ export async function POST(req: Request) {
 
   const tokenHash = hashToken(parsed.data.token);
 
-  const me = await prisma.user.findUnique({
-    where: { id: ctx.userId },
-    select: { id: true, email: true, orgId: true },
-  });
-  if (!me?.email) {
-    return NextResponse.json({ error: "User missing email" }, { status: 400 });
-  }
-
-  const invite = await prisma.invite.findUnique({
-    where: { tokenHash },
-    select: {
-      id: true,
-      orgId: true,
-      email: true,
-      role: true,
-      expiresAt: true,
-      acceptedAt: true,
-    },
-  });
-
-  if (!invite || invite.acceptedAt) {
-    return NextResponse.json({ error: "Invite not found" }, { status: 404 });
-  }
-  if (invite.expiresAt.getTime() < Date.now()) {
-    return NextResponse.json({ error: "Invite has expired" }, { status: 400 });
-  }
-  if (invite.email.toLowerCase() !== me.email.toLowerCase()) {
-    return NextResponse.json(
-      { error: "Invite email does not match signed-in user" },
-      { status: 403 },
-    );
-  }
-
-  await prisma.$transaction(async (tx) => {
-    if (me.orgId && me.orgId !== invite.orgId) {
-      const myMembership = await tx.membership.findUnique({
-        where: { userId_orgId: { userId: me.id, orgId: me.orgId } },
-        select: { role: true },
-      });
-      if (myMembership?.role === "OWNER") {
-        const ownerCount = await tx.membership.count({
-          where: { orgId: me.orgId, role: "OWNER" },
-        });
-        if (ownerCount === 1) {
-          throw new Error("Cannot leave organization as the last owner");
-        }
-      }
-      await tx.membership.deleteMany({
-        where: { userId: me.id, orgId: me.orgId },
-      });
+  const res = await supabase.rpc("accept_invite", { p_token_hash: tokenHash });
+  if (res.error) {
+    const message = res.error.message;
+    if (message.includes("invite_not_found")) {
+      return NextResponse.json({ error: "Invite not found" }, { status: 404 });
+    }
+    if (message.includes("invite_expired")) {
+      return NextResponse.json({ error: "Invite has expired" }, { status: 400 });
+    }
+    if (message.includes("invite_email_mismatch")) {
+      return NextResponse.json({ error: "Invite email does not match signed-in user" }, { status: 403 });
+    }
+    if (message.includes("cannot_leave_last_owner")) {
+      return NextResponse.json({ error: "Cannot leave organization as the last owner" }, { status: 400 });
     }
 
-    await tx.user.update({
-      where: { id: me.id },
-      data: { orgId: invite.orgId },
+    console.error("accept invite failed", {
+      userId: userRes.data.user.id,
+      message,
     });
-
-    await tx.membership.upsert({
-      where: { userId_orgId: { userId: me.id, orgId: invite.orgId } },
-      create: { userId: me.id, orgId: invite.orgId, role: invite.role },
-      update: { role: invite.role },
-      select: { id: true },
-    });
-
-    await tx.invite.update({
-      where: { id: invite.id },
-      data: { acceptedAt: new Date(), acceptedByUserId: me.id },
-      select: { id: true },
-    });
-  });
+    return NextResponse.json({ error: "Failed to accept invite" }, { status: 500 });
+  }
 
   return NextResponse.json({ ok: true });
 }
