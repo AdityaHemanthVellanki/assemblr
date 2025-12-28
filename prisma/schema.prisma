@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum OrgRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
@@ -16,6 +22,8 @@ model Organization {
   users User[]
   projects Project[]
   dataSources DataSource[]
+  memberships Membership[]
+  invites Invite[]
 }
 
 model User {
@@ -27,6 +35,7 @@ model User {
 
   orgId        String?
   organization Organization? @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  memberships Membership[]
 
   accounts Account[]
   sessions Session[]
@@ -104,4 +113,36 @@ model DataSource {
   projects Project[]
 
   @@index([orgId])
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  orgId     String
+  role      OrgRole
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@index([userId])
+}
+
+model Invite {
+  id        String   @id @default(cuid())
+  orgId     String
+  email     String
+  role      OrgRole
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  acceptedAt DateTime?
+  acceptedByUserId String?
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([email])
 }

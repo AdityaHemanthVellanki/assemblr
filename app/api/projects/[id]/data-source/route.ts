@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import {
+  canManageDataSources,
+  getSessionContext,
+  type OrgRole,
+  PermissionError,
+  requireUserRole,
+} from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
 
@@ -18,11 +23,21 @@ export async function PATCH(
 ) {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
-  const orgId = session.user.orgId;
-  if (!orgId) return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  if (!canManageDataSources(role)) {
+    return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
+  }
 
   const json = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(json);
@@ -33,7 +48,7 @@ export async function PATCH(
   const { id } = await params;
 
   const project = await prisma.project.findFirst({
-    where: { id, orgId },
+    where: { id, orgId: ctx.orgId },
     select: { id: true },
   });
 
@@ -42,7 +57,7 @@ export async function PATCH(
   const dataSourceId = parsed.data.dataSourceId;
   if (dataSourceId) {
     const ds = await prisma.dataSource.findFirst({
-      where: { id: dataSourceId, orgId },
+      where: { id: dataSourceId, orgId: ctx.orgId },
       select: { id: true },
     });
     if (!ds) {
@@ -58,4 +73,3 @@ export async function PATCH(
 
   return NextResponse.json({ project: updated });
 }
-

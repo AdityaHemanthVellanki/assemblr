@@ -1,9 +1,16 @@
 import Link from "next/link";
-import { LayoutDashboard } from "lucide-react";
+import { LayoutDashboard, Users } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
+import { roleLabel, type OrgRole } from "@/lib/auth/permissions";
 
-export function Sidebar({ className }: { className?: string }) {
+export function Sidebar({
+  className,
+  role,
+}: {
+  className?: string;
+  role: OrgRole;
+}) {
   return (
     <aside
       className={cn(
@@ -22,7 +29,19 @@ export function Sidebar({ className }: { className?: string }) {
           <LayoutDashboard className="h-4 w-4" />
           Projects
         </Link>
+        <Link
+          href="/dashboard/members"
+          className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
+        >
+          <Users className="h-4 w-4" />
+          Members
+        </Link>
       </nav>
+      <div className="mt-auto border-t border-border p-4">
+        <div className="inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
+          {roleLabel(role)}
+        </div>
+      </div>
     </aside>
   );
 }

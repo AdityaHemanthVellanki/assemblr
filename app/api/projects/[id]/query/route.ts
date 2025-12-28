@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import {
+  canEditProjects,
+  getSessionContext,
+  type OrgRole,
+  PermissionError,
+  requireUserRole,
+} from "@/lib/auth/permissions";
 import { buildQueryForView } from "@/lib/data/queryBuilder";
 import { getPostgresPool, runReadOnlyQuery } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
@@ -56,11 +61,17 @@ export async function POST(
 ) {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const orgId = session.user.orgId;
-  if (!orgId) return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
   const json = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(json);
@@ -71,7 +82,7 @@ export async function POST(
   const { id } = await params;
 
   const rl = checkRateLimit({
-    key: `query:${orgId}:${id}`,
+    key: `query:${ctx.orgId}:${id}`,
     windowMs: 10_000,
     max: 20,
   });
@@ -83,7 +94,7 @@ export async function POST(
   }
 
   const project = await prisma.project.findFirst({
-    where: { id, orgId },
+    where: { id, orgId: ctx.orgId },
     select: { id: true, spec: true, dataSourceId: true },
   });
 
@@ -93,7 +104,7 @@ export async function POST(
   }
 
   const dataSource = await prisma.dataSource.findFirst({
-    where: { id: project.dataSourceId, orgId },
+    where: { id: project.dataSourceId, orgId: ctx.orgId },
     select: { id: true, type: true, config: true },
   });
 
@@ -119,9 +130,11 @@ export async function POST(
   }
 
   try {
-    const spec = parsed.data.spec
-      ? parseDashboardSpec(parsed.data.spec)
-      : parseDashboardSpec(project.spec);
+    const allowDraftSpec = canEditProjects(role);
+    const spec =
+      allowDraftSpec && parsed.data.spec
+        ? parseDashboardSpec(parsed.data.spec)
+        : parseDashboardSpec(project.spec);
 
     const pool = getPostgresPool({ dataSourceId: dataSource.id, credentials: creds });
     const schema = await getCachedSchema({ dataSourceId: dataSource.id, pool });
@@ -181,7 +194,7 @@ export async function POST(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("query failed", {
-      orgId,
+      orgId: ctx.orgId,
       projectId: id,
       dataSourceId: project.dataSourceId,
       viewId: parsed.data.viewId,

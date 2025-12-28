@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import {
+  canEditProjects,
+  getSessionContext,
+  type OrgRole,
+  PermissionError,
+  requireUserRole,
+} from "@/lib/auth/permissions";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
@@ -19,14 +24,20 @@ export async function PATCH(
 ) {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
   }
 
-  const orgId = session.user.orgId;
-  if (!orgId) {
-    return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  if (!canEditProjects(role)) {
+    return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
   }
 
   const json = await req.json().catch(() => null);
@@ -41,7 +52,7 @@ export async function PATCH(
   const { id } = await params;
 
   const project = await prisma.project.findFirst({
-    where: { id, orgId },
+    where: { id, orgId: ctx.orgId },
     select: { id: true },
   });
 
@@ -68,8 +79,8 @@ export async function PATCH(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("update-spec failed", {
-      userId: session.user.id,
-      orgId,
+      userId: ctx.userId,
+      orgId: ctx.orgId,
       projectId: id,
       message,
     });

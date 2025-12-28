@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import {
+  canManageDataSources,
+  getSessionContext,
+  type OrgRole,
+  PermissionError,
+  requireUserRole,
+} from "@/lib/auth/permissions";
 import { getPostgresPool } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
 import { prisma } from "@/lib/db/prisma";
@@ -16,16 +21,26 @@ export async function GET(
 ) {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
-  const orgId = session.user.orgId;
-  if (!orgId) return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  if (!canManageDataSources(role)) {
+    return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
+  }
 
   const { id } = await params;
 
   const rl = checkRateLimit({
-    key: `schema:${orgId}:${id}`,
+    key: `schema:${ctx.orgId}:${id}`,
     windowMs: 60_000,
     max: 20,
   });
@@ -37,7 +52,7 @@ export async function GET(
   }
 
   const dataSource = await prisma.dataSource.findFirst({
-    where: { id, orgId },
+    where: { id, orgId: ctx.orgId },
     select: { id: true, type: true, config: true },
   });
 
@@ -88,7 +103,11 @@ export async function GET(
     return NextResponse.json({ schema });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("introspect schema failed", { orgId, dataSourceId: id, message });
+    console.error("introspect schema failed", {
+      orgId: ctx.orgId,
+      dataSourceId: id,
+      message,
+    });
     return NextResponse.json({ error: "Failed to introspect schema" }, { status: 500 });
   }
 }

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
@@ -12,20 +11,21 @@ export async function GET(
 ) {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const orgId = session.user.orgId;
-  if (!orgId) {
-    return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  try {
+    ctx = await getSessionContext();
+    await requireUserRole(ctx);
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
   }
 
   const { id } = await params;
 
   const project = await prisma.project.findFirst({
-    where: { id, orgId },
+    where: { id, orgId: ctx.orgId },
     select: {
       id: true,
       name: true,

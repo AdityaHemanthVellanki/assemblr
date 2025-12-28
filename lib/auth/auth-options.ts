@@ -6,24 +6,41 @@ import nodemailer from "nodemailer";
 
 import { prisma } from "@/lib/db/prisma";
 
-async function ensureUserOrg(userId: string) {
+async function ensureUserOrgAndMembership(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { orgId: true, email: true },
   });
 
   if (!user) return;
-  if (user.orgId) return;
 
-  const orgName = user.email?.split("@")[1] ?? "Personal";
+  let orgId = user.orgId;
+  if (!orgId) {
+    const orgName = user.email?.split("@")[1] ?? "Personal";
 
-  const org = await prisma.organization.create({
-    data: { name: orgName },
+    const org = await prisma.organization.create({
+      data: { name: orgName },
+    });
+
+    orgId = org.id;
+    await prisma.user.update({
+      where: { id: userId },
+      data: { orgId },
+    });
+  }
+
+  const existing = await prisma.membership.findUnique({
+    where: { userId_orgId: { userId, orgId } },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  const ownerCount = await prisma.membership.count({
+    where: { orgId, role: "OWNER" },
   });
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: { orgId: org.id },
+  await prisma.membership.create({
+    data: { userId, orgId, role: ownerCount === 0 ? "OWNER" : "VIEWER" },
   });
 }
 
@@ -78,7 +95,7 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ user }) {
       if (!user?.id) return false;
-      await ensureUserOrg(user.id);
+      await ensureUserOrgAndMembership(user.id);
       return true;
     },
     async jwt({ token, user }) {

@@ -1,17 +1,34 @@
 import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth/next";
 
 import { DashboardShell } from "@/components/dashboard/shell";
-import { authOptions } from "@/lib/auth/auth-options";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getServerSession(authOptions);
+  let role: Awaited<ReturnType<typeof requireUserRole>>["role"];
+  try {
+    const ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError && err.status === 401) redirect("/login");
+    if (err instanceof PermissionError) {
+      return (
+        <div className="mx-auto w-full max-w-3xl p-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Access denied</CardTitle>
+              <CardDescription>{err.message}</CardDescription>
+            </CardHeader>
+          </Card>
+        </div>
+      );
+    }
+    throw err;
+  }
 
-  if (!session) redirect("/login");
-
-  return <DashboardShell>{children}</DashboardShell>;
+  return <DashboardShell role={role}>{children}</DashboardShell>;
 }

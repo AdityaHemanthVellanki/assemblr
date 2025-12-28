@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 
-import { authOptions } from "@/lib/auth/auth-options";
+import {
+  canManageDataSources,
+  getSessionContext,
+  type OrgRole,
+  PermissionError,
+  requireUserRole,
+} from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/env";
 import { decryptJson, encryptJson, type EncryptedJson } from "@/lib/security/encryption";
@@ -31,14 +36,24 @@ type PostgresConfigEnvelope = {
 export async function GET() {
   getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
-  const orgId = session.user.orgId;
-  if (!orgId) return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  if (!canManageDataSources(role)) {
+    return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
+  }
 
   const dataSources = await prisma.dataSource.findMany({
-    where: { orgId },
+    where: { orgId: ctx.orgId },
     select: { id: true, type: true, name: true, createdAt: true },
     orderBy: { createdAt: "desc" },
   });
@@ -49,14 +64,24 @@ export async function GET() {
 export async function POST(req: Request) {
   const env = getServerEnv();
 
-  const session = await getServerSession(authOptions);
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: OrgRole;
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
-  const orgId = session.user.orgId;
-  if (!orgId) return NextResponse.json({ error: "User missing orgId" }, { status: 403 });
+  if (!canManageDataSources(role)) {
+    return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
+  }
 
   const rl = checkRateLimit({
-    key: `create-data-source:${orgId}`,
+    key: `create-data-source:${ctx.orgId}`,
     windowMs: 60_000,
     max: 10,
   });
@@ -95,7 +120,7 @@ export async function POST(req: Request) {
 
     const created = await prisma.dataSource.create({
       data: {
-        orgId,
+        orgId: ctx.orgId,
         type: input.type,
         name: input.name,
         config: envelope,
@@ -120,7 +145,7 @@ export async function POST(req: Request) {
     }, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("create data source failed", { orgId, message });
+    console.error("create data source failed", { orgId: ctx.orgId, message });
     return NextResponse.json({ error: "Failed to connect to database" }, { status: 400 });
   }
 }

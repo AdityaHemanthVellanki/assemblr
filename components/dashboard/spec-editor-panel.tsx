@@ -31,6 +31,12 @@ type DatabaseSchema = {
   }>;
 };
 
+type ProjectPermissions = {
+  canEdit: boolean;
+  canGenerate: boolean;
+  canManageDataSources: boolean;
+};
+
 function stringifyZodError(err: unknown): string {
   if (!err || typeof err !== "object") return "Validation failed";
   if (!("issues" in err)) return "Validation failed";
@@ -89,7 +95,17 @@ function arrayMove<T>(arr: T[], from: number, to: number) {
   return next;
 }
 
-export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
+export function SpecEditorPanel({
+  project,
+  permissions,
+}: {
+  project: ProjectPayload;
+  permissions: ProjectPermissions;
+}) {
+  const allowEdit = permissions.canEdit;
+  const allowGenerate = permissions.canGenerate;
+  const allowManageDataSources = permissions.canManageDataSources;
+
   const [savedSpec, setSavedSpec] = React.useState<DashboardSpec>(project.spec);
   const [draftSpec, setDraftSpec] = React.useState<DashboardSpec>(project.spec);
 
@@ -187,7 +203,8 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
     });
   }
 
-  async function loadDataSources(signal?: AbortSignal) {
+  const loadDataSources = React.useCallback(async (signal?: AbortSignal) => {
+    if (!allowManageDataSources) return;
     const res = await fetch("/api/data-sources", { signal });
     if (!res.ok) return;
     const data = (await res.json().catch(() => null)) as {
@@ -195,9 +212,10 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
     } | null;
     if (!data?.dataSources) return;
     setDataSources(data.dataSources);
-  }
+  }, [allowManageDataSources]);
 
-  async function loadSchema(nextDataSourceId: string, signal?: AbortSignal) {
+  const loadSchema = React.useCallback(async (nextDataSourceId: string, signal?: AbortSignal) => {
+    if (!allowManageDataSources) return;
     setSchemaStatus({ kind: "loading" });
     try {
       const res = await fetch(`/api/data-sources/${nextDataSourceId}/schema`, {
@@ -220,9 +238,13 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
         message: err instanceof Error ? err.message : "Failed to load schema",
       });
     }
-  }
+  }, [allowManageDataSources]);
 
   async function createDataSourceAndConnect() {
+    if (!allowManageDataSources) {
+      setErrorText("Only owners can manage data sources");
+      return;
+    }
     setErrorText(null);
     const port = Number.parseInt(newDataSource.port, 10);
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
@@ -264,23 +286,25 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
   }
 
   React.useEffect(() => {
+    if (!allowManageDataSources) return;
     const controller = new AbortController();
     void loadDataSources(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [allowManageDataSources, loadDataSources]);
 
   React.useEffect(() => {
     const controller = new AbortController();
-    if (!dataSourceId) {
+    if (!allowManageDataSources || !dataSourceId) {
       setSchema(null);
       setSchemaStatus({ kind: "idle" });
       return () => controller.abort();
     }
     void loadSchema(dataSourceId, controller.signal);
     return () => controller.abort();
-  }, [dataSourceId]);
+  }, [allowManageDataSources, dataSourceId, loadSchema]);
 
   async function onSave() {
+    if (!allowEdit) return;
     setErrorText(null);
     setIsSaving(true);
     try {
@@ -311,6 +335,10 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
   }
 
   async function onChangeDataSource(nextId: string | null) {
+    if (!allowManageDataSources) {
+      setErrorText("Only owners can manage data sources");
+      return;
+    }
     setErrorText(null);
     try {
       const res = await fetch(`/api/projects/${project.id}/data-source`, {
@@ -432,149 +460,164 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Connection</div>
-              <Select
-                value={dataSourceId ?? ""}
-                onChange={(value) => {
-                  void onChangeDataSource(value.trim().length ? value : null);
-                }}
-              >
-                <option value="">(disconnected)</option>
-                {dataSources.map((ds) => (
-                  <option key={ds.id} value={ds.id}>
-                    {ds.name} ({ds.type})
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => void loadDataSources()}
-              >
-                Refresh list
-              </Button>
-              {dataSourceId ? (
+            {!allowManageDataSources ? (
+              <div className="text-xs text-muted-foreground">
+                Only owners can manage data sources.
+              </div>
+            ) : null}
+            <fieldset
+              disabled={!allowManageDataSources}
+              className="m-0 min-w-0 space-y-3 border-0 p-0"
+            >
+              <div className="space-y-1">
+                <div className="text-xs text-muted-foreground">Connection</div>
+                <Select
+                  value={dataSourceId ?? ""}
+                  onChange={(value) => {
+                    void onChangeDataSource(value.trim().length ? value : null);
+                  }}
+                >
+                  <option value="">(disconnected)</option>
+                  {dataSources.map((ds) => (
+                    <option key={ds.id} value={ds.id}>
+                      {ds.name} ({ds.type})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => void loadSchema(dataSourceId)}
-                  disabled={schemaStatus.kind === "loading"}
+                  onClick={() => void loadDataSources()}
                 >
-                  {schemaStatus.kind === "loading"
-                    ? "Loading schema…"
-                    : "Refresh schema"}
+                  Refresh list
                 </Button>
-              ) : null}
-            </div>
-            <details className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer select-none text-sm font-medium">
-                Create new Postgres data source
-              </summary>
-              <div className="mt-3 grid grid-cols-1 gap-3">
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Name</div>
-                  <Input
-                    value={newDataSource.name}
-                    onChange={(e) =>
-                      setNewDataSource((prev) => ({
-                        ...prev,
-                        name: e.target.value,
-                      }))
-                    }
-                    placeholder="Production DB"
-                  />
-                </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <div className="text-xs text-muted-foreground">Host</div>
-                    <Input
-                      value={newDataSource.host}
-                      onChange={(e) =>
-                        setNewDataSource((prev) => ({
-                          ...prev,
-                          host: e.target.value,
-                        }))
-                      }
-                      placeholder="db.example.com"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-xs text-muted-foreground">Port</div>
-                    <Input
-                      value={newDataSource.port}
-                      onChange={(e) =>
-                        setNewDataSource((prev) => ({
-                          ...prev,
-                          port: e.target.value,
-                        }))
-                      }
-                      inputMode="numeric"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <div className="text-xs text-muted-foreground">Database</div>
-                    <Input
-                      value={newDataSource.database}
-                      onChange={(e) =>
-                        setNewDataSource((prev) => ({
-                          ...prev,
-                          database: e.target.value,
-                        }))
-                      }
-                      placeholder="app"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-xs text-muted-foreground">User</div>
-                    <Input
-                      value={newDataSource.user}
-                      onChange={(e) =>
-                        setNewDataSource((prev) => ({
-                          ...prev,
-                          user: e.target.value,
-                        }))
-                      }
-                      placeholder="readonly"
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Password</div>
-                  <Input
-                    value={newDataSource.password}
-                    onChange={(e) =>
-                      setNewDataSource((prev) => ({
-                        ...prev,
-                        password: e.target.value,
-                      }))
-                    }
-                    type="password"
-                    placeholder="••••••••"
-                  />
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newDataSource.ssl}
-                    onChange={(e) =>
-                      setNewDataSource((prev) => ({
-                        ...prev,
-                        ssl: e.target.checked,
-                      }))
-                    }
-                  />
-                  Use SSL
-                </label>
-                <Button type="button" onClick={() => void createDataSourceAndConnect()}>
-                  Create & connect
-                </Button>
+                {dataSourceId ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void loadSchema(dataSourceId)}
+                    disabled={schemaStatus.kind === "loading"}
+                  >
+                    {schemaStatus.kind === "loading"
+                      ? "Loading schema…"
+                      : "Refresh schema"}
+                  </Button>
+                ) : null}
               </div>
-            </details>
+              <details className="rounded-md border border-border p-3">
+                <summary className="cursor-pointer select-none text-sm font-medium">
+                  Create new Postgres data source
+                </summary>
+                <div className="mt-3 grid grid-cols-1 gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">Name</div>
+                    <Input
+                      value={newDataSource.name}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          name: e.target.value,
+                        }))
+                      }
+                      placeholder="Production DB"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Host</div>
+                      <Input
+                        value={newDataSource.host}
+                        onChange={(e) =>
+                          setNewDataSource((prev) => ({
+                            ...prev,
+                            host: e.target.value,
+                          }))
+                        }
+                        placeholder="db.example.com"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Port</div>
+                      <Input
+                        value={newDataSource.port}
+                        onChange={(e) =>
+                          setNewDataSource((prev) => ({
+                            ...prev,
+                            port: e.target.value,
+                          }))
+                        }
+                        inputMode="numeric"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">
+                        Database
+                      </div>
+                      <Input
+                        value={newDataSource.database}
+                        onChange={(e) =>
+                          setNewDataSource((prev) => ({
+                            ...prev,
+                            database: e.target.value,
+                          }))
+                        }
+                        placeholder="app"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">User</div>
+                      <Input
+                        value={newDataSource.user}
+                        onChange={(e) =>
+                          setNewDataSource((prev) => ({
+                            ...prev,
+                            user: e.target.value,
+                          }))
+                        }
+                        placeholder="readonly"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">Password</div>
+                    <Input
+                      value={newDataSource.password}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          password: e.target.value,
+                        }))
+                      }
+                      type="password"
+                      placeholder="••••••••"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={newDataSource.ssl}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          ssl: e.target.checked,
+                        }))
+                      }
+                    />
+                    Use SSL
+                  </label>
+                  <Button
+                    type="button"
+                    onClick={() => void createDataSourceAndConnect()}
+                  >
+                    Create & connect
+                  </Button>
+                </div>
+              </details>
+            </fieldset>
             {schemaStatus.kind === "error" ? (
               <div className="whitespace-pre-line rounded-md border border-border bg-accent px-3 py-2 text-sm">
                 {schemaStatus.message}
@@ -590,6 +633,10 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
 
         <GenerateDashboardForm
           projectId={project.id}
+          disabled={!allowGenerate}
+          disabledReason={
+            allowGenerate ? undefined : "Only owners and editors can use AI."
+          }
           onGenerated={(p) => {
             setErrorText(null);
             markAiGenerated();
@@ -600,44 +647,53 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
         />
 
         <Card>
-          <CardHeader className="space-y-2">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <CardTitle className="text-sm font-medium">
-                  Spec editor
-                </CardTitle>
-                <div className="text-xs text-muted-foreground">
-                  Status: {statusText ?? "…"}
+          <fieldset
+            disabled={!allowEdit}
+            className="m-0 min-w-0 border-0 p-0"
+          >
+            <CardHeader className="space-y-2">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <CardTitle className="text-sm font-medium">
+                    Spec editor
+                  </CardTitle>
+                  <div className="text-xs text-muted-foreground">
+                    Status: {statusText ?? "…"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Changes update the preview immediately. Saving is manual.
+                  </div>
+                  {!allowEdit ? (
+                    <div className="text-xs text-muted-foreground">
+                      Read-only access.
+                    </div>
+                  ) : null}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  Changes update the preview immediately. Saving is manual.
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={onResetDraft}
+                    disabled={!isDirty || isSaving}
+                  >
+                    Reset
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={onSave}
+                    disabled={!isDirty || isSaving}
+                  >
+                    {isSaving ? "Saving…" : "Save changes"}
+                  </Button>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={onResetDraft}
-                  disabled={!isDirty || isSaving}
-                >
-                  Reset
-                </Button>
-                <Button
-                  type="button"
-                  onClick={onSave}
-                  disabled={!isDirty || isSaving}
-                >
-                  {isSaving ? "Saving…" : "Save changes"}
-                </Button>
-              </div>
-            </div>
-            {errorText ? (
-              <div className="whitespace-pre-line rounded-md border border-border bg-accent px-3 py-2 text-sm">
-                {errorText}
-              </div>
-            ) : null}
-          </CardHeader>
-          <CardContent className="space-y-6">
+              {errorText ? (
+                <div className="whitespace-pre-line rounded-md border border-border bg-accent px-3 py-2 text-sm">
+                  {errorText}
+                </div>
+              ) : null}
+            </CardHeader>
+            <CardContent className="space-y-6">
             <div className="grid grid-cols-1 gap-3">
               <div className="space-y-2">
                 <div className="text-xs font-medium text-muted-foreground">
@@ -1166,7 +1222,8 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
                 ))}
               </div>
             </div>
-          </CardContent>
+            </CardContent>
+          </fieldset>
         </Card>
       </div>
 

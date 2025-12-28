@@ -6,32 +6,36 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Link from "next/link";
-import { getServerSession } from "next-auth/next";
 
 import { NewProjectButton } from "@/components/dashboard/new-project-button";
 import { Button } from "@/components/ui/button";
-import { authOptions } from "@/lib/auth/auth-options";
+import { canEditProjects, getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/db/prisma";
 
 export default async function DashboardPage() {
-  const session = await getServerSession(authOptions);
-  const orgId = session?.user.orgId;
-
-  if (!orgId) {
-    return (
-      <div className="mx-auto w-full max-w-4xl">
-        <Card>
-          <CardHeader>
-            <CardTitle>Projects</CardTitle>
-            <CardDescription>Missing organization context.</CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
-    );
+  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let role: Awaited<ReturnType<typeof requireUserRole>>["role"];
+  try {
+    ctx = await getSessionContext();
+    ({ role } = await requireUserRole(ctx));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return (
+        <div className="mx-auto w-full max-w-4xl">
+          <Card>
+            <CardHeader>
+              <CardTitle>Projects</CardTitle>
+              <CardDescription>{err.message}</CardDescription>
+            </CardHeader>
+          </Card>
+        </div>
+      );
+    }
+    throw err;
   }
 
   const projects = await prisma.project.findMany({
-    where: { orgId },
+    where: { orgId: ctx.orgId },
     select: { id: true, name: true, updatedAt: true },
     orderBy: { updatedAt: "desc" },
   });
@@ -48,7 +52,7 @@ export default async function DashboardPage() {
                 spec.
               </CardDescription>
             </div>
-            <NewProjectButton />
+            {canEditProjects(role) ? <NewProjectButton /> : null}
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -58,7 +62,13 @@ export default async function DashboardPage() {
                 No projects yet. Create one to start rendering from a stored
                 spec.
               </div>
-              <NewProjectButton label="Create your first project" />
+              {canEditProjects(role) ? (
+                <NewProjectButton label="Create your first project" />
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  You have read-only access.
+                </div>
+              )}
             </div>
           ) : (
             <div className="divide-y divide-border rounded-md border border-border">

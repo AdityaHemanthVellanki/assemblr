@@ -10,9 +10,13 @@ import { cn } from "@/lib/ui/cn";
 export function GenerateDashboardForm({
   projectId,
   onGenerated,
+  disabled,
+  disabledReason,
 }: {
   projectId: string;
   onGenerated?: (project: { id: string; name: string; spec: unknown }) => void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   const router = useRouter();
   const [prompt, setPrompt] = React.useState("");
@@ -55,7 +59,8 @@ export function GenerateDashboardForm({
     }
   }
 
-  const isDisabled = isLoading || prompt.trim().length === 0;
+  const isDisabled =
+    disabled === true || isLoading || prompt.trim().length === 0;
 
   return (
     <Card>
@@ -65,6 +70,9 @@ export function GenerateDashboardForm({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {disabledReason ? (
+          <div className="text-xs text-muted-foreground">{disabledReason}</div>
+        ) : null}
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -73,6 +81,7 @@ export function GenerateDashboardForm({
             "min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring",
           )}
           maxLength={800}
+          disabled={disabled === true}
         />
         <div className="flex items-center justify-between gap-4">
           <div className="text-xs text-muted-foreground">
