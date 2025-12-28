@@ -15,6 +15,7 @@ model Organization {
 
   users User[]
   projects Project[]
+  dataSources DataSource[]
 }
 
 model User {
@@ -79,11 +80,28 @@ model Project {
   id        String   @id @default(cuid())
   name      String
   orgId     String
+  dataSourceId String?
   spec      Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  dataSource DataSource? @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([dataSourceId])
+}
+
+model DataSource {
+  id        String   @id @default(cuid())
+  orgId     String
+  type      String
+  name      String
+  config    Json
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  projects Project[]
 
   @@index([orgId])
 }

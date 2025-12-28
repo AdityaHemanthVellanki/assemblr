@@ -18,6 +18,8 @@ const serverEnvSchema = z
 
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).optional(),
+
+    DATA_ENCRYPTION_KEY: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
     const isProd = env.NODE_ENV === "production";
@@ -26,6 +28,13 @@ const serverEnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ["OPENAI_API_KEY"],
         message: "OPENAI_API_KEY is required in production",
+      });
+    }
+    if (isProd && !env.DATA_ENCRYPTION_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["DATA_ENCRYPTION_KEY"],
+        message: "DATA_ENCRYPTION_KEY is required in production",
       });
     }
   });

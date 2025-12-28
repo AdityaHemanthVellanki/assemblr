@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { GenerateDashboardForm } from "@/components/dashboard/generate-dashboard-form";
-import { renderDashboard } from "@/lib/dashboard/render-dashboard";
+import { renderDashboard, type DashboardViewState } from "@/lib/dashboard/render-dashboard";
 import { parseDashboardSpec, type DashboardSpec } from "@/lib/dashboard/spec";
 import { cn } from "@/lib/ui/cn";
 
@@ -14,6 +14,21 @@ type ProjectPayload = {
   id: string;
   name: string;
   spec: DashboardSpec;
+  dataSourceId?: string | null;
+};
+
+type DataSourceListItem = {
+  id: string;
+  type: string;
+  name: string;
+  createdAt: string;
+};
+
+type DatabaseSchema = {
+  tables: Array<{
+    name: string;
+    columns: Array<{ name: string; dataType: string }>;
+  }>;
 };
 
 function stringifyZodError(err: unknown): string {
@@ -78,11 +93,56 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
   const [savedSpec, setSavedSpec] = React.useState<DashboardSpec>(project.spec);
   const [draftSpec, setDraftSpec] = React.useState<DashboardSpec>(project.spec);
 
+  const [dataSources, setDataSources] = React.useState<DataSourceListItem[]>([]);
+  const [dataSourceId, setDataSourceId] = React.useState<string | null>(
+    project.dataSourceId ?? null,
+  );
+  const [schema, setSchema] = React.useState<DatabaseSchema | null>(null);
+  const [schemaStatus, setSchemaStatus] = React.useState<
+    { kind: "idle" } | { kind: "loading" } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  const [stateByViewId, setStateByViewId] = React.useState<
+    Record<string, DashboardViewState>
+  >({});
+
+  const [newDataSource, setNewDataSource] = React.useState<{
+    name: string;
+    host: string;
+    port: string;
+    database: string;
+    user: string;
+    password: string;
+    ssl: boolean;
+  }>({
+    name: "",
+    host: "",
+    port: "5432",
+    database: "",
+    user: "",
+    password: "",
+    ssl: false,
+  });
+
   const [statusText, setStatusText] = React.useState<string | null>(null);
   const [errorText, setErrorText] = React.useState<string | null>(null);
   const [isSaving, setIsSaving] = React.useState(false);
 
   const isDirty = JSON.stringify(draftSpec) !== JSON.stringify(savedSpec);
+
+  const numericTypes = React.useMemo(
+    () =>
+      new Set([
+        "integer",
+        "bigint",
+        "numeric",
+        "double precision",
+        "real",
+        "smallint",
+        "decimal",
+      ]),
+    [],
+  );
 
   React.useEffect(() => {
     const key = `assemblr:project:${project.id}:specEdited`;
@@ -127,6 +187,99 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
     });
   }
 
+  async function loadDataSources(signal?: AbortSignal) {
+    const res = await fetch("/api/data-sources", { signal });
+    if (!res.ok) return;
+    const data = (await res.json().catch(() => null)) as {
+      dataSources?: DataSourceListItem[];
+    } | null;
+    if (!data?.dataSources) return;
+    setDataSources(data.dataSources);
+  }
+
+  async function loadSchema(nextDataSourceId: string, signal?: AbortSignal) {
+    setSchemaStatus({ kind: "loading" });
+    try {
+      const res = await fetch(`/api/data-sources/${nextDataSourceId}/schema`, {
+        signal,
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { schema?: DatabaseSchema; error?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to load schema");
+      }
+      if (!data?.schema) throw new Error("Invalid schema response");
+      setSchema(data.schema);
+      setSchemaStatus({ kind: "idle" });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setSchema(null);
+      setSchemaStatus({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to load schema",
+      });
+    }
+  }
+
+  async function createDataSourceAndConnect() {
+    setErrorText(null);
+    const port = Number.parseInt(newDataSource.port, 10);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+      setErrorText("Port must be a number between 1 and 65535");
+      return;
+    }
+    try {
+      const res = await fetch("/api/data-sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "postgres",
+          name: newDataSource.name,
+          host: newDataSource.host,
+          port,
+          database: newDataSource.database,
+          user: newDataSource.user,
+          password: newDataSource.password,
+          ssl: newDataSource.ssl,
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as
+        | { dataSource?: { id: string }; error?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to create data source");
+      }
+      const id = data?.dataSource?.id;
+      if (!id) throw new Error("Invalid response from server");
+      await loadDataSources();
+      await onChangeDataSource(id);
+      setNewDataSource((prev) => ({ ...prev, password: "" }));
+    } catch (err) {
+      setErrorText(
+        err instanceof Error ? err.message : "Failed to create data source",
+      );
+    }
+  }
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    void loadDataSources(controller.signal);
+    return () => controller.abort();
+  }, []);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    if (!dataSourceId) {
+      setSchema(null);
+      setSchemaStatus({ kind: "idle" });
+      return () => controller.abort();
+    }
+    void loadSchema(dataSourceId, controller.signal);
+    return () => controller.abort();
+  }, [dataSourceId]);
+
   async function onSave() {
     setErrorText(null);
     setIsSaving(true);
@@ -144,7 +297,7 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
         throw new Error(data?.error ?? "Failed to save changes");
       }
 
-      const data = (await res.json()) as { project: ProjectPayload };
+      const data = (await res.json()) as { project: { spec: DashboardSpec } };
       setSavedSpec(data.project.spec);
       setDraftSpec(data.project.spec);
       markUserEdited();
@@ -156,6 +309,93 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
       setIsSaving(false);
     }
   }
+
+  async function onChangeDataSource(nextId: string | null) {
+    setErrorText(null);
+    try {
+      const res = await fetch(`/api/projects/${project.id}/data-source`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataSourceId: nextId }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { project?: { dataSourceId?: string | null }; error?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to update data source");
+      }
+      setDataSourceId(data?.project?.dataSourceId ?? null);
+    } catch (err) {
+      setErrorText(
+        err instanceof Error ? err.message : "Failed to update data source",
+      );
+    }
+  }
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+
+    const handle = window.setTimeout(() => {
+      const views = draftSpec.views;
+      if (!dataSourceId) {
+        const next: Record<string, DashboardViewState> = {};
+        for (const v of views) {
+          next[v.id] = { status: "error", message: "Disconnected" };
+        }
+        setStateByViewId(next);
+        return;
+      }
+
+      setStateByViewId((prev) => {
+        const next = { ...prev };
+        for (const v of views) {
+          next[v.id] = { status: "loading" };
+        }
+        return next;
+      });
+
+      void (async () => {
+        for (const v of views) {
+          if (controller.signal.aborted) return;
+          try {
+            const res = await fetch(`/api/projects/${project.id}/query`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ viewId: v.id, spec: draftSpec }),
+              signal: controller.signal,
+            });
+            const data = (await res.json().catch(() => null)) as
+              | { result?: unknown; error?: string }
+              | null;
+            if (!res.ok) {
+              throw new Error(data?.error ?? "Query failed");
+            }
+            setStateByViewId((prev) => ({
+              ...prev,
+              [v.id]: {
+                status: "ok",
+                result: data?.result as never,
+              },
+            }));
+          } catch (err) {
+            if (err instanceof DOMException && err.name === "AbortError") return;
+            setStateByViewId((prev) => ({
+              ...prev,
+              [v.id]: {
+                status: "error",
+                message: err instanceof Error ? err.message : "Query failed",
+              },
+            }));
+          }
+        }
+      })();
+    }, 350);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(handle);
+    };
+  }, [dataSourceId, draftSpec, project.id]);
 
   function onResetDraft() {
     if (!isDirty) return;
@@ -169,9 +409,185 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
     return draftSpec.metrics.find((m) => m.id === id)?.label ?? id;
   }
 
+  function schemaTables() {
+    return schema?.tables ?? [];
+  }
+
+  function schemaColumns(tableName: string) {
+    return schemaTables().find((t) => t.name === tableName)?.columns ?? [];
+  }
+
+  function numericColumns(tableName: string) {
+    return schemaColumns(tableName).filter((c) => numericTypes.has(c.dataType));
+  }
+
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="space-y-6">
+        <Card>
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-sm font-medium">Data source</CardTitle>
+            <div className="text-xs text-muted-foreground">
+              Status: {dataSourceId ? "Connected" : "Disconnected"}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Connection</div>
+              <Select
+                value={dataSourceId ?? ""}
+                onChange={(value) => {
+                  void onChangeDataSource(value.trim().length ? value : null);
+                }}
+              >
+                <option value="">(disconnected)</option>
+                {dataSources.map((ds) => (
+                  <option key={ds.id} value={ds.id}>
+                    {ds.name} ({ds.type})
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void loadDataSources()}
+              >
+                Refresh list
+              </Button>
+              {dataSourceId ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void loadSchema(dataSourceId)}
+                  disabled={schemaStatus.kind === "loading"}
+                >
+                  {schemaStatus.kind === "loading"
+                    ? "Loading schema…"
+                    : "Refresh schema"}
+                </Button>
+              ) : null}
+            </div>
+            <details className="rounded-md border border-border p-3">
+              <summary className="cursor-pointer select-none text-sm font-medium">
+                Create new Postgres data source
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-3">
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Name</div>
+                  <Input
+                    value={newDataSource.name}
+                    onChange={(e) =>
+                      setNewDataSource((prev) => ({
+                        ...prev,
+                        name: e.target.value,
+                      }))
+                    }
+                    placeholder="Production DB"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">Host</div>
+                    <Input
+                      value={newDataSource.host}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          host: e.target.value,
+                        }))
+                      }
+                      placeholder="db.example.com"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">Port</div>
+                    <Input
+                      value={newDataSource.port}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          port: e.target.value,
+                        }))
+                      }
+                      inputMode="numeric"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">Database</div>
+                    <Input
+                      value={newDataSource.database}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          database: e.target.value,
+                        }))
+                      }
+                      placeholder="app"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">User</div>
+                    <Input
+                      value={newDataSource.user}
+                      onChange={(e) =>
+                        setNewDataSource((prev) => ({
+                          ...prev,
+                          user: e.target.value,
+                        }))
+                      }
+                      placeholder="readonly"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Password</div>
+                  <Input
+                    value={newDataSource.password}
+                    onChange={(e) =>
+                      setNewDataSource((prev) => ({
+                        ...prev,
+                        password: e.target.value,
+                      }))
+                    }
+                    type="password"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newDataSource.ssl}
+                    onChange={(e) =>
+                      setNewDataSource((prev) => ({
+                        ...prev,
+                        ssl: e.target.checked,
+                      }))
+                    }
+                  />
+                  Use SSL
+                </label>
+                <Button type="button" onClick={() => void createDataSourceAndConnect()}>
+                  Create & connect
+                </Button>
+              </div>
+            </details>
+            {schemaStatus.kind === "error" ? (
+              <div className="whitespace-pre-line rounded-md border border-border bg-accent px-3 py-2 text-sm">
+                {schemaStatus.message}
+              </div>
+            ) : null}
+            {schema ? (
+              <div className="text-xs text-muted-foreground">
+                Schema loaded: {schema.tables.length} tables
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+
         <GenerateDashboardForm
           projectId={project.id}
           onGenerated={(p) => {
@@ -413,19 +829,41 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
                           <div className="text-xs text-muted-foreground">
                             Table
                           </div>
-                          <Input
-                            value={metric.table}
-                            onChange={(e) =>
-                              applySpecUpdate((prev) => ({
-                                ...prev,
-                                metrics: prev.metrics.map((m) =>
-                                  m.id === metric.id
-                                    ? { ...m, table: e.target.value }
-                                    : m,
-                                ),
-                              }))
-                            }
-                          />
+                          {schema ? (
+                            <Select
+                              value={metric.table}
+                              onChange={(value) => {
+                                applySpecUpdate((prev) => ({
+                                  ...prev,
+                                  metrics: prev.metrics.map((m) =>
+                                    m.id === metric.id
+                                      ? { ...m, table: value }
+                                      : m,
+                                  ),
+                                }));
+                              }}
+                            >
+                              {schemaTables().map((t) => (
+                                <option key={t.name} value={t.name}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </Select>
+                          ) : (
+                            <Input
+                              value={metric.table}
+                              onChange={(e) =>
+                                applySpecUpdate((prev) => ({
+                                  ...prev,
+                                  metrics: prev.metrics.map((m) =>
+                                    m.id === metric.id
+                                      ? { ...m, table: e.target.value }
+                                      : m,
+                                  ),
+                                }))
+                              }
+                            />
+                          )}
                         </div>
 
                         <div className="space-y-1">
@@ -459,19 +897,41 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
                             <div className="text-xs text-muted-foreground">
                               Field
                             </div>
-                            <Input
-                              value={metric.field ?? ""}
-                              onChange={(e) =>
-                                applySpecUpdate((prev) => ({
-                                  ...prev,
-                                  metrics: prev.metrics.map((m) =>
-                                    m.id === metric.id
-                                      ? { ...m, field: e.target.value }
-                                      : m,
-                                  ),
-                                }))
-                              }
-                            />
+                            {schema && numericColumns(metric.table).length ? (
+                              <Select
+                                value={metric.field ?? ""}
+                                onChange={(value) => {
+                                  applySpecUpdate((prev) => ({
+                                    ...prev,
+                                    metrics: prev.metrics.map((m) =>
+                                      m.id === metric.id
+                                        ? { ...m, field: value }
+                                        : m,
+                                    ),
+                                  }));
+                                }}
+                              >
+                                {numericColumns(metric.table).map((c) => (
+                                  <option key={c.name} value={c.name}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </Select>
+                            ) : (
+                              <Input
+                                value={metric.field ?? ""}
+                                onChange={(e) =>
+                                  applySpecUpdate((prev) => ({
+                                    ...prev,
+                                    metrics: prev.metrics.map((m) =>
+                                      m.id === metric.id
+                                        ? { ...m, field: e.target.value }
+                                        : m,
+                                    ),
+                                  }))
+                                }
+                              />
+                            )}
                           </div>
                         ) : null}
                       </div>
@@ -634,23 +1094,45 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
                             <div className="text-xs text-muted-foreground">
                               Table
                             </div>
-                            <Input
-                              value={view.table ?? ""}
-                              onChange={(e) =>
-                                applySpecUpdate((prev) => ({
-                                  ...prev,
-                                  views: prev.views.map((v) =>
-                                    v.id === view.id
-                                      ? {
-                                          id: v.id,
-                                          type: "table",
-                                          table: e.target.value,
-                                        }
-                                      : v,
-                                  ),
-                                }))
-                              }
-                            />
+                            {schema ? (
+                              <Select
+                                value={view.table ?? ""}
+                                onChange={(value) => {
+                                  applySpecUpdate((prev) => ({
+                                    ...prev,
+                                    views: prev.views.map((v) =>
+                                      v.id === view.id
+                                        ? { id: v.id, type: "table", table: value }
+                                        : v,
+                                    ),
+                                  }));
+                                }}
+                              >
+                                {schemaTables().map((t) => (
+                                  <option key={t.name} value={t.name}>
+                                    {t.name}
+                                  </option>
+                                ))}
+                              </Select>
+                            ) : (
+                              <Input
+                                value={view.table ?? ""}
+                                onChange={(e) =>
+                                  applySpecUpdate((prev) => ({
+                                    ...prev,
+                                    views: prev.views.map((v) =>
+                                      v.id === view.id
+                                        ? {
+                                            id: v.id,
+                                            type: "table",
+                                            table: e.target.value,
+                                          }
+                                        : v,
+                                    ),
+                                  }))
+                                }
+                              />
+                            )}
                           </div>
                         ) : (
                           <div className="space-y-1">
@@ -690,7 +1172,7 @@ export function SpecEditorPanel({ project }: { project: ProjectPayload }) {
 
       <div className="space-y-3">
         <div className="text-xs font-medium text-muted-foreground">Preview</div>
-        {renderDashboard(draftSpec)}
+        {renderDashboard(draftSpec, stateByViewId)}
       </div>
     </div>
   );

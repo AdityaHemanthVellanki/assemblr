@@ -4,43 +4,51 @@ import type { DashboardSpec } from "@/lib/dashboard/spec";
 type Metric = DashboardSpec["metrics"][number];
 type View = DashboardSpec["views"][number];
 
-function hashToInt(input: string) {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
-  }
-  return hash;
-}
-
-function mockMetricValue(metric: Metric) {
-  const base = hashToInt(`${metric.id}:${metric.table}:${metric.field ?? ""}`);
-  const value = (base % 9000) + 100;
-  return value;
-}
-
-function mockSeries(metric: Metric) {
-  const base = hashToInt(`${metric.id}:${metric.type}`);
-  const points = Array.from({ length: 7 }).map((_, idx) => {
-    const value = ((base + idx * 997) % 80) + 10;
-    return { label: `Day ${idx + 1}`, value };
-  });
-  return points;
-}
-
-function mockTableRows(table: string) {
-  const base = hashToInt(table);
-  return Array.from({ length: 5 }).map((_, idx) => {
-    const n = ((base + idx * 13) % 900) + 100;
-    return {
-      id: `row_${idx + 1}`,
-      name: `${table}_item_${idx + 1}`,
-      value: n,
+export type DashboardQueryResult =
+  | { kind: "metric"; value: number }
+  | { kind: "series"; points: Array<{ label: string; value: number }> }
+  | {
+      kind: "table";
+      columns: string[];
+      rows: Array<Record<string, unknown>>;
     };
-  });
+
+export type DashboardViewState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ok"; result: DashboardQueryResult };
+
+function LoadingCard({ title }: { title: string }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-sm text-muted-foreground">Loading…</div>
+      </CardContent>
+    </Card>
+  );
 }
 
-function MetricCard({ metric }: { metric: Metric }) {
-  const value = mockMetricValue(metric);
+function ErrorCard({ title, message }: { title: string; message: string }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-sm">{message}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetricCard({ metric, value }: { metric: Metric; value: number }) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -55,19 +63,24 @@ function MetricCard({ metric }: { metric: Metric }) {
   );
 }
 
-function LineChartCard({ metric }: { metric: Metric }) {
-  const series = mockSeries(metric);
-  const max = Math.max(...series.map((p) => p.value), 1);
+function LineChartCard({
+  metric,
+  points,
+}: {
+  metric: Metric;
+  points: Array<{ label: string; value: number }>;
+}) {
+  const max = Math.max(...points.map((p) => p.value), 1);
 
   const width = 640;
   const height = 160;
   const padding = 12;
 
-  const points = series
+  const polylinePoints = points
     .map((p, idx) => {
       const x =
         padding +
-        (idx * (width - padding * 2)) / Math.max(series.length - 1, 1);
+        (idx * (width - padding * 2)) / Math.max(points.length - 1, 1);
       const y =
         height -
         padding -
@@ -79,7 +92,9 @@ function LineChartCard({ metric }: { metric: Metric }) {
   return (
     <Card className="col-span-2">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium">Trend</CardTitle>
+        <CardTitle className="text-sm font-medium">
+          Trend: {metric.label}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <svg
@@ -89,7 +104,7 @@ function LineChartCard({ metric }: { metric: Metric }) {
           aria-label={`${metric.label} trend`}
         >
           <polyline
-            points={points}
+            points={polylinePoints}
             fill="none"
             stroke="hsl(var(--primary))"
             strokeWidth="3"
@@ -98,7 +113,7 @@ function LineChartCard({ metric }: { metric: Metric }) {
           />
         </svg>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          {series.map((p) => (
+          {points.slice(-14).map((p) => (
             <div key={p.label} className="tabular-nums">
               {p.label}: {p.value}
             </div>
@@ -109,18 +124,25 @@ function LineChartCard({ metric }: { metric: Metric }) {
   );
 }
 
-function BarChartCard({ metric }: { metric: Metric }) {
-  const series = mockSeries(metric);
-  const max = Math.max(...series.map((p) => p.value), 1);
+function BarChartCard({
+  metric,
+  points,
+}: {
+  metric: Metric;
+  points: Array<{ label: string; value: number }>;
+}) {
+  const max = Math.max(...points.map((p) => p.value), 1);
 
   return (
     <Card className="col-span-2">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium">Breakdown</CardTitle>
+        <CardTitle className="text-sm font-medium">
+          Breakdown: {metric.label}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <div className="flex h-40 items-end gap-2 rounded-md border border-border bg-background p-3">
-          {series.map((p) => (
+          {points.slice(0, 14).map((p) => (
             <div key={p.label} className="flex flex-1 flex-col gap-2">
               <div
                 className="w-full rounded-sm bg-primary/80"
@@ -138,33 +160,53 @@ function BarChartCard({ metric }: { metric: Metric }) {
   );
 }
 
-function TableCard({ table }: { table: string }) {
-  const rows = mockTableRows(table);
+function TableCard({
+  title,
+  columns,
+  rows,
+}: {
+  title: string;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+}) {
   return (
     <Card className="col-span-2">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium">Table: {table}</CardTitle>
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="overflow-hidden rounded-md border border-border">
           <table className="w-full text-sm">
             <thead className="bg-accent text-accent-foreground">
               <tr>
-                <th className="px-3 py-2 text-left font-medium">ID</th>
-                <th className="px-3 py-2 text-left font-medium">Name</th>
-                <th className="px-3 py-2 text-right font-medium">Value</th>
+                {columns.map((c) => (
+                  <th key={c} className="px-3 py-2 text-left font-medium">
+                    {c}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t border-border">
-                  <td className="px-3 py-2 font-mono text-xs">{r.id}</td>
-                  <td className="px-3 py-2">{r.name}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {r.value}
+              {rows.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td
+                    className="px-3 py-3 text-sm text-muted-foreground"
+                    colSpan={Math.max(columns.length, 1)}
+                  >
+                    No rows
                   </td>
                 </tr>
-              ))}
+              ) : (
+                rows.slice(0, 50).map((r, idx) => (
+                  <tr key={idx} className="border-t border-border">
+                    {columns.map((c) => (
+                      <td key={c} className="px-3 py-2">
+                        {String(r[c] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -173,27 +215,106 @@ function TableCard({ table }: { table: string }) {
   );
 }
 
-function renderView(view: View, metricsById: Map<string, Metric>) {
+function renderView(
+  view: View,
+  metricsById: Map<string, Metric>,
+  stateByViewId?: Record<string, DashboardViewState>,
+) {
+  const state = stateByViewId?.[view.id];
+  const title =
+    view.type === "table"
+      ? `Table: ${view.table ?? ""}`
+      : `${view.type}: ${metricsById.get(view.metricId ?? "")?.label ?? ""}`;
+
+  if (!state) return <LoadingCard key={view.id} title={title} />;
+  if (state.status === "loading")
+    return <LoadingCard key={view.id} title={title} />;
+  if (state.status === "error")
+    return <ErrorCard key={view.id} title={title} message={state.message} />;
+
   if (view.type === "table") {
-    return <TableCard key={view.id} table={view.table!} />;
+    if (state.result.kind !== "table") {
+      return (
+        <ErrorCard
+          key={view.id}
+          title={title}
+          message="Invalid table result"
+        />
+      );
+    }
+    return (
+      <TableCard
+        key={view.id}
+        title={title}
+        columns={state.result.columns}
+        rows={state.result.rows}
+      />
+    );
   }
 
   const metric = metricsById.get(view.metricId!);
   if (!metric) {
-    throw new Error(`Spec references missing metricId "${view.metricId}"`);
+    return (
+      <ErrorCard
+        key={view.id}
+        title={title}
+        message="View references missing metric"
+      />
+    );
   }
 
-  if (view.type === "metric")
-    return <MetricCard key={view.id} metric={metric} />;
-  if (view.type === "line_chart")
-    return <LineChartCard key={view.id} metric={metric} />;
-  if (view.type === "bar_chart")
-    return <BarChartCard key={view.id} metric={metric} />;
+  if (view.type === "metric") {
+    if (state.result.kind !== "metric") {
+      return (
+        <ErrorCard
+          key={view.id}
+          title={title}
+          message="Invalid metric result"
+        />
+      );
+    }
+    return <MetricCard key={view.id} metric={metric} value={state.result.value} />;
+  }
 
-  throw new Error(`Unknown view type: ${(view as { type: string }).type}`);
+  if (view.type === "line_chart") {
+    if (state.result.kind !== "series") {
+      return (
+        <ErrorCard
+          key={view.id}
+          title={title}
+          message="Invalid series result"
+        />
+      );
+    }
+    return <LineChartCard key={view.id} metric={metric} points={state.result.points} />;
+  }
+
+  if (view.type === "bar_chart") {
+    if (state.result.kind !== "series") {
+      return (
+        <ErrorCard
+          key={view.id}
+          title={title}
+          message="Invalid series result"
+        />
+      );
+    }
+    return <BarChartCard key={view.id} metric={metric} points={state.result.points} />;
+  }
+
+  return (
+    <ErrorCard
+      key={view.id}
+      title={title}
+      message={`Unknown view type: ${(view as { type: string }).type}`}
+    />
+  );
 }
 
-export function renderDashboard(spec: DashboardSpec) {
+export function renderDashboard(
+  spec: DashboardSpec,
+  stateByViewId?: Record<string, DashboardViewState>,
+) {
   const metricsById = new Map(spec.metrics.map((m) => [m.id, m]));
 
   return (
@@ -210,7 +331,7 @@ export function renderDashboard(spec: DashboardSpec) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {spec.views.map((view) => renderView(view, metricsById))}
+        {spec.views.map((view) => renderView(view, metricsById, stateByViewId))}
       </div>
     </div>
   );

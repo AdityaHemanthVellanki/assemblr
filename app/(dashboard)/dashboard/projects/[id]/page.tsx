@@ -19,7 +19,7 @@ export default async function ProjectPage({
 
   const project = await prisma.project.findFirst({
     where: { id, orgId },
-    select: { id: true, name: true, spec: true },
+    select: { id: true, name: true, spec: true, dataSourceId: true },
   });
 
   if (!project) notFound();
@@ -39,6 +39,7 @@ export default async function ProjectPage({
           id: project.id,
           name: project.name,
           spec,
+          dataSourceId: project.dataSourceId ?? null,
         }}
       />
     </div>
