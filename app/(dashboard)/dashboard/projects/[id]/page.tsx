@@ -3,8 +3,7 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth/auth-options";
 import { prisma } from "@/lib/db/prisma";
-import { GenerateDashboardForm } from "@/components/dashboard/generate-dashboard-form";
-import { renderDashboard } from "@/lib/dashboard/render-dashboard";
+import { SpecEditorPanel } from "@/components/dashboard/spec-editor-panel";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 
 export default async function ProjectPage({
@@ -35,10 +34,13 @@ export default async function ProjectPage({
           {project.name}
         </div>
       </div>
-      <div className="mb-6">
-        <GenerateDashboardForm projectId={project.id} />
-      </div>
-      {renderDashboard(spec)}
+      <SpecEditorPanel
+        project={{
+          id: project.id,
+          name: project.name,
+          spec,
+        }}
+      />
     </div>
   );
 }

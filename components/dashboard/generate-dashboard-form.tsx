@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/ui/cn";
 
-export function GenerateDashboardForm({ projectId }: { projectId: string }) {
+export function GenerateDashboardForm({
+  projectId,
+  onGenerated,
+}: {
+  projectId: string;
+  onGenerated?: (project: { id: string; name: string; spec: unknown }) => void;
+}) {
   const router = useRouter();
   const [prompt, setPrompt] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
@@ -31,7 +37,15 @@ export function GenerateDashboardForm({ projectId }: { projectId: string }) {
         throw new Error(data?.error ?? "Failed to generate dashboard");
       }
 
-      router.refresh();
+      const data = (await res.json().catch(() => null)) as {
+        project?: { id: string; name: string; spec: unknown };
+      } | null;
+
+      if (data?.project && onGenerated) {
+        onGenerated(data.project);
+      } else {
+        router.refresh();
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to generate dashboard",
