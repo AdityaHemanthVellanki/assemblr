@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { LayoutDashboard, Users } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { roleLabel, type OrgRole } from "@/lib/auth/permissions";
@@ -24,17 +23,27 @@ export function Sidebar({
       <nav className="flex flex-col gap-1 px-2 py-2 text-sm">
         <Link
           href="/dashboard"
-          className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
+          className="rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
         >
-          <LayoutDashboard className="h-4 w-4" />
-          Projects
+          Dashboard
         </Link>
         <Link
-          href="/dashboard/members"
-          className="flex items-center gap-2 rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
+          href="/dashboard/tools"
+          className="rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
         >
-          <Users className="h-4 w-4" />
-          Members
+          Tools
+        </Link>
+        <Link
+          href="/dashboard/integrations"
+          className="rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
+        >
+          Integrations
+        </Link>
+        <Link
+          href="/dashboard/settings"
+          className="rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground"
+        >
+          Settings
         </Link>
       </nav>
       <div className="mt-auto border-t border-border p-4">

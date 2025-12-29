@@ -153,6 +153,10 @@ export function canManageMembers(role: OrgRole) {
   return role === "owner";
 }
 
+export function canManageIntegrations(role: OrgRole) {
+  return role === "owner" || role === "editor";
+}
+
 export function roleLabel(role: OrgRole) {
   if (role === "owner") return "Owner";
   if (role === "editor") return "Editor";

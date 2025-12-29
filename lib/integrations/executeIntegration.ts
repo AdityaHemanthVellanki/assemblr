@@ -49,7 +49,10 @@ export async function executeIntegrationFetch({
       }
 
       try {
-        credentials = decryptJson(connection.encrypted_credentials);
+        const raw = connection.encrypted_credentials as unknown;
+        const enc =
+          typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
+        credentials = decryptJson(enc as never);
       } catch {
         throw new Error("Failed to decrypt integration credentials");
       }

@@ -11,7 +11,7 @@ import {
 export class HubspotConnector implements IntegrationConnector {
   id = "hubspot";
   name = "HubSpot";
-  authType = "oauth" as const;
+  authType = "api_key" as const;
   capabilities = ["crm_leads", "user_identity"] as const;
 
   async connect(input: ConnectInput): Promise<ConnectResult> {

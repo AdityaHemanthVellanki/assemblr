@@ -11,7 +11,7 @@ import {
 export class StripeConnector implements IntegrationConnector {
   id = "stripe";
   name = "Stripe";
-  authType = "oauth" as const;
+  authType = "api_key" as const;
   capabilities = ["payment_transactions", "subscription_events", "time_series"] as const;
 
   async connect(input: ConnectInput): Promise<ConnectResult> {

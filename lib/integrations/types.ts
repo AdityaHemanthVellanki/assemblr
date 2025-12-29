@@ -113,3 +113,40 @@ export type NormalizedJson = {
   type: "json";
   data: unknown;
 };
+
+export type IntegrationAuthSchema =
+  | { type: "api_key"; fields: FieldDef[] }
+  | { type: "oauth"; scopes: string[] }
+  | { type: "database"; fields: FieldDef[] }
+  | { type: "none" };
+
+export type FieldDef =
+  | {
+      kind: "string";
+      id: string;
+      label: string;
+      placeholder?: string;
+      required?: boolean;
+      secret?: boolean;
+    }
+  | {
+      kind: "number";
+      id: string;
+      label: string;
+      placeholder?: string;
+      required?: boolean;
+    }
+  | {
+      kind: "boolean";
+      id: string;
+      label: string;
+    };
+
+export type IntegrationUIConfig = {
+  id: string;
+  name: string;
+  category: string;
+  logoUrl: string;
+  description: string;
+  auth: IntegrationAuthSchema;
+};
