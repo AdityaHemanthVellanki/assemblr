@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  canEditProjects,
-  getSessionContext,
-  type OrgRole,
   PermissionError,
-  requireUserRole,
+  requireRole,
 } from "@/lib/auth/permissions";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { getServerEnv } from "@/lib/env";
@@ -24,20 +21,14 @@ export async function PATCH(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  let role: OrgRole;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    ({ ctx } = await requireRole("editor"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     throw err;
-  }
-
-  if (!canEditProjects(role)) {
-    return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
   }
 
   const json = await req.json().catch(() => null);

@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  canGenerateSpec,
-  getSessionContext,
-  type OrgRole,
   PermissionError,
-  requireUserRole,
+  requireRole,
 } from "@/lib/auth/permissions";
 import { generateDashboardSpec } from "@/lib/ai/generateDashboardSpec";
 import { getServerEnv } from "@/lib/env";
@@ -25,20 +22,14 @@ export async function POST(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  let role: OrgRole;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    ({ ctx } = await requireRole("editor"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     throw err;
-  }
-
-  if (!canGenerateSpec(role)) {
-    return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
   }
 
   const userId = ctx.userId;

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-type OrgRole = "OWNER" | "EDITOR" | "VIEWER";
+type OrgRole = "owner" | "editor" | "viewer";
 
 type MembersResponse = {
   me: { userId: string; role: OrgRole };
@@ -46,9 +46,9 @@ function Select({
       onChange={(e) => onChange(e.target.value as OrgRole)}
       className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
     >
-      <option value="OWNER">Owner</option>
-      <option value="EDITOR">Editor</option>
-      <option value="VIEWER">Viewer</option>
+      <option value="owner">Owner</option>
+      <option value="editor">Editor</option>
+      <option value="viewer">Viewer</option>
     </select>
   );
 }
@@ -64,13 +64,13 @@ export default function MembersPage() {
   const [isLoading, setIsLoading] = React.useState(false);
 
   const [inviteEmail, setInviteEmail] = React.useState("");
-  const [inviteRole, setInviteRole] = React.useState<OrgRole>("VIEWER");
+  const [inviteRole, setInviteRole] = React.useState<OrgRole>("viewer");
   const [inviteResult, setInviteResult] = React.useState<{
     acceptUrl?: string;
     expiresAt?: string;
   } | null>(null);
 
-  const isOwner = me?.role === "OWNER";
+  const isOwner = me?.role === "owner";
 
   const loadMembers = React.useCallback(async () => {
     setIsLoading(true);
@@ -224,7 +224,7 @@ export default function MembersPage() {
           <CardDescription>
             Organization members and their access level.
           </CardDescription>
-          {me?.role === "VIEWER" ? (
+          {me?.role === "viewer" ? (
             <div className="text-xs text-muted-foreground">Read-only access.</div>
           ) : null}
         </CardHeader>

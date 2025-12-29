@@ -3,10 +3,8 @@ import { z } from "zod";
 
 import {
   canEditProjects,
-  getSessionContext,
-  type OrgRole,
   PermissionError,
-  requireUserRole,
+  requireOrgMember,
 } from "@/lib/auth/permissions";
 import { buildQueryForView } from "@/lib/data/queryBuilder";
 import { getPostgresPool, runReadOnlyQuery } from "@/lib/data/postgres";
@@ -61,11 +59,10 @@ export async function POST(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  let role: OrgRole;
+  let ctx: Awaited<ReturnType<typeof requireOrgMember>>["ctx"];
+  let role: Awaited<ReturnType<typeof requireOrgMember>>["role"];
   try {
-    ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    ({ ctx, role } = await requireOrgMember());
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { Github } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +18,8 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function SignupPage() {
   const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
   const [status, setStatus] = React.useState<
     | { kind: "idle" }
@@ -24,22 +27,37 @@ export default function SignupPage() {
     | { kind: "error"; message: string }
   >({ kind: "idle" });
 
+  const router = useRouter();
+
   async function onEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (password !== confirmPassword) {
+      setStatus({ kind: "error", message: "Passwords do not match" });
+      return;
+    }
     setIsLoading(true);
     try {
-      const supabase = createSupabaseBrowserClient();
-      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
-        "/dashboard",
-      )}`;
-      const res = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: redirectTo },
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
       });
-      if (res.error) {
-        setStatus({ kind: "error", message: res.error.message });
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setStatus({
+          kind: "error",
+          message: typeof data?.error === "string" ? data.error : "Signup failed",
+        });
         return;
       }
+
+      if (data?.session?.ok) {
+        router.push("/dashboard");
+        router.refresh();
+        return;
+      }
+
       setStatus({ kind: "sent" });
     } finally {
       setIsLoading(false);
@@ -78,7 +96,7 @@ export default function SignupPage() {
 
         {status.kind === "sent" ? (
           <div className="rounded-md border border-border bg-accent px-3 py-2 text-sm">
-            Check your email for a sign-in link.
+            Check your email to confirm your account.
           </div>
         ) : null}
 
@@ -92,8 +110,26 @@ export default function SignupPage() {
             autoComplete="email"
             required
           />
+          <Input
+            name="password"
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+          <Input
+            name="confirmPassword"
+            type="password"
+            placeholder="Confirm password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
           <Button className="w-full" disabled={isLoading}>
-            Continue with email
+            Create account
           </Button>
         </form>
 

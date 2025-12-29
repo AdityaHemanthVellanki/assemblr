@@ -2,11 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  canManageMembers,
-  getSessionContext,
   ORG_ROLES,
   PermissionError,
-  requireUserRole,
+  requireRole,
 } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -23,16 +21,9 @@ export async function PATCH(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    const { role } = await requireUserRole(ctx);
-    if (!canManageMembers(role)) {
-      return NextResponse.json(
-        { error: "Only owners can manage members" },
-        { status: 403 },
-      );
-    }
+    ({ ctx } = await requireRole("owner"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -71,12 +62,12 @@ export async function PATCH(
 
   const nextRole = parsed.data.role;
 
-  if (userId === ctx.userId && membership.role === "OWNER" && nextRole !== "OWNER") {
+  if (userId === ctx.userId && membership.role === "owner" && nextRole !== "owner") {
     const ownerCount = await supabase
       .from("memberships")
       .select("id", { count: "exact", head: true })
       .eq("org_id", ctx.orgId)
-      .eq("role", "OWNER");
+      .eq("role", "owner");
     if (ownerCount.error) {
       console.error("owner count failed", { orgId: ctx.orgId, message: ownerCount.error.message });
       return NextResponse.json({ error: "Failed to validate owner count" }, { status: 500 });
@@ -89,12 +80,12 @@ export async function PATCH(
     }
   }
 
-  if (membership.role === "OWNER" && nextRole !== "OWNER") {
+  if (membership.role === "owner" && nextRole !== "owner") {
     const ownerCount = await supabase
       .from("memberships")
       .select("id", { count: "exact", head: true })
       .eq("org_id", ctx.orgId)
-      .eq("role", "OWNER");
+      .eq("role", "owner");
     if (ownerCount.error) {
       console.error("owner count failed", { orgId: ctx.orgId, message: ownerCount.error.message });
       return NextResponse.json({ error: "Failed to validate owner count" }, { status: 500 });
@@ -138,16 +129,9 @@ export async function DELETE(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    const { role } = await requireUserRole(ctx);
-    if (!canManageMembers(role)) {
-      return NextResponse.json(
-        { error: "Only owners can manage members" },
-        { status: 403 },
-      );
-    }
+    ({ ctx } = await requireRole("owner"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -177,12 +161,12 @@ export async function DELETE(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  if (membership.role === "OWNER") {
+  if (membership.role === "owner") {
     const ownerCount = await supabase
       .from("memberships")
       .select("id", { count: "exact", head: true })
       .eq("org_id", ctx.orgId)
-      .eq("role", "OWNER");
+      .eq("role", "owner");
     if (ownerCount.error) {
       console.error("owner count failed", { orgId: ctx.orgId, message: ownerCount.error.message });
       return NextResponse.json({ error: "Failed to validate owner count" }, { status: 500 });
@@ -213,7 +197,7 @@ export async function DELETE(
 
   if (userId === ctx.userId) {
     const profileRes = await supabase
-      .from("profiles")
+      .from("users")
       .update({ current_org_id: null })
       .eq("id", ctx.userId)
       .eq("current_org_id", ctx.orgId)

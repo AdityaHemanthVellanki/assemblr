@@ -47,9 +47,6 @@ export async function POST(req: Request) {
     if (message.includes("invite_email_mismatch")) {
       return NextResponse.json({ error: "Invite email does not match signed-in user" }, { status: 403 });
     }
-    if (message.includes("cannot_leave_last_owner")) {
-      return NextResponse.json({ error: "Cannot leave organization as the last owner" }, { status: 400 });
-    }
 
     console.error("accept invite failed", {
       userId: userRes.data.user.id,

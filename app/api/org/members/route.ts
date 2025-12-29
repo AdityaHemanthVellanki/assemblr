@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 
 import {
-  getSessionContext,
   PermissionError,
-  requireUserRole,
+  requireOrgMember,
 } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -11,16 +10,21 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 export async function GET() {
   getServerEnv();
 
+  type OrgMemberRow = {
+    user_id: string;
+    role: string;
+    created_at: string;
+    email: string | null;
+    name: string | null;
+  };
+
   try {
-    const ctx = await getSessionContext();
-    const { role } = await requireUserRole(ctx);
+    const { ctx, role } = await requireOrgMember();
 
     const supabase = await createSupabaseServerClient();
-    const membersRes = await supabase
-      .from("memberships")
-      .select("user_id, role, created_at, profiles(email, name)")
-      .eq("org_id", ctx.orgId)
-      .order("created_at", { ascending: true });
+    const membersRes = await supabase.rpc("list_org_members", {
+      p_org_id: ctx.orgId,
+    });
 
     if (membersRes.error) {
       console.error("list members failed", {
@@ -31,21 +35,17 @@ export async function GET() {
       return NextResponse.json({ error: "Failed to load members" }, { status: 500 });
     }
 
+    const rows = (membersRes.data ?? []) as OrgMemberRow[];
+
     return NextResponse.json({
       me: { userId: ctx.userId, role },
-      members: (membersRes.data ?? []).map((m) => {
-        const profile = (m as { profiles?: unknown }).profiles as
-          | { email?: string | null; name?: string | null }
-          | null
-          | undefined;
-        return {
-          userId: (m as { user_id: string }).user_id,
-          role: (m as { role: string }).role,
-          createdAt: new Date((m as { created_at: string }).created_at),
-          email: profile?.email ?? null,
-          name: profile?.name ?? null,
-        };
-      }),
+      members: rows.map((m) => ({
+        userId: m.user_id,
+        role: m.role,
+        createdAt: new Date(m.created_at),
+        email: m.email,
+        name: m.name,
+      })),
     });
   } catch (err) {
     if (err instanceof PermissionError) {

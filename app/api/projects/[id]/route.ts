@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
+import { PermissionError, requireOrgMember } from "@/lib/auth/permissions";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -11,10 +11,9 @@ export async function GET(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let ctx: Awaited<ReturnType<typeof requireOrgMember>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    await requireUserRole(ctx);
+    ({ ctx } = await requireOrgMember());
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

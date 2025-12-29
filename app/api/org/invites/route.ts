@@ -4,11 +4,9 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 
 import {
-  canManageMembers,
-  getSessionContext,
   ORG_ROLES,
   PermissionError,
-  requireUserRole,
+  requireRole,
 } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -27,16 +25,9 @@ function hashToken(token: string) {
 export async function POST(req: Request) {
   const env = getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    const { role } = await requireUserRole(ctx);
-    if (!canManageMembers(role)) {
-      return NextResponse.json(
-        { error: "Only owners can manage members" },
-        { status: 403 },
-      );
-    }
+    ({ ctx } = await requireRole("owner"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -54,12 +45,10 @@ export async function POST(req: Request) {
   const role = parsed.data.role;
 
   const supabase = await createSupabaseServerClient();
-  const existingMemberRes = await supabase
-    .from("memberships")
-    .select("id, profiles!inner(email)")
-    .eq("org_id", ctx.orgId)
-    .eq("profiles.email", email)
-    .maybeSingle();
+  const existingMemberRes = await supabase.rpc("org_has_member_email", {
+    p_org_id: ctx.orgId,
+    p_email: email,
+  });
   if (existingMemberRes.error) {
     console.error("check existing member failed", {
       orgId: ctx.orgId,
@@ -68,7 +57,8 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ error: "Failed to validate invite" }, { status: 500 });
   }
-  if (existingMemberRes.data) {
+
+  if (existingMemberRes.data === true) {
     return NextResponse.json(
       { error: "User is already a member of this organization" },
       { status: 400 },

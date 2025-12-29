@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { canEditProjects, getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
+import { PermissionError, requireOrgMember, requireRole } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createDefaultDashboardSpec } from "@/lib/dashboard/spec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -9,8 +9,7 @@ export async function GET() {
   getServerEnv();
 
   try {
-    const ctx = await getSessionContext();
-    await requireUserRole(ctx);
+    const { ctx } = await requireOrgMember();
 
     const supabase = await createSupabaseServerClient();
     const projectsRes = await supabase
@@ -48,11 +47,7 @@ export async function POST(req: Request) {
   getServerEnv();
 
   try {
-    const ctx = await getSessionContext();
-    const { role } = await requireUserRole(ctx);
-    if (!canEditProjects(role)) {
-      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-    }
+    const { ctx } = await requireRole("editor");
 
     const body = (await req.json().catch(() => null)) as unknown;
     const maybeName =

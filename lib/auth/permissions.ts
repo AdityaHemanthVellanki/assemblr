@@ -1,10 +1,15 @@
 import "server-only";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export const ORG_ROLES = ["OWNER", "EDITOR", "VIEWER"] as const;
+export const ORG_ROLES = ["owner", "editor", "viewer"] as const;
 export type OrgRole = (typeof ORG_ROLES)[number];
+
+const ORG_ROLE_ORDER: Record<OrgRole, number> = {
+  viewer: 0,
+  editor: 1,
+  owner: 2,
+};
 
 export class PermissionError extends Error {
   status: number;
@@ -19,57 +24,7 @@ export type SessionContext = {
   orgId: string;
 };
 
-async function bootstrapOrgForUser(input: { userId: string; email?: string | null; name?: string | null }) {
-  const admin = createSupabaseAdminClient();
-  const domain = input.email?.split("@")[1];
-  const name = domain && domain.trim().length ? domain : "Personal";
-
-  const orgCreate = await admin
-    .from("organizations")
-    .insert({ name })
-    .select("id")
-    .single();
-  if (orgCreate.error || !orgCreate.data?.id) {
-    throw new PermissionError("Failed to create organization", 500);
-  }
-
-  const orgId = orgCreate.data.id as string;
-
-  const membershipCreate = await admin.from("memberships").insert({
-    user_id: input.userId,
-    org_id: orgId,
-    role: "OWNER",
-  });
-  if (membershipCreate.error) {
-    throw new PermissionError("Failed to create membership", 500);
-  }
-
-  const profileUpsert = await admin.from("profiles").upsert(
-    {
-      id: input.userId,
-      email: input.email ?? null,
-      name: input.name ?? null,
-      current_org_id: orgId,
-    },
-    { onConflict: "id" },
-  );
-  if (profileUpsert.error) {
-    throw new PermissionError("Failed to create profile", 500);
-  }
-
-  return orgId;
-}
-
-function getUserDisplayName(user: { user_metadata?: unknown }) {
-  const meta = user.user_metadata;
-  if (!meta || typeof meta !== "object") return null;
-  const m = meta as Record<string, unknown>;
-  const raw = typeof m.full_name === "string" ? m.full_name : typeof m.name === "string" ? m.name : null;
-  const normalized = typeof raw === "string" ? raw.trim() : "";
-  return normalized.length ? normalized : null;
-}
-
-export async function getSessionContext(): Promise<SessionContext> {
+export async function getCurrentUser() {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.getUser();
   if (error) {
@@ -77,9 +32,15 @@ export async function getSessionContext(): Promise<SessionContext> {
   }
   const user = data?.user;
   if (!user) throw new PermissionError("Unauthorized", 401);
+  return user;
+}
+
+export async function getSessionContext(): Promise<SessionContext> {
+  const supabase = await createSupabaseServerClient();
+  const user = await getCurrentUser();
 
   const profile = await supabase
-    .from("profiles")
+    .from("users")
     .select("current_org_id")
     .eq("id", user.id)
     .maybeSingle();
@@ -94,13 +55,13 @@ export async function getSessionContext(): Promise<SessionContext> {
     return { userId: user.id, orgId };
   }
 
-  const bootstrappedOrgId = await bootstrapOrgForUser({
-    userId: user.id,
-    email: user.email,
-    name: getUserDisplayName(user),
-  });
+  const bootstrapped = await supabase.rpc("bootstrap_user");
+  if (bootstrapped.error || !bootstrapped.data) {
+    console.error("bootstrap_user failed", { userId: user.id, message: bootstrapped.error?.message });
+    throw new PermissionError("Failed to initialize organization", 500);
+  }
 
-  return { userId: user.id, orgId: bootstrappedOrgId };
+  return { userId: user.id, orgId: bootstrapped.data as string };
 }
 
 export async function resolveUserRole({
@@ -134,29 +95,48 @@ export async function requireUserRole(
   return { role };
 }
 
+export async function getCurrentOrg() {
+  const ctx = await getSessionContext();
+  return ctx.orgId;
+}
+
+export async function requireOrgMember() {
+  const ctx = await getSessionContext();
+  const { role } = await requireUserRole(ctx);
+  return { ctx, role };
+}
+
+export async function requireRole(required: "owner" | "editor") {
+  const { ctx, role } = await requireOrgMember();
+  if (ORG_ROLE_ORDER[role] < ORG_ROLE_ORDER[required]) {
+    throw new PermissionError("Insufficient permissions", 403);
+  }
+  return { ctx, role };
+}
+
 export function canViewDashboards(role: OrgRole) {
-  return role === "OWNER" || role === "EDITOR" || role === "VIEWER";
+  return role === "owner" || role === "editor" || role === "viewer";
 }
 
 export function canEditProjects(role: OrgRole) {
-  return role === "OWNER" || role === "EDITOR";
+  return role === "owner" || role === "editor";
 }
 
 export function canGenerateSpec(role: OrgRole) {
-  return role === "OWNER" || role === "EDITOR";
+  return role === "owner" || role === "editor";
 }
 
 export function canManageDataSources(role: OrgRole) {
-  return role === "OWNER";
+  return role === "owner";
 }
 
 export function canManageMembers(role: OrgRole) {
-  return role === "OWNER";
+  return role === "owner";
 }
 
 export function roleLabel(role: OrgRole) {
-  if (role === "OWNER") return "Owner";
-  if (role === "EDITOR") return "Editor";
+  if (role === "owner") return "Owner";
+  if (role === "editor") return "Editor";
   return "Viewer";
 }
 
@@ -187,20 +167,4 @@ export async function requireProjectOrgAccess(
     orgId: project.data.org_id as string,
     dataSourceId: (project.data.data_source_id as string | null) ?? null,
   };
-}
-
-export async function requireOwnerCountAtLeastOne(orgId: string) {
-  const admin = createSupabaseAdminClient();
-  const res = await admin
-    .from("memberships")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", orgId)
-    .eq("role", "OWNER");
-  if (res.error) {
-    console.error("requireOwnerCountAtLeastOne failed", { orgId, message: res.error.message });
-    throw new PermissionError("Failed to validate owner count", 500);
-  }
-  if ((res.count ?? 0) < 1) {
-    throw new PermissionError("Organization must have at least one owner", 400);
-  }
 }

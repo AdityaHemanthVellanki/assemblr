@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  canManageDataSources,
-  getSessionContext,
-  type OrgRole,
   PermissionError,
-  requireUserRole,
+  requireRole,
 } from "@/lib/auth/permissions";
 import { getPostgresPool } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
@@ -21,20 +18,14 @@ export async function GET(
 ) {
   getServerEnv();
 
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  let role: OrgRole;
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
-    ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    ({ ctx } = await requireRole("owner"));
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     throw err;
-  }
-
-  if (!canManageDataSources(role)) {
-    return NextResponse.json({ error: "Only owners can manage data sources" }, { status: 403 });
   }
 
   const { id } = await params;

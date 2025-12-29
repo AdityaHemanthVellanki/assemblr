@@ -10,6 +10,9 @@ const serverEnvSchema = z
     NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
 
+    SUPABASE_URL: z.string().url().optional(),
+    SUPABASE_ANON_KEY: z.string().min(1).optional(),
+
     NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
 
     GITHUB_ID: z.string().min(1).optional(),
@@ -37,6 +40,13 @@ const serverEnvSchema = z
 let cachedEnv: z.infer<typeof serverEnvSchema> | undefined;
 
 export function getServerEnv() {
-  cachedEnv ??= serverEnvSchema.parse(process.env);
+  const raw = process.env;
+  cachedEnv ??= serverEnvSchema.parse({
+    ...raw,
+    NEXT_PUBLIC_SUPABASE_URL: raw.NEXT_PUBLIC_SUPABASE_URL ?? raw.SUPABASE_URL,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: raw.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? raw.SUPABASE_ANON_KEY,
+    SUPABASE_URL: raw.SUPABASE_URL ?? raw.NEXT_PUBLIC_SUPABASE_URL,
+    SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY ?? raw.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  });
   return cachedEnv;
 }
