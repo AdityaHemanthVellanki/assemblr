@@ -68,7 +68,14 @@ export async function executeIntegrationFetch({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await connector.fetch(fetchInput as any);
 
-    console.log(`[Integration Execution] Success: ${integrationId} capability=${capability} rows/events=${result.type === 'table' ? result.rows.length : result.events.length}`);
+    let count = 0;
+    if (result.type === "table") count = result.rows.length;
+    else if (result.type === "events") count = result.events.length;
+    else if (result.type === "messages") count = result.messages.length;
+    else if (result.type === "metrics") count = result.metrics.length;
+    else if (result.type === "documents") count = result.documents.length;
+    
+    console.log(`[Integration Execution] Success: ${integrationId} capability=${capability} count=${count}`);
     return result;
 
   } catch (err) {

@@ -48,7 +48,13 @@ export type ActionResult = {
   error?: string;
 };
 
-export type NormalizedData = NormalizedTable | NormalizedEvents;
+export type NormalizedData =
+  | NormalizedTable
+  | NormalizedEvents
+  | NormalizedMessages
+  | NormalizedMetrics
+  | NormalizedDocuments
+  | NormalizedJson;
 
 export type NormalizedTable = {
   type: "table";
@@ -62,4 +68,48 @@ export type NormalizedEvents = {
     timestamp: string;
     properties: Record<string, unknown>;
   }[];
+};
+
+export type NormalizedMessages = {
+  type: "messages";
+  messages: {
+    id: string;
+    timestamp: string;
+    sender: {
+      id?: string;
+      name?: string;
+      email?: string;
+    };
+    content: string;
+    channel?: string;
+    metadata?: Record<string, unknown>;
+  }[];
+};
+
+export type NormalizedMetrics = {
+  type: "metrics";
+  metrics: {
+    name: string;
+    value: number;
+    timestamp: string;
+    tags?: Record<string, string>;
+  }[];
+};
+
+export type NormalizedDocuments = {
+  type: "documents";
+  documents: {
+    id: string;
+    title: string;
+    content?: string;
+    url?: string;
+    mimeType?: string;
+    lastModified?: string;
+    metadata?: Record<string, unknown>;
+  }[];
+};
+
+export type NormalizedJson = {
+  type: "json";
+  data: unknown;
 };

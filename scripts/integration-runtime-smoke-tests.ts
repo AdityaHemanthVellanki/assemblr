@@ -2,6 +2,7 @@ import { PostgresConnector } from "@/lib/integrations/connectors/postgres";
 import { StripeConnector } from "@/lib/integrations/connectors/stripe";
 import { CsvConnector } from "@/lib/integrations/connectors/csv";
 import { HubspotConnector } from "@/lib/integrations/connectors/hubspot";
+import { GenericApiConnector } from "@/lib/integrations/connectors/generic-api";
 import { getConnector } from "@/lib/integrations/registry";
 import { FetchInput } from "@/lib/integrations/types";
 
@@ -97,6 +98,26 @@ async function runTests() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("fail: HubSpot test", msg);
+    process.exit(1);
+  }
+
+  // 6. Generic API Connector Test (Mocked external call)
+  try {
+    const generic = new GenericApiConnector();
+    // Validate missing baseUrl
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await generic.fetch({ capability: "api_fetch", parameters: { path: "/test" } } as any);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.includes("Generic API connector requires baseUrl")) {
+        throw new Error("Generic API failed to validate missing baseUrl");
+      }
+    }
+    console.log("ok: Generic API input validation");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("fail: Generic API test", msg);
     process.exit(1);
   }
 
