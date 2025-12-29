@@ -1,5 +1,5 @@
 import { DASHBOARD_SPEC_SYSTEM_PROMPT } from "@/lib/ai/system-prompt";
-import { parseDashboardSpec, type DashboardSpec } from "@/lib/dashboard/spec";
+import { parseDashboardSpec, type DashboardSpec } from "@/lib/spec/dashboardSpec";
 
 type GenerateDashboardSpecOptions = {
   prompt: string;
@@ -22,8 +22,34 @@ export function parseAndValidateDashboardSpecFromJsonText(jsonText: string) {
 }
 
 async function defaultLlm(input: { system: string; user: string }) {
-  const { callOpenAiChat } = await import("./openai-chat");
-  return callOpenAiChat(input);
+  const { createAzureOpenAIClient } = await import("./azureOpenAI");
+  const { getServerEnv } = await import("@/lib/env");
+  const env = getServerEnv();
+
+  const client = createAzureOpenAIClient();
+  const model = env.AZURE_OPENAI_DEPLOYMENT_NAME;
+  if (!model) {
+    throw new Error("Missing AZURE_OPENAI_DEPLOYMENT_NAME");
+  }
+  const res = await client.chat.completions.create(
+    {
+      model,
+      temperature: 0.2,
+      max_tokens: 900,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: input.system },
+        { role: "user", content: input.user },
+      ],
+    },
+    { timeout: 20_000, maxRetries: 0 },
+  );
+
+  const content = res.choices?.[0]?.message?.content;
+  if (!content || typeof content !== "string") {
+    throw new Error("Azure OpenAI returned empty content");
+  }
+  return content;
 }
 
 export async function generateDashboardSpec(

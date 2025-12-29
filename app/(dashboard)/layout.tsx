@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Script from "next/script";
 
 import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +19,21 @@ export default async function DashboardLayout({
   } catch (err) {
     if (err instanceof PermissionError && err.status === 401) redirect("/login");
     if (err instanceof PermissionError) {
+      if (err.status === 503 && err.message === "Workspace provisioning") {
+        return (
+          <div className="mx-auto w-full max-w-3xl p-6">
+            <Script id="workspace-provisioning-refresh">{`setTimeout(() => window.location.reload(), 1200);`}</Script>
+            <Card>
+              <CardHeader>
+                <CardTitle>Setting up your workspace…</CardTitle>
+                <CardDescription>
+                  This can take a moment on first login. Refreshing automatically.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          </div>
+        );
+      }
       return (
         <div className="mx-auto w-full max-w-3xl p-6">
           <Card>

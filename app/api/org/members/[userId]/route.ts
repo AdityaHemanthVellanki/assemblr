@@ -195,19 +195,5 @@ export async function DELETE(
     return NextResponse.json({ error: "Failed to remove member" }, { status: 500 });
   }
 
-  if (userId === ctx.userId) {
-    const profileRes = await supabase
-      .from("users")
-      .update({ current_org_id: null })
-      .eq("id", ctx.userId)
-      .eq("current_org_id", ctx.orgId)
-      .select("id")
-      .maybeSingle();
-    if (profileRes.error) {
-      console.error("clear current org failed", { userId: ctx.userId, message: profileRes.error.message });
-      return NextResponse.json({ error: "Failed to update profile" }, { status: 500 });
-    }
-  }
-
   return NextResponse.json({ ok: true });
 }

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { cache } from "react";
+
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const ORG_ROLES = ["owner", "editor", "viewer"] as const;
@@ -24,7 +26,7 @@ export type SessionContext = {
   orgId: string;
 };
 
-export async function getCurrentUser() {
+export const getCurrentUser = cache(async () => {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.getUser();
   if (error) {
@@ -33,36 +35,53 @@ export async function getCurrentUser() {
   const user = data?.user;
   if (!user) throw new PermissionError("Unauthorized", 401);
   return user;
-}
+});
 
-export async function getSessionContext(): Promise<SessionContext> {
+export const getSessionContext = cache(async (): Promise<SessionContext> => {
   const supabase = await createSupabaseServerClient();
   const user = await getCurrentUser();
 
-  const profile = await supabase
-    .from("users")
-    .select("current_org_id")
-    .eq("id", user.id)
-    .maybeSingle();
+  const loadMembership = async () => {
+    return supabase
+      .from("memberships")
+      .select("org_id, role")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+  };
 
-  if (profile.error) {
-    console.error("load profile failed", { userId: user.id, message: profile.error.message });
-    throw new PermissionError("Failed to load profile", 500);
+  let membership = await loadMembership();
+  if (!membership.error && !membership.data) {
+    await new Promise((r) => setTimeout(r, 250));
+    membership = await loadMembership();
   }
 
-  const orgId = profile.data?.current_org_id as string | null | undefined;
-  if (orgId && orgId.trim().length) {
-    return { userId: user.id, orgId };
+  if (process.env.NODE_ENV !== "production") {
+    console.log("getSessionContext membership", {
+      userId: user.id,
+      ok: !membership.error,
+      hasMembership: Boolean(membership.data),
+      error: membership.error?.message,
+      orgId: (membership.data as { org_id?: string } | null)?.org_id ?? null,
+    });
   }
 
-  const bootstrapped = await supabase.rpc("bootstrap_user");
-  if (bootstrapped.error || !bootstrapped.data) {
-    console.error("bootstrap_user failed", { userId: user.id, message: bootstrapped.error?.message });
-    throw new PermissionError("Failed to initialize organization", 500);
+  if (membership.error) {
+    console.error("load membership failed", {
+      userId: user.id,
+      message: membership.error.message,
+    });
+    throw new PermissionError("Failed to load organization membership", 500);
   }
 
-  return { userId: user.id, orgId: bootstrapped.data as string };
-}
+  const orgId = membership.data?.org_id as string | null | undefined;
+  if (!orgId || !orgId.trim().length) {
+    throw new PermissionError("Workspace provisioning", 503);
+  }
+
+  return { userId: user.id, orgId };
+});
 
 export async function resolveUserRole({
   userId,

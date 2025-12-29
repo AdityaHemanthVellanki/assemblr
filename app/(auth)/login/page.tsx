@@ -2,13 +2,16 @@ import { Suspense } from "react";
 
 import { LoginForm } from "@/components/auth/login-form";
 
-export default function LoginPage({
+export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Record<string, string | string[] | undefined>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const resolvedSearchParams = await searchParams;
   const error =
-    typeof searchParams.error === "string" ? searchParams.error : undefined;
+    typeof resolvedSearchParams.error === "string"
+      ? resolvedSearchParams.error
+      : undefined;
 
   return (
     <Suspense>

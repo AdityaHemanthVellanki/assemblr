@@ -27,7 +27,10 @@ export async function POST(
     ({ ctx } = await requireRole("editor"));
   } catch (err) {
     if (err instanceof PermissionError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return NextResponse.json(
+        { error: err.status === 404 ? err.message : "Unauthorized" },
+        { status: err.status === 404 ? 404 : 403 },
+      );
     }
     throw err;
   }
@@ -49,13 +52,6 @@ export async function POST(
     );
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json(
-      { error: "AI is not configured" },
-      { status: 500 },
-    );
-  }
-
   const json = await req.json().catch(() => null);
   const bodyResult = bodySchema.safeParse(json);
   if (!bodyResult.success) {
@@ -65,13 +61,18 @@ export async function POST(
     );
   }
 
+  const prompt = bodyResult.data.prompt.trim();
+  if (!prompt) {
+    return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
+  }
+
   const { id } = await params;
 
   const supabase = await createSupabaseServerClient();
 
   try {
     const spec = await generateDashboardSpec({
-      prompt: bodyResult.data.prompt,
+      prompt,
     });
 
     const updatedRes = await supabase
@@ -116,13 +117,13 @@ export async function POST(
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: "AI returned an invalid dashboard spec" },
-        { status: 422 },
+        { error: "AI returned invalid output" },
+        { status: 400 },
       );
     }
 
     if (message === "AI returned invalid JSON") {
-      return NextResponse.json({ error: message }, { status: 502 });
+      return NextResponse.json({ error: "AI returned invalid output" }, { status: 400 });
     }
 
     return NextResponse.json(
