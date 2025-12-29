@@ -166,7 +166,7 @@ export async function requireProjectOrgAccess(
   const supabase = await createSupabaseServerClient();
   const project = await supabase
     .from("projects")
-    .select("id, org_id, data_source_id")
+    .select("id, org_id")
     .eq("id", projectId)
     .eq("org_id", ctx.orgId)
     .maybeSingle();
@@ -184,6 +184,6 @@ export async function requireProjectOrgAccess(
   return {
     id: project.data.id as string,
     orgId: project.data.org_id as string,
-    dataSourceId: (project.data.data_source_id as string | null) ?? null,
+    dataSourceId: null,
   };
 }

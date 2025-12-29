@@ -1,31 +1,14 @@
 import "server-only";
 
-import { AzureOpenAI } from "openai";
+import OpenAI from "openai";
 
-import { getServerEnv } from "@/lib/env";
-
-export function createAzureOpenAIClient() {
-  const env = getServerEnv();
-
-  if (!env.AZURE_OPENAI_ENDPOINT) {
-    throw new Error("Missing AZURE_OPENAI_ENDPOINT");
-  }
-  if (!env.AZURE_OPENAI_API_KEY) {
-    throw new Error("Missing AZURE_OPENAI_API_KEY");
-  }
-  if (!env.AZURE_OPENAI_DEPLOYMENT_NAME) {
-    throw new Error("Missing AZURE_OPENAI_DEPLOYMENT_NAME");
-  }
-
-  const endpoint = env.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, "");
-  const deployment = env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  const apiVersion = env.AZURE_OPENAI_API_VERSION;
-
-  return new AzureOpenAI({
-    apiKey: env.AZURE_OPENAI_API_KEY,
-    apiVersion,
-    baseURL: `${endpoint}/openai/deployments/${deployment}`,
-    maxRetries: 0,
-    timeout: 20_000,
-  });
-}
+export const azureOpenAIClient = new OpenAI({
+  apiKey: process.env.AZURE_OPENAI_API_KEY!,
+  baseURL: `${process.env.AZURE_OPENAI_ENDPOINT!.replace(/\/+$/, "")}/openai/deployments/${process.env.AZURE_OPENAI_DEPLOYMENT_NAME}`,
+  defaultQuery: {
+    "api-version": process.env.AZURE_OPENAI_API_VERSION!,
+  },
+  defaultHeaders: {
+    "api-key": process.env.AZURE_OPENAI_API_KEY!,
+  },
+});

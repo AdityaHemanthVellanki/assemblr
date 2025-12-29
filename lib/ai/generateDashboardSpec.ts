@@ -22,18 +22,12 @@ export function parseAndValidateDashboardSpecFromJsonText(jsonText: string) {
 }
 
 async function defaultLlm(input: { system: string; user: string }) {
-  const { createAzureOpenAIClient } = await import("./azureOpenAI");
+  const { azureOpenAIClient } = await import("./azureOpenAI");
   const { getServerEnv } = await import("@/lib/env");
-  const env = getServerEnv();
+  getServerEnv();
 
-  const client = createAzureOpenAIClient();
-  const model = env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  if (!model) {
-    throw new Error("Missing AZURE_OPENAI_DEPLOYMENT_NAME");
-  }
-  const res = await client.chat.completions.create(
-    {
-      model,
+  try {
+    const res = (await azureOpenAIClient.chat.completions.create({
       temperature: 0.2,
       max_tokens: 900,
       response_format: { type: "json_object" },
@@ -41,15 +35,19 @@ async function defaultLlm(input: { system: string; user: string }) {
         { role: "system", content: input.system },
         { role: "user", content: input.user },
       ],
-    },
-    { timeout: 20_000, maxRetries: 0 },
-  );
+    } as unknown as Parameters<typeof azureOpenAIClient.chat.completions.create>[0])) as unknown as {
+      choices: Array<{ message?: { content?: string | null } | null }>;
+    };
 
-  const content = res.choices?.[0]?.message?.content;
-  if (!content || typeof content !== "string") {
-    throw new Error("Azure OpenAI returned empty content");
+    const content = res.choices?.[0]?.message?.content;
+    if (!content || typeof content !== "string") {
+      throw new Error("Azure OpenAI returned empty content");
+    }
+    return content;
+  } catch (err) {
+    console.error("Azure OpenAI error", err);
+    throw new Error("AI service unavailable");
   }
-  return content;
 }
 
 export async function generateDashboardSpec(

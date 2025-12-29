@@ -21,10 +21,10 @@ export default async function DashboardPage() {
   } catch (err) {
     if (err instanceof PermissionError) {
       return (
-        <div className="mx-auto w-full max-w-4xl">
+        <div className="mx-auto w-full max-w-6xl">
           <Card>
             <CardHeader>
-              <CardTitle>Projects</CardTitle>
+              <CardTitle>Tools</CardTitle>
               <CardDescription>{err.message}</CardDescription>
             </CardHeader>
           </Card>
@@ -42,7 +42,7 @@ export default async function DashboardPage() {
     .order("updated_at", { ascending: false });
 
   if (projectsRes.error) {
-    throw new Error("Failed to load projects");
+    throw new Error("Failed to load tools");
   }
 
   const projects = (projectsRes.data ?? []).map((p) => ({
@@ -52,61 +52,53 @@ export default async function DashboardPage() {
   }));
 
   return (
-    <div className="mx-auto w-full max-w-4xl">
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <CardTitle>Projects</CardTitle>
+    <div className="mx-auto w-full max-w-6xl space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold tracking-tight">Tools</h1>
+          <p className="text-muted-foreground">
+            Build and manage your AI-generated tools.
+          </p>
+        </div>
+        {canEditProjects(role) ? <NewProjectButton label="Create Tool" /> : null}
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {projects.map((p) => (
+          <Card key={p.id} className="flex flex-col">
+            <CardHeader>
+              <CardTitle className="truncate">{p.name}</CardTitle>
               <CardDescription>
-                Projects are dashboard workspaces defined by a deterministic
-                spec.
+                Last updated{" "}
+                {new Intl.DateTimeFormat("en", {
+                  dateStyle: "medium",
+                }).format(p.updatedAt)}
               </CardDescription>
-            </div>
-            {canEditProjects(role) ? <NewProjectButton /> : null}
+            </CardHeader>
+            <CardContent className="mt-auto pt-0">
+              <Button asChild className="w-full" variant="secondary">
+                <Link href={`/dashboard/projects/${p.id}`}>Open Workspace</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        ))}
+
+        {projects.length === 0 && (
+          <div className="col-span-full rounded-lg border border-dashed p-12 text-center">
+            <h3 className="mb-2 text-lg font-semibold">No tools created yet</h3>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Start by creating your first tool with AI.
+            </p>
+            {canEditProjects(role) ? (
+              <NewProjectButton label="Create Tool" />
+            ) : (
+              <Button disabled variant="outline">
+                Create Tool (Read-only)
+              </Button>
+            )}
           </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {projects.length === 0 ? (
-            <div className="space-y-2">
-              <div className="text-sm text-muted-foreground">
-                No projects yet. Create one to start rendering from a stored
-                spec.
-              </div>
-              {canEditProjects(role) ? (
-                <NewProjectButton label="Create your first project" />
-              ) : (
-                <div className="text-sm text-muted-foreground">
-                  You have read-only access.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="divide-y divide-border rounded-md border border-border">
-              {projects.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex items-center justify-between gap-4 px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{p.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Updated{" "}
-                      {new Intl.DateTimeFormat("en", {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      }).format(p.updatedAt)}
-                    </div>
-                  </div>
-                  <Button asChild variant="outline">
-                    <Link href={`/dashboard/projects/${p.id}`}>Open</Link>
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        )}
+      </div>
     </div>
   );
 }
