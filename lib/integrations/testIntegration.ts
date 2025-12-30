@@ -35,13 +35,6 @@ export async function testIntegrationConnection({
       const accessToken = await getValidAccessToken(orgId, integrationId);
 
       switch (integrationId) {
-        case "stripe": {
-          const res = await fetch("https://api.stripe.com/v1/account", {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          if (!res.ok) throw new Error(`Stripe API returned ${res.status}`);
-          break;
-        }
         case "github": {
           const res = await fetch("https://api.github.com/user", {
             headers: {

@@ -1,31 +1,15 @@
 import { IntegrationConnector, IntegrationUIConfig } from "./types";
-import { StripeConnector } from "./connectors/stripe";
 
 export type Phase1IntegrationId =
-  | "stripe"
   | "github"
   | "slack"
   | "notion"
   | "linear"
   | "google";
 
-export const CONNECTORS: Record<string, IntegrationConnector> = {
-  stripe: new StripeConnector(),
-};
+export const CONNECTORS: Record<string, IntegrationConnector> = {};
 
 export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
-  {
-    id: "stripe",
-    name: "Stripe",
-    category: "Payments",
-    logoUrl: "https://logo.clearbit.com/stripe.com",
-    description: "Sync payments and subscription events.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["read_write"],
-    },
-  },
   {
     id: "github",
     name: "GitHub",

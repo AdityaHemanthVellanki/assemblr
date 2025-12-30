@@ -9,11 +9,16 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
   const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
-  // Source tracking (optional, but good for analytics/debugging)
-  // const source = url.searchParams.get("source") ?? "settings";
+
+  // Helper to redirect with error
+  const redirectWithError = (msg: string) => {
+    const targetUrl = new URL(redirectPath, url.origin);
+    targetUrl.searchParams.set("error", msg);
+    return NextResponse.redirect(targetUrl);
+  };
 
   if (!providerId || !OAUTH_PROVIDERS[providerId]) {
-    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
+    return redirectWithError("Invalid provider");
   }
 
   const provider = OAUTH_PROVIDERS[providerId];
@@ -23,7 +28,8 @@ export async function GET(req: Request) {
   try {
     ({ ctx } = await requireOrgMember());
   } catch {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // If unauthorized, redirect to login
+    return NextResponse.redirect(new URL("/login", url.origin));
   }
 
   // 2. Get Client ID from Env Vars (Hosted OAuth Only)
@@ -33,10 +39,7 @@ export async function GET(req: Request) {
 
   if (!clientId) {
     console.error(`Missing hosted client ID for ${providerId} (expected env: ${envKey})`);
-    return NextResponse.json(
-      { error: `Server configuration error: Missing Client ID for ${provider.name}` },
-      { status: 500 }
-    );
+    return redirectWithError(`Server configuration error: Missing Client ID for ${provider.name}`);
   }
 
   // 3. Generate State

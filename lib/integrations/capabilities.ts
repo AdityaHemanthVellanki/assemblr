@@ -83,17 +83,7 @@ export type IntegrationDefinition = {
 };
 
 export const INTEGRATIONS: IntegrationDefinition[] = [
-  // 1. Stripe
-  {
-    id: "stripe",
-    name: "Stripe",
-    domain: "finance",
-    capabilities: ["payment_transactions", "subscription_events", "revenue_metrics", "invoices"],
-    dataShape: "events",
-    requiresAuth: true,
-    priority: 10,
-  },
-  // 2. GitHub
+  // 1. GitHub
   {
     id: "github",
     name: "GitHub",

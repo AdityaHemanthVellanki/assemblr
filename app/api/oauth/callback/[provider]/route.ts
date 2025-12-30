@@ -17,17 +17,24 @@ export async function GET(
   const state = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
+  // Helper to redirect with error
+  const redirectWithError = (msg: string, path = "/dashboard") => {
+    const targetUrl = new URL(path, url.origin);
+    targetUrl.searchParams.set("error", msg);
+    return NextResponse.redirect(targetUrl);
+  };
+
   if (error) {
-    return NextResponse.json({ error: `OAuth Error: ${error}` }, { status: 400 });
+    return redirectWithError(`OAuth Error: ${error}`);
   }
 
   if (!code || !state) {
-    return NextResponse.json({ error: "Missing code or state" }, { status: 400 });
+    return redirectWithError("Missing code or state");
   }
 
   const provider = OAUTH_PROVIDERS[providerId];
   if (!provider) {
-    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
+    return redirectWithError("Invalid provider");
   }
 
   // 1. Verify State
@@ -35,22 +42,22 @@ export async function GET(
   const storedStateRaw = cookieStore.get("oauth_state")?.value;
 
   if (!storedStateRaw) {
-    return NextResponse.json({ error: "State cookie missing or expired" }, { status: 400 });
+    return redirectWithError("State cookie missing or expired");
   }
 
   let storedState: { state: string; orgId: string; providerId: string; redirectPath: string };
   try {
     storedState = JSON.parse(storedStateRaw);
   } catch {
-    return NextResponse.json({ error: "Invalid state cookie" }, { status: 400 });
+    return redirectWithError("Invalid state cookie");
   }
 
   if (storedState.state !== state) {
-    return NextResponse.json({ error: "State mismatch (CSRF warning)" }, { status: 400 });
+    return redirectWithError("State mismatch (CSRF warning)");
   }
 
   if (storedState.providerId !== providerId) {
-    return NextResponse.json({ error: "Provider mismatch" }, { status: 400 });
+    return redirectWithError("Provider mismatch");
   }
 
   // Clear cookie
@@ -61,12 +68,13 @@ export async function GET(
   // 2. Retrieve Credentials from Env Vars (Hosted OAuth Only)
   const idKey = `${providerId.toUpperCase()}_CLIENT_ID`;
   const secretKey = `${providerId.toUpperCase()}_CLIENT_SECRET`;
+  
   const clientId = process.env[idKey] || "";
   const clientSecret = process.env[secretKey] || "";
 
   if (!clientId || !clientSecret) {
-    console.error(`Missing hosted credentials for ${providerId}`);
-    return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    console.error(`Missing hosted credentials for ${providerId} (expected env: ${idKey}, ${secretKey})`);
+    return redirectWithError("Server configuration error", storedState?.redirectPath);
   }
 
   try {
@@ -77,9 +85,9 @@ export async function GET(
     const body = new URLSearchParams();
     body.append("grant_type", "authorization_code");
     body.append("code", code);
-    body.append("redirect_uri", redirectUri);
-    body.append("client_id", clientId);
     body.append("client_secret", clientSecret);
+    body.append("client_id", clientId);
+    body.append("redirect_uri", redirectUri);
 
     const tokenRes = await fetch(provider.tokenUrl, {
       method: "POST",
@@ -93,7 +101,7 @@ export async function GET(
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
       console.error("Token exchange failed", errText);
-      return NextResponse.json({ error: "Token exchange failed upstream" }, { status: 502 });
+      return redirectWithError("Authorization failed with provider", storedState.redirectPath);
     }
 
     const tokens = await tokenRes.json();
@@ -101,7 +109,7 @@ export async function GET(
     // Validate tokens
     if (!tokens.access_token) {
       console.error("Invalid token response", tokens);
-      return NextResponse.json({ error: "Invalid token response" }, { status: 502 });
+      return redirectWithError("Invalid response from provider", storedState.redirectPath);
     }
 
     // Normalize
@@ -110,11 +118,6 @@ export async function GET(
 
     let providerAccountId = tokens.id_token ? "parsed_from_id_token" : undefined;
     
-    // Stripe specific: use stripe_user_id
-    if (providerId === "stripe" && tokens.stripe_user_id) {
-      providerAccountId = tokens.stripe_user_id;
-    }
-
     const tokenSet = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -122,8 +125,6 @@ export async function GET(
       scope: tokens.scope,
       provider_account_id: providerAccountId,
       updated_at: new Date().toISOString(),
-      // Store raw stripe_user_id if available (critical for Stripe)
-      stripe_user_id: tokens.stripe_user_id,
     };
 
     // 3. Store Updated Credentials and Activate

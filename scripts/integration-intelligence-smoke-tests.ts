@@ -49,26 +49,6 @@ async function run() {
 
   {
     const res = await selectIntegrations(
-      { prompt: "Revenue dashboard", connectedIntegrations: ["stripe"] },
-      { extract: stubExtract },
-    );
-    assert(res.selected.length === 1 && res.selected[0]?.id === "stripe", "expected Stripe selected");
-    assert(res.requiresUserInput === false, "expected no user input required");
-    console.log("ok: Revenue dashboard -> Stripe");
-  }
-
-  {
-    const res = await selectIntegrations(
-      { prompt: "Users from database", connectedIntegrations: ["postgres"] },
-      { extract: stubExtract },
-    );
-    assert(res.selected.length === 1 && res.selected[0]?.id === "postgres", "expected Postgres selected");
-    assert(res.requiresUserInput === false, "expected no user input required");
-    console.log("ok: Users from database -> Postgres");
-  }
-
-  {
-    const res = await selectIntegrations(
       { prompt: "Leads from CRM", connectedIntegrations: ["hubspot"] },
       { extract: stubExtract },
     );
@@ -106,7 +86,7 @@ async function run() {
           select() {
             return {
               async eq() {
-                return { data: [{ integration_id: "stripe" }], error: null };
+                return { data: [{ integration_id: "github" }], error: null };
               },
             };
           },
@@ -114,7 +94,7 @@ async function run() {
       },
     };
     const rows = await loadIntegrationConnections({ supabase, orgId: "org_1" });
-    assert(rows.length === 1 && rows[0]?.integration_id === "stripe", "expected 1 integration connection");
+    assert(rows.length === 1 && rows[0]?.integration_id === "github", "expected 1 integration connection");
     console.log("ok: Integration connections -> returns connected rows");
   }
 

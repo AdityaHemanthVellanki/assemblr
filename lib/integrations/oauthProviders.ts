@@ -25,16 +25,6 @@ export type OAuthProvider = {
 };
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
-  stripe: {
-    id: "stripe",
-    name: "Stripe",
-    authUrl: "https://connect.stripe.com/oauth/authorize",
-    tokenUrl: "https://connect.stripe.com/oauth/token",
-    scopes: ["read_write"],
-    supportsRefreshToken: true,
-    localhostStrategy: "loopback",
-    connectionMode: "hosted_oauth",
-  },
   github: {
     id: "github",
     name: "GitHub",
