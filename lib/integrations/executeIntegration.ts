@@ -5,6 +5,7 @@ import { NormalizedData } from "./types";
 import { getConnector } from "./registry";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { decryptJson } from "@/lib/security/encryption";
+import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 
 type ExecuteIntegrationFetchInput = {
   orgId: string;
@@ -32,10 +33,14 @@ export async function executeIntegrationFetch({
     }
 
     // 3. Load & decrypt credentials
-    // For CSV, we might not need credentials stored in DB if it's a file upload flow passing content directly.
-    // But for others we check DB.
-    let credentials = {};
-    if (connector.authType !== "none") {
+    let credentials: Record<string, unknown> = {};
+    
+    if (connector.authType === "oauth") {
+      // Use Token Refresh Logic
+      const accessToken = await getValidAccessToken(orgId, integrationId);
+      credentials = { access_token: accessToken };
+    } else if (connector.authType !== "none") {
+      // Manual Credential Loading (API Keys, Database, etc.)
       const supabase = await createSupabaseServerClient();
       const { data: connection, error } = await supabase
         .from("integration_connections")
@@ -60,8 +65,6 @@ export async function executeIntegrationFetch({
 
     // 4. Execute fetch
     // Inject credentials into input for connector to use
-    // Connector.fetch signature is (input: FetchInput).
-    // We cast to any to inject credentials which are internal.
     const fetchInput = {
       capability,
       parameters,

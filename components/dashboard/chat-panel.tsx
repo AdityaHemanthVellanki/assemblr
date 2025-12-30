@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Send } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const pathname = usePathname();
 
   React.useEffect(() => {
     if (scrollRef.current) {
@@ -80,6 +82,17 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     }
   }
 
+  function getConnectUrl(integrationId?: string) {
+    if (!integrationId) return "/dashboard/integrations";
+    
+    const params = new URLSearchParams();
+    params.set("provider", integrationId);
+    if (pathname) {
+      params.set("redirectPath", pathname);
+    }
+    return `/api/oauth/start?${params.toString()}`;
+  }
+
   return (
     <div className="flex h-full flex-col border-r bg-muted/10">
       <div className="border-b p-4">
@@ -108,7 +121,11 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                   className="mt-2 w-full border border-border bg-background hover:bg-accent"
                   asChild
                 >
-                  <Link href="/dashboard/integrations" target="_blank" rel="noopener noreferrer">
+                  <Link 
+                    href={getConnectUrl(msg.metadata.missing_integration_id)}
+                    target={msg.metadata.missing_integration_id ? "_self" : "_blank"}
+                    rel={msg.metadata.missing_integration_id ? undefined : "noopener noreferrer"}
+                  >
                     Connect Integration
                   </Link>
                 </Button>
