@@ -103,7 +103,10 @@ export async function GET() {
     string,
     { createdAt: string; updatedAt: string }
   >();
-  for (const row of connectionsRes.data ?? []) {
+  if (!connectionsRes.data) {
+    throw new Error("Failed to load integrations");
+  }
+  for (const row of connectionsRes.data) {
     connectedById.set(row.integration_id as string, {
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,

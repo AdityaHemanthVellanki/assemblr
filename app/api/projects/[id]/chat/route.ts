@@ -4,6 +4,7 @@ import { z } from "zod";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { dashboardSpecSchema } from "@/lib/spec/dashboardSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -50,17 +51,16 @@ export async function POST(
       return NextResponse.json({ error: "Failed to save message" }, { status: 500 });
     }
 
-    // 3. Fetch Context (Spec + History)
-    const projectResPromise = supabase.from("projects").select("spec").eq("id", toolId).single();
-
-    const historyRes = await supabase
-      .from("chat_messages")
-      .select("role, content")
-      .eq("tool_id", toolId)
-      .order("created_at", { ascending: false })
-      .limit(20);
-
-    const projectRes = await projectResPromise;
+    const [projectRes, historyRes, connections] = await Promise.all([
+      supabase.from("projects").select("spec").eq("id", toolId).single(),
+      supabase
+        .from("chat_messages")
+        .select("role, content, metadata")
+        .eq("tool_id", toolId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+      loadIntegrationConnections({ supabase, orgId: ctx.orgId }),
+    ]);
 
     if (projectRes.error || !projectRes.data) {
       throw new Error("Failed to load project spec");
@@ -70,19 +70,27 @@ export async function POST(
       return NextResponse.json({ error: "Failed to load chat history" }, { status: 500 });
     }
 
-    const currentSpec = projectRes.data.spec
-      ? dashboardSpecSchema.parse(projectRes.data.spec)
-      : null;
+    if (!projectRes.data.spec) {
+      throw new Error("Project spec is missing");
+    }
+    const currentSpec = dashboardSpecSchema.parse(projectRes.data.spec);
 
-    const history = (historyRes.data ?? [])
+    if (!historyRes.data) {
+      throw new Error("chat_messages returned null data");
+    }
+
+    const history = historyRes.data
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+    const connectedIntegrationIds = connections.map((c) => c.integration_id);
 
     // 4. Call AI
     const result = await processToolChat({
       currentSpec,
       messages: history,
       userMessage,
+      connectedIntegrationIds,
     });
 
     // 5. Update Project Spec
@@ -102,6 +110,7 @@ export async function POST(
       org_id: ctx.orgId,
       role: "assistant",
       content: result.explanation,
+      metadata: result.metadata ?? null,
     });
     if (insertAiError) {
       console.error("Failed to save AI message", insertAiError);

@@ -438,11 +438,12 @@ export function SpecEditorPanel({
   }
 
   function schemaTables() {
-    return schema?.tables ?? [];
+    return schema ? schema.tables : [];
   }
 
   function schemaColumns(tableName: string) {
-    return schemaTables().find((t) => t.name === tableName)?.columns ?? [];
+    const t = schemaTables().find((x) => x.name === tableName);
+    return t ? t.columns : [];
   }
 
   function numericColumns(tableName: string) {

@@ -71,15 +71,24 @@ export async function introspectSchema(
     column_name: string;
     data_type: string;
   }>) {
-    const cols = columnsByTable.get(row.table_name) ?? [];
+    let cols = columnsByTable.get(row.table_name);
+    if (!cols) {
+      cols = [];
+      columnsByTable.set(row.table_name, cols);
+    }
     cols.push({ name: row.column_name, dataType: row.data_type });
-    columnsByTable.set(row.table_name, cols);
   }
 
   const tables: TableInfo[] = (tablesRes.rows as Array<{ table_name: string }>).map(
     (t) => ({
       name: t.table_name,
-      columns: columnsByTable.get(t.table_name) ?? [],
+      columns: (() => {
+        const cols = columnsByTable.get(t.table_name);
+        if (!cols) {
+          throw new Error("Schema introspection error");
+        }
+        return cols;
+      })(),
     }),
   );
 

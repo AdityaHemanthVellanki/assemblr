@@ -22,8 +22,8 @@ export async function selectIntegrations(
     });
   const extraction = await extract(input.prompt);
 
-  const followUpQuestions = extraction.ambiguity_questions ?? [];
-  if (followUpQuestions.length > 0) {
+  const followUpQuestions = extraction.ambiguity_questions;
+  if (Array.isArray(followUpQuestions) && followUpQuestions.length > 0) {
     return {
       selected: [],
       missingCapabilities: [],

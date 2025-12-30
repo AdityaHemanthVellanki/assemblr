@@ -4,7 +4,6 @@ import { StripeConnector } from "./connectors/stripe";
 import { HubspotConnector } from "./connectors/hubspot";
 import { CsvConnector } from "./connectors/csv";
 import { GenericApiConnector } from "./connectors/generic-api";
-import { MockFallbackConnector } from "./connectors/mock-fallback";
 
 export const CONNECTORS: Record<string, IntegrationConnector> = {
   postgres: new PostgresConnector(),
@@ -12,7 +11,6 @@ export const CONNECTORS: Record<string, IntegrationConnector> = {
   hubspot: new HubspotConnector(),
   csv: new CsvConnector(),
   generic_api: new GenericApiConnector(),
-  mock_fallback: new MockFallbackConnector(),
 };
 
 export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
@@ -239,10 +237,7 @@ export function getConnector(integrationId: string): IntegrationConnector {
   // 2. Check if valid integration ID exists in UI config
   const config = INTEGRATIONS_UI.find((i) => i.id === integrationId);
   if (config) {
-    // If it's a known integration but no specific connector, use Generic/Fallback
-    // For now, we map everything else to GenericApiConnector or throw if not appropriate
-    // But for the "Universal" requirement, using GenericApiConnector as a shell is better than crashing
-    return CONNECTORS["mock_fallback"];
+    throw new Error(`Connector not implemented for integration: ${integrationId}`);
   }
 
   throw new Error(`Connector not found for integration: ${integrationId}`);

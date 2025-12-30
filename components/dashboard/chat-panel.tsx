@@ -62,7 +62,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         { 
           role: "assistant", 
           content: data.explanation,
-          metadata: data.metadata 
+          metadata: data.metadata ?? undefined,
         },
       ]);
       

@@ -27,7 +27,7 @@ export default async function ProjectPage({
   const supabase = await createSupabaseServerClient();
 
   // 2. Fetch Project & Messages
-  const projectResPromise = supabase.from("projects").select("*").eq("id", toolId).single();
+  const projectResPromise = supabase.from("projects").select("id, spec").eq("id", toolId).single();
 
   const messagesRes = await supabase
     .from("chat_messages")
@@ -38,6 +38,13 @@ export default async function ProjectPage({
   const projectRes = await projectResPromise;
 
   if (!projectRes.data) notFound();
+
+  if (messagesRes.error) {
+    throw new Error("Failed to load messages");
+  }
+  if (!messagesRes.data) {
+    throw new Error("Failed to load messages");
+  }
 
   // 3. Parse Spec
   let spec = null;
@@ -50,10 +57,12 @@ export default async function ProjectPage({
     }
   }
 
-  const messages = (messagesRes.data ?? []).map((m) => ({
+  const messages = messagesRes.data.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
-    metadata: m.metadata,
+    metadata: (m.metadata ?? undefined) as
+      | { missing_integration_id?: string; action?: "connect_integration" }
+      | undefined,
   }));
 
   return (

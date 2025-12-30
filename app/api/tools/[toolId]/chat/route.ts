@@ -4,6 +4,7 @@ import { z } from "zod";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { dashboardSpecSchema } from "@/lib/spec/dashboardSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -47,7 +48,7 @@ export async function POST(
       return NextResponse.json({ error: "Failed to save message" }, { status: 500 });
     }
 
-    const [toolRes, historyRes, connectionsRes] = await Promise.all([
+    const [toolRes, historyRes, connections] = await Promise.all([
       supabase.from("projects").select("spec").eq("id", toolId).single(),
       supabase
         .from("chat_messages")
@@ -55,10 +56,7 @@ export async function POST(
         .eq("tool_id", toolId)
         .order("created_at", { ascending: false })
         .limit(20),
-      supabase
-        .from("integration_connections")
-        .select("integration_id")
-        .eq("org_id", ctx.orgId),
+      loadIntegrationConnections({ supabase, orgId: ctx.orgId }),
     ]);
 
     if (toolRes.error || !toolRes.data) {
@@ -69,12 +67,19 @@ export async function POST(
       return NextResponse.json({ error: "Failed to load chat history" }, { status: 500 });
     }
 
-    const currentSpec = toolRes.data.spec ? dashboardSpecSchema.parse(toolRes.data.spec) : null;
-    const history = (historyRes.data ?? [])
+    if (!toolRes.data.spec) {
+      throw new Error("Tool spec is missing");
+    }
+    const currentSpec = dashboardSpecSchema.parse(toolRes.data.spec);
+    if (!historyRes.data) {
+      throw new Error("chat_messages returned null data");
+    }
+
+    const history = historyRes.data
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-    
-    const connectedIntegrationIds = (connectionsRes.data ?? []).map((c) => c.integration_id);
+
+    const connectedIntegrationIds = connections.map((c) => c.integration_id);
 
     const result = await processToolChat({
       currentSpec,

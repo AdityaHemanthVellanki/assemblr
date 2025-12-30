@@ -186,9 +186,13 @@ export async function POST(
       query: plan.query,
       timeoutMs: 3_000,
     });
+    if (!Array.isArray(res.rows)) {
+      throw new Error("Query failed");
+    }
+    const rows = res.rows;
 
     if (plan.kind === "metric") {
-      const value = res.rows?.[0]?.value;
+      const value = (rows[0] as { value?: unknown } | undefined)?.value;
       const n = typeof value === "number" ? value : Number(value ?? 0);
       return NextResponse.json({
         result: { kind: "metric", value: Number.isFinite(n) ? n : 0 },
@@ -196,7 +200,7 @@ export async function POST(
     }
 
     if (plan.kind === "series") {
-      const points = (res.rows ?? []).map((r: unknown) => {
+      const points = rows.map((r: unknown) => {
         const row = r as { bucket?: unknown; value?: unknown };
         return {
           label: formatBucketLabel(row.bucket),
@@ -206,7 +210,7 @@ export async function POST(
       return NextResponse.json({ result: { kind: "series", points } });
     }
 
-    const rows = (res.rows ?? []).map((r: unknown) => {
+    const outputRows = rows.map((r: unknown) => {
       const row = r as Record<string, unknown>;
       const obj: Record<string, unknown> = {};
       for (const col of plan.columns) {
@@ -216,7 +220,7 @@ export async function POST(
     });
 
     return NextResponse.json({
-      result: { kind: "table", columns: plan.columns, rows },
+      result: { kind: "table", columns: plan.columns, rows: outputRows },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

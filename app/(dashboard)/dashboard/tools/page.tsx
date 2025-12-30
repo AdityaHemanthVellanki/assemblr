@@ -50,7 +50,11 @@ export default async function ToolsPage() {
     throw new Error("Failed to load tools");
   }
 
-  const projects = (projectsRes.data ?? []).map((p) => ({
+  if (!projectsRes.data) {
+    throw new Error("Failed to load tools");
+  }
+
+  const projects = projectsRes.data.map((p) => ({
     id: p.id as string,
     name: p.name as string,
     updatedAt: new Date(p.updated_at as string),
@@ -107,4 +111,3 @@ export default async function ToolsPage() {
     </div>
   );
 }
-

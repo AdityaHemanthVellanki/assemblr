@@ -35,7 +35,10 @@ export async function GET() {
       return NextResponse.json({ error: "Failed to load members" }, { status: 500 });
     }
 
-    const rows = (membersRes.data ?? []) as OrgMemberRow[];
+    if (!Array.isArray(membersRes.data)) {
+      throw new Error("Failed to load members");
+    }
+    const rows = membersRes.data as OrgMemberRow[];
 
     return NextResponse.json({
       me: { userId: ctx.userId, role },

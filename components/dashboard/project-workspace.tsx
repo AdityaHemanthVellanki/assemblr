@@ -14,7 +14,10 @@ interface ProjectWorkspaceProps {
   initialMessages: Array<{
     role: "user" | "assistant";
     content: string;
-    metadata?: any;
+    metadata?: {
+      missing_integration_id?: string;
+      action?: "connect_integration";
+    };
   }>;
 }
 

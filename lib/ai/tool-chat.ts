@@ -83,13 +83,13 @@ export type ToolChatResponse = z.infer<typeof chatResponseSchema>;
 // --- Helper: Spec Generation ---
 
 async function generateSpecUpdate(input: {
-  currentSpec: DashboardSpec | null;
+  currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
 }): Promise<ToolChatResponse> {
   const systemMessage = {
     role: "system" as const,
-    content: SYSTEM_PROMPT + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec ?? { title: "New Tool", metrics: [], views: [] })}`,
+    content: SYSTEM_PROMPT + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec)}`,
   };
 
   const history = input.messages.map((m) => ({
@@ -118,19 +118,19 @@ async function generateSpecUpdate(input: {
       const json = JSON.parse(content);
       return chatResponseSchema.parse(json);
     } catch (err) {
-      console.error("AI returned invalid JSON", content, err);
-      throw new Error("Failed to parse AI response");
+      console.error("AI returned invalid response", { content, err });
+      throw err;
     }
   } catch (err) {
     console.error("Azure OpenAI error", err);
-    throw new Error("AI service unavailable");
+    throw err;
   }
 }
 
 // --- Main Orchestrator ---
 
 export async function processToolChat(input: {
-  currentSpec: DashboardSpec | null;
+  currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
@@ -149,7 +149,7 @@ export async function processToolChat(input: {
       
       return {
         explanation: `I need access to ${integrationName} to do this. Connect ${integrationName} to continue.`,
-        spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+        spec: input.currentSpec,
         metadata: {
           missing_integration_id: id,
           action: "connect_integration",
@@ -162,14 +162,14 @@ export async function processToolChat(input: {
   if (plan.requested_integration_ids.length === 0 && plan.required_capabilities.length > 0) {
     // Check if we have coverage
     const resolution = resolveIntegrations({
-      required: plan.required_capabilities as Capability[],
-      connectedIds: input.connectedIntegrationIds,
+      capabilities: plan.required_capabilities as Capability[],
+      connectedIntegrations: input.connectedIntegrationIds,
     });
 
-    if (resolution.missing.length > 0) {
+    if (resolution.missingCapabilities.length > 0) {
       // We are missing capabilities. We need to suggest an integration.
       // Simple heuristic: Find the highest priority integration that covers the first missing capability.
-      const missingCap = resolution.missing[0];
+      const missingCap = resolution.missingCapabilities[0];
       const candidate = INTEGRATIONS
         .filter(i => i.capabilities.includes(missingCap))
         .sort((a, b) => b.priority - a.priority)[0];
@@ -177,7 +177,7 @@ export async function processToolChat(input: {
       if (candidate) {
         return {
           explanation: `I need an integration that supports ${missingCap.replace("_", " ")}. I recommend connecting ${candidate.name}.`,
-          spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+          spec: input.currentSpec,
           metadata: {
             missing_integration_id: candidate.id,
             action: "connect_integration",
@@ -188,7 +188,7 @@ export async function processToolChat(input: {
       // If no candidate found (rare), generic error
       return {
         explanation: `I need a data source that supports ${missingCap.replace("_", " ")}.`,
-        spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+        spec: input.currentSpec,
       };
     }
   }

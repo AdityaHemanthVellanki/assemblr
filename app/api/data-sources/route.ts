@@ -60,7 +60,11 @@ export async function GET() {
     return NextResponse.json({ error: "Failed to load data sources" }, { status: 500 });
   }
 
-  const dataSources = (dataSourcesRes.data ?? []).map((ds) => ({
+  if (!dataSourcesRes.data) {
+    throw new Error("Failed to load data sources");
+  }
+
+  const dataSources = dataSourcesRes.data.map((ds) => ({
     id: ds.id as string,
     type: ds.type as string,
     name: ds.name as string,

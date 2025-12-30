@@ -44,7 +44,8 @@ function containsVendorReference(text: string) {
 }
 
 function validateNoVendors(extraction: CapabilityExtraction) {
-  const questions = extraction.ambiguity_questions ?? [];
+  const questions = extraction.ambiguity_questions;
+  if (!questions) return;
   for (const q of questions) {
     if (containsVendorReference(q)) {
       throw new Error("AI returned invalid output");
@@ -113,4 +114,3 @@ export async function extractCapabilities(prompt: string): Promise<CapabilityExt
   validateNoVendors(extraction);
   return extraction;
 }
-

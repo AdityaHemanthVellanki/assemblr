@@ -27,7 +27,11 @@ export async function GET() {
       return NextResponse.json({ error: "Failed to load projects" }, { status: 500 });
     }
 
-    const projects = (projectsRes.data ?? []).map((p) => ({
+    if (!projectsRes.data) {
+      throw new Error("Failed to load projects");
+    }
+
+    const projects = projectsRes.data.map((p) => ({
       id: p.id as string,
       name: p.name as string,
       createdAt: new Date(p.created_at as string),
