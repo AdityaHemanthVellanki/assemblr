@@ -147,6 +147,26 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         [provider]: "error",
       }));
     }
+
+    if (params.get("integration_connected") === "true") {
+      // Clear the param to prevent re-submission on refresh
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+
+      const savedInput = sessionStorage.getItem("chatInput");
+      if (savedInput) {
+        // Retrieve stored mode/selection to ensure we respect Manual mode settings
+        // even if React state hasn't hydrated them yet.
+        const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
+        const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
+        let storedIds: string[] = [];
+        try {
+          if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
+        } catch {}
+
+        submitMessage(savedInput, storedMode || "auto", storedIds);
+      }
+    }
   }, []);
 
   React.useEffect(() => {
@@ -189,12 +209,18 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     sessionStorage.setItem("chatInput", input);
   }, [input]);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  async function submitMessage(
+    text: string,
+    modeOverride?: "auto" | "manual",
+    selectionOverride?: string[]
+  ) {
+    if (!text.trim() || isLoading) return;
 
-    const userMessage = input.trim();
-    setInput("");
+    const userMessage = text.trim();
+    const effectiveMode = modeOverride ?? integrationMode;
+    const effectiveSelection = selectionOverride ?? selectedIntegrationIds;
+
+    setInput(""); // This will trigger the useEffect to clear sessionStorage
     setMessages((prev) => [...prev, { role: "user", type: "text", content: userMessage }]);
     setIsLoading(true);
 
@@ -204,10 +230,10 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userMessage,
-          integrationMode,
+          integrationMode: effectiveMode,
           selectedIntegrations:
-            integrationMode === "manual"
-              ? selectedIntegrationIds.map((id) => ({
+            effectiveMode === "manual"
+              ? effectiveSelection.map((id) => ({
                   id,
                   status: integrationStatuses[id] || "not_connected",
                 }))
@@ -241,6 +267,11 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await submitMessage(input);
   }
 
   function getConnectUrl(integrationId: string) {

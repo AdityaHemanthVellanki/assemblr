@@ -107,6 +107,11 @@ export async function GET(
     const tokens = await tokenRes.json();
 
     // Validate tokens
+    if (providerId === "slack" && !tokens.ok) {
+      console.error("Slack OAuth failed", tokens);
+      return redirectWithError(`Slack Error: ${tokens.error}`, storedState.redirectPath);
+    }
+
     if (!tokens.access_token) {
       console.error("Invalid token response", tokens);
       return redirectWithError("Invalid response from provider", storedState.redirectPath);
@@ -118,6 +123,7 @@ export async function GET(
 
     let providerAccountId = tokens.id_token ? "parsed_from_id_token" : undefined;
     let githubUser: { id: number; login: string } | undefined;
+    let slackInfo: { team_id: string; team_name: string; bot_user_id: string } | undefined;
 
     // Fetch GitHub identity if applicable
     if (providerId === "github") {
@@ -142,6 +148,18 @@ export async function GET(
 
       githubUser = { id: userData.id, login: userData.login };
       providerAccountId = String(userData.id);
+    } else if (providerId === "slack") {
+      // Slack returns team info in the token response
+      if (!tokens.team?.id) {
+        console.error("Invalid Slack token response (missing team)", tokens);
+        return redirectWithError("Invalid Slack identity", storedState.redirectPath);
+      }
+      providerAccountId = tokens.team.id;
+      slackInfo = {
+        team_id: tokens.team.id,
+        team_name: tokens.team.name,
+        bot_user_id: tokens.bot_user_id,
+      };
     }
 
     const tokenSet = {
@@ -154,6 +172,10 @@ export async function GET(
       // Store GitHub specific fields
       github_user_id: githubUser?.id,
       github_username: githubUser?.login,
+      // Store Slack specific fields
+      slack_team_id: slackInfo?.team_id,
+      slack_team_name: slackInfo?.team_name,
+      slack_bot_user_id: slackInfo?.bot_user_id,
     };
 
     // 3. Store Updated Credentials and Activate
