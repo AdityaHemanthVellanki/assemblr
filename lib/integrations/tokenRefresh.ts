@@ -1,34 +1,45 @@
 
-
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { decryptJson, encryptJson } from "@/lib/security/encryption";
 import { OAUTH_PROVIDERS } from "./oauthProviders";
 
 type TokenSet = {
+  clientId?: string;
+  clientSecret?: string;
   access_token: string;
   refresh_token?: string;
   expires_at?: number; // timestamp in ms
   scope?: string;
   provider_account_id?: string;
+  [key: string]: unknown;
 };
 
 export async function getValidAccessToken(
   orgId: string,
   integrationId: string
 ): Promise<string> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
   
   // 1. Load connection
-  const { data: connection, error } = await supabase
+  const { data: connections, error } = await supabase
     .from("integration_connections")
-    .select("encrypted_credentials")
+    .select("id, encrypted_credentials")
     .eq("org_id", orgId)
     .eq("integration_id", integrationId)
-    .single();
+    .limit(2);
 
-  if (error || !connection) {
+  if (error || !connections) {
     throw new Error(`No connection found for integration ${integrationId}`);
   }
+  if (!Array.isArray(connections) || connections.length === 0) {
+    throw new Error(`No connection found for integration ${integrationId}`);
+  }
+  if (connections.length > 1) {
+    throw new Error(`Multiple connection rows found for integration ${integrationId}`);
+  }
+
+  const connection = connections[0] as { id: string; encrypted_credentials: string };
+  const connectionId = connection.id;
 
   // 2. Decrypt
   let tokens: TokenSet;
@@ -66,8 +77,17 @@ export async function getValidAccessToken(
     const params = new URLSearchParams();
     params.append("grant_type", "refresh_token");
     params.append("refresh_token", tokens.refresh_token);
-    params.append("client_id", process.env[provider.clientIdEnv] ?? "");
-    params.append("client_secret", process.env[provider.clientSecretEnv] ?? "");
+    
+    // Use stored credentials
+    const clientId = tokens.clientId;
+    const clientSecret = tokens.clientSecret;
+
+    if (!clientId || !clientSecret) {
+       throw new Error(`Missing Client ID/Secret in stored credentials for ${integrationId}`);
+    }
+
+    params.append("client_id", clientId);
+    params.append("client_secret", clientSecret);
 
     const res = await fetch(provider.tokenUrl, {
       method: "POST",
@@ -106,10 +126,8 @@ export async function getValidAccessToken(
       .from("integration_connections")
       .update({
         encrypted_credentials: JSON.stringify(encrypted),
-        updated_at: new Date().toISOString(),
       })
-      .eq("org_id", orgId)
-      .eq("integration_id", integrationId);
+      .eq("id", connectionId);
 
     if (updateError) {
       console.error("Failed to persist refreshed token", updateError);

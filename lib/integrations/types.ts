@@ -118,7 +118,7 @@ export type NormalizedJson = {
 
 export type IntegrationAuthSchema =
   | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
-  | { type: "oauth"; scopes: string[]; advancedFields?: FieldDef[] }
+  | { type: "oauth"; scopes: string[]; fields?: FieldDef[]; advancedFields?: FieldDef[] }
   | { type: "database"; fields: FieldDef[]; advancedFields?: FieldDef[] }
   | { type: "none" };
 

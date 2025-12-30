@@ -6,7 +6,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function DELETE(
   _req: Request,
-  { params }: { params: Promise<{ integrationId: string }> },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   getServerEnv();
 
@@ -20,7 +20,7 @@ export async function DELETE(
     throw err;
   }
 
-  const { integrationId } = await params;
+  const { id: integrationId } = await params;
   if (!integrationId?.trim()) {
     return NextResponse.json({ error: "Invalid integration" }, { status: 400 });
   }
@@ -43,4 +43,3 @@ export async function DELETE(
 
   return NextResponse.json({ ok: true });
 }
-

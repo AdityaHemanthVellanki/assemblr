@@ -93,6 +93,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["read_write"],
     },
   },
@@ -105,6 +109,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["crm.objects.contacts.read"],
     },
   },
@@ -117,6 +125,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["api", "refresh_token"],
     },
   },
@@ -129,6 +141,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["channels:read", "chat:write"],
     },
   },
@@ -141,6 +157,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["repo", "read:org"],
     },
   },
@@ -153,6 +173,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
     },
   },
@@ -165,6 +189,10 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "oauth",
     auth: {
       type: "oauth",
+      fields: [
+        { kind: "string", id: "clientId", label: "Client ID", required: true },
+        { kind: "string", id: "clientSecret", label: "Client Secret", required: true, secret: true },
+      ],
       scopes: [],
     },
   },

@@ -5,6 +5,8 @@ import crypto from "crypto";
 import { requireOrgMember } from "@/lib/auth/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { decryptJson } from "@/lib/security/encryption";
 
 export async function GET(req: Request) {
   getServerEnv();
@@ -27,7 +29,36 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 2. Generate State
+  // 2. Fetch User Configured Credentials
+  const supabase = await createSupabaseServerClient();
+  const { data: connection, error: connectionError } = await supabase
+    .from("integration_connections")
+    .select("encrypted_credentials")
+    .eq("org_id", ctx.orgId)
+    .eq("integration_id", providerId)
+    .single();
+
+  if (connectionError || !connection) {
+    return NextResponse.json(
+      { error: "Integration not configured. Please enter your App Credentials in the Integrations settings." },
+      { status: 400 }
+    );
+  }
+
+  let clientId: string;
+  try {
+    const creds = decryptJson(JSON.parse(connection.encrypted_credentials)) as Record<string, unknown>;
+    clientId = creds.clientId as string;
+    if (!clientId) throw new Error("Missing Client ID");
+  } catch (err) {
+    console.error("Failed to decrypt oauth credentials", err);
+    return NextResponse.json(
+      { error: "Invalid integration configuration. Please reconnect." },
+      { status: 500 }
+    );
+  }
+
+  // 3. Generate State
   const state = crypto.randomBytes(32).toString("hex");
   const statePayload = JSON.stringify({
     state,
@@ -36,11 +67,7 @@ export async function GET(req: Request) {
     redirectPath,
   });
 
-  // 3. Store State in Cookie (HTTP Only, Secure)
-  // We sign/encrypt the cookie implicitly by relying on server-side state verification? 
-  // Actually, to be stateless, we just verify the random string. 
-  // But we need to recover orgId/redirectPath in the callback.
-  // So we store the payload in the cookie.
+  // 4. Store State in Cookie (HTTP Only, Secure)
   const cookieStore = await cookies();
   cookieStore.set("oauth_state", statePayload, {
     httpOnly: true,
@@ -50,17 +77,16 @@ export async function GET(req: Request) {
     path: "/",
   });
 
-  // 4. Build Auth URL
-  const clientId = process.env[provider.clientIdEnv];
-  if (!clientId) {
-    return NextResponse.json({ error: "Provider not configured" }, { status: 500 });
-  }
-
+  // 5. Build Auth URL
   const params = new URLSearchParams();
   params.append("response_type", "code");
   params.append("client_id", clientId);
-  // Redirect URI is the callback endpoint
-  const redirectUri = `${url.origin}/api/oauth/callback/${providerId}`;
+  
+  // BYOO: We use the current origin as the redirect base. 
+  // Users must register this exact origin in their OAuth app.
+  const redirectBase = url.origin; 
+  const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
+  
   params.append("redirect_uri", redirectUri);
   params.append("state", state);
   

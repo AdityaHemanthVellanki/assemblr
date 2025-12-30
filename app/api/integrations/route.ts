@@ -5,6 +5,7 @@ import { PermissionError, requireOrgMember, requireRole } from "@/lib/auth/permi
 import { getServerEnv } from "@/lib/env";
 import { encryptJson } from "@/lib/security/encryption";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getConnector, getIntegrationUIConfig, INTEGRATIONS_UI } from "@/lib/integrations/registry";
 
@@ -24,14 +25,15 @@ function buildConnectorCredentials(input: {
 
   if (ui.auth.type === "none") return {};
 
-  if (ui.auth.type === "api_key") {
+  if (ui.auth.type === "api_key" || ui.auth.type === "oauth") {
     const out: Record<string, string> = {};
-    for (const f of ui.auth.fields) {
+    const fields = ui.auth.fields || [];
+    for (const f of fields) {
       if (f.kind !== "string") continue;
       const raw = credentials[f.id];
       const value = typeof raw === "string" ? raw : "";
       if ((f.required ?? false) && !value.trim()) {
-        throw new Error("Invalid credentials");
+        throw new Error(`Missing required field: ${f.label}`);
       }
       if (value.trim()) out[f.id] = value;
     }
@@ -88,7 +90,7 @@ export async function GET() {
   const supabase = await createSupabaseServerClient();
   const connectionsRes = await supabase
     .from("integration_connections")
-    .select("integration_id, created_at, updated_at")
+    .select("integration_id, created_at, status")
     .eq("org_id", ctx.orgId);
 
   if (connectionsRes.error) {
@@ -101,7 +103,7 @@ export async function GET() {
 
   const connectedById = new Map<
     string,
-    { createdAt: string; updatedAt: string }
+    { createdAt: string; updatedAt: string; status: string }
   >();
   if (!connectionsRes.data) {
     throw new Error("Failed to load integrations");
@@ -109,7 +111,8 @@ export async function GET() {
   for (const row of connectionsRes.data) {
     connectedById.set(row.integration_id as string, {
       createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
+      updatedAt: row.created_at as string,
+      status: (row.status as string) || "active",
     });
   }
 
@@ -122,7 +125,7 @@ export async function GET() {
       logoUrl: i.logoUrl,
       description: i.description,
       auth: i.auth,
-      connected: Boolean(conn),
+      connected: Boolean(conn && conn.status === "active"),
       connectedAt: conn?.createdAt ?? null,
       updatedAt: conn?.updatedAt ?? null,
     };
@@ -167,8 +170,9 @@ export async function POST(req: Request) {
   }
 
   const { integrationId, credentials } = parsed.data;
+  let ui;
   try {
-    getIntegrationUIConfig(integrationId);
+    ui = getIntegrationUIConfig(integrationId);
   } catch {
     return NextResponse.json({ error: "Invalid integration" }, { status: 400 });
   }
@@ -179,56 +183,77 @@ export async function POST(req: Request) {
       integrationId,
       credentials: credentials as Record<string, unknown>,
     });
-  } catch {
-    return NextResponse.json({ error: "Invalid credentials" }, { status: 400 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: message || "Invalid credentials" }, { status: 400 });
   }
 
-  const connector = getConnector(integrationId);
-  try {
-    const connectRes = await connector.connect({
-      orgId: ctx.orgId,
-      credentials: connectorCredentials,
-    });
+  // Only perform connector check if NOT OAuth
+  if (ui.auth.type !== "oauth") {
+    try {
+      const connector = getConnector(integrationId);
+      const connectRes = await connector.connect({
+        orgId: ctx.orgId,
+        credentials: connectorCredentials,
+      });
 
-    if (!connectRes.success) {
-      return NextResponse.json({ error: "Invalid credentials" }, { status: 400 });
+      if (!connectRes.success) {
+        return NextResponse.json({ error: "Invalid credentials" }, { status: 400 });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("integration connect failed", { orgId: ctx.orgId, integrationId, message });
+      return NextResponse.json({ error: message }, { status: 400 });
     }
+  }
 
-    const supabase = await createSupabaseServerClient();
+  try {
+    const supabase = createSupabaseAdminClient();
     const encrypted = encryptJson(connectorCredentials);
-    const upsertRes = await supabase
-      .from("integration_connections")
-      .upsert(
-        {
-          org_id: ctx.orgId,
-          integration_id: integrationId,
-          encrypted_credentials: JSON.stringify(encrypted),
-        },
-        { onConflict: "org_id,integration_id" },
-      )
-      .select("integration_id, created_at, updated_at")
-      .single();
+    
+    // Determine initial status
+    const status = ui.auth.type === "oauth" ? "pending_setup" : "active";
 
-    if (upsertRes.error || !upsertRes.data) {
-      console.error("upsert integration connection failed", {
+    const { error: upsertError } = await supabase
+      .from("integration_connections")
+      .upsert({
+        org_id: ctx.orgId,
+        integration_id: integrationId,
+        encrypted_credentials: JSON.stringify(encrypted),
+        status,
+      }, { onConflict: 'org_id,integration_id' });
+
+    if (upsertError) {
+       console.error("write integration connection failed", {
         orgId: ctx.orgId,
         integrationId,
-        message: upsertRes.error?.message,
+        message: upsertError.message,
       });
-      return NextResponse.json({ error: "Failed to save credentials" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Failed to save credentials" },
+        { status: 500 },
+      );
     }
+    
+    // Fetch back the row to return details
+    const { data: row } = await supabase
+        .from("integration_connections")
+        .select("integration_id, created_at")
+        .eq("org_id", ctx.orgId)
+        .eq("integration_id", integrationId)
+        .single();
 
     return NextResponse.json({
       integration: {
-        id: upsertRes.data.integration_id as string,
-        connected: true,
-        connectedAt: upsertRes.data.created_at as string,
-        updatedAt: upsertRes.data.updated_at as string,
+        id: row?.integration_id as string,
+        connected: status === "active",
+        connectedAt: row?.created_at as string,
+        updatedAt: row?.created_at as string,
       },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("integration connect failed", { orgId: ctx.orgId, integrationId, message });
-    return NextResponse.json({ error: "Failed to connect integration" }, { status: 500 });
+    console.error("integration save failed", { orgId: ctx.orgId, integrationId, message });
+    return NextResponse.json({ error: "Failed to save integration" }, { status: 500 });
   }
 }

@@ -3,8 +3,8 @@ import { cookies } from "next/headers";
 
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { encryptJson } from "@/lib/security/encryption";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { encryptJson, decryptJson } from "@/lib/security/encryption";
 
 export async function GET(
   req: Request,
@@ -56,16 +56,39 @@ export async function GET(
   // Clear cookie
   cookieStore.delete("oauth_state");
 
-  // 2. Exchange Code
-  const clientId = process.env[provider.clientIdEnv];
-  const clientSecret = process.env[provider.clientSecretEnv];
+  // 2. Fetch Credentials from DB
+  const supabase = createSupabaseAdminClient();
+  const { data: connection, error: connectionError } = await supabase
+    .from("integration_connections")
+    .select("id, encrypted_credentials")
+    .eq("org_id", storedState.orgId)
+    .eq("integration_id", providerId)
+    .single();
 
-  if (!clientId || !clientSecret) {
-    return NextResponse.json({ error: "Provider config missing" }, { status: 500 });
+  if (connectionError || !connection) {
+    console.error("Connection not found for callback", { orgId: storedState.orgId, providerId });
+    return NextResponse.json({ error: "Integration configuration not found" }, { status: 400 });
+  }
+
+  let clientId: string;
+  let clientSecret: string;
+  let existingCreds: Record<string, unknown>;
+
+  try {
+    existingCreds = decryptJson(JSON.parse(connection.encrypted_credentials)) as Record<string, unknown>;
+    clientId = existingCreds.clientId as string;
+    clientSecret = existingCreds.clientSecret as string;
+    if (!clientId || !clientSecret) throw new Error("Missing Client ID or Secret");
+  } catch (err) {
+    console.error("Failed to decrypt credentials during callback", err);
+    return NextResponse.json({ error: "Invalid integration configuration" }, { status: 500 });
   }
 
   try {
-    const redirectUri = `${url.origin}/api/oauth/callback/${providerId}`;
+    // Reconstruct Redirect URI
+    // BYOO: Use current origin
+    const redirectBase = url.origin; 
+    const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
     
     const body = new URLSearchParams();
     body.append("grant_type", "authorization_code");
@@ -102,36 +125,35 @@ export async function GET(
     const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : undefined;
     
     const tokenSet = {
+      ...existingCreds, // Preserve Client ID/Secret
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_at: expiresAt,
       scope: tokens.scope,
-      provider_account_id: tokens.id_token ? "parsed_from_id_token" : undefined, // Simplify for now
+      provider_account_id: tokens.id_token ? "parsed_from_id_token" : undefined, 
+      updated_at: new Date().toISOString(),
     };
 
-    // 3. Store
+    // 3. Store Updated Credentials and Activate
     const encrypted = encryptJson(tokenSet);
-    const supabase = await createSupabaseServerClient();
     
-    // Upsert
-    const { error: upsertError } = await supabase
+    const { error: updateError } = await supabase
       .from("integration_connections")
-      .upsert({
-        org_id: storedState.orgId,
-        integration_id: providerId,
+      .update({ 
         encrypted_credentials: JSON.stringify(encrypted),
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: "org_id,integration_id"
-      });
+        status: 'active' 
+      })
+      .eq("id", connection.id);
 
-    if (upsertError) {
-      console.error("Failed to store tokens", upsertError);
-      return NextResponse.json({ error: "Database error" }, { status: 500 });
+    if (updateError) {
+      console.error("Failed to store tokens", updateError);
+      return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
     }
 
     // 4. Redirect
-    return NextResponse.redirect(new URL(storedState.redirectPath, req.url));
+    const successUrl = new URL(storedState.redirectPath, req.url);
+    successUrl.searchParams.set("integration_connected", "true");
+    return NextResponse.redirect(successUrl);
 
   } catch (err) {
     console.error("OAuth callback error", err);

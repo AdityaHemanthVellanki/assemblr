@@ -36,7 +36,7 @@ type FieldDef =
 type IntegrationAuthSchema =
   | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
   | { type: "database"; fields: FieldDef[]; advancedFields?: FieldDef[] }
-  | { type: "oauth"; scopes: string[]; advancedFields?: FieldDef[] }
+  | { type: "oauth"; scopes: string[]; fields?: FieldDef[]; advancedFields?: FieldDef[] }
   | { type: "none" };
 
 type IntegrationUiConfig = {
@@ -53,6 +53,7 @@ type IntegrationListItem = IntegrationUiConfig & {
   connected: boolean;
   connectedAt: string | null;
   updatedAt: string | null;
+  status?: string; // Add status support
 };
 
 type FilterMode = "all" | "connected" | "not_connected";
@@ -135,6 +136,11 @@ export default function IntegrationsPage() {
   const [formError, setFormError] = React.useState<string | null>(null);
   const [disconnectMode, setDisconnectMode] = React.useState(false);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
+  const [origin, setOrigin] = React.useState("");
+
+  React.useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -233,11 +239,6 @@ export default function IntegrationsPage() {
     setFormError(null);
 
     try {
-      // Mock OAuth delay
-      if (active.connectionMode === "oauth") {
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-      
       // Zero input delay
       if (active.connectionMode === "zero_input") {
          await new Promise((r) => setTimeout(r, 800));
@@ -259,11 +260,17 @@ export default function IntegrationsPage() {
             : "Failed to connect";
         throw new Error(msg);
       }
+
+      // If OAuth, redirect to start flow
+      if (active.connectionMode === "oauth") {
+         window.location.href = `/api/oauth/start?provider=${active.id}`;
+         return; // Don't close modal or reload, we are leaving
+      }
+
       closeModal();
       await load();
     } catch (err) {
       setFormError(safeJsonMessage(err));
-    } finally {
       setSubmitting(false);
     }
   }, [active, closeModal, formValues, load]);
@@ -402,7 +409,7 @@ export default function IntegrationsPage() {
           role="dialog"
           aria-modal="true"
         >
-          <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300">
+          <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
             <div className="space-y-1">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                  <Image
@@ -441,32 +448,29 @@ export default function IntegrationsPage() {
                 </div>
               ) : null}
 
-              {/* OAuth */}
-              {active.connectionMode === "oauth" && !activeStatus?.connected ? (
-                 <div className="py-4 space-y-4">
-                    <p className="text-sm text-muted-foreground">
-                      Connect your {active.name} account to sync data automatically.
-                    </p>
-                    <Button 
-                      className="w-full" 
-                      onClick={() => void submit()} 
-                      disabled={submitting}
-                    >
-                      {submitting ? "Connecting..." : `Connect with ${active.name}`}
-                    </Button>
-                    <p className="text-xs text-center text-muted-foreground">
-                      You will be redirected to {active.name} to authorize access.
-                    </p>
-                 </div>
-              ) : null}
-
-              {/* Guided / Advanced Form */}
-              {(active.connectionMode === "guided" || active.connectionMode === "advanced") && !activeStatus?.connected ? (
+              {/* Generic Form (Guided / Advanced / OAuth with fields) */}
+              {(active.connectionMode === "guided" || active.connectionMode === "advanced" || active.connectionMode === "oauth") && !activeStatus?.connected ? (
                 <form 
                   onSubmit={(e) => { e.preventDefault(); void submit(); }}
                   className="space-y-4"
                 >
-                  {"fields" in active.auth && active.auth.fields.map((f) => (
+                  {/* OAuth BYOO Info */}
+                  {active.connectionMode === "oauth" && (
+                     <div className="text-xs text-muted-foreground bg-muted p-3 rounded space-y-2 mb-4 border border-border">
+                        <p className="font-semibold text-foreground">Bring Your Own App (BYOO)</p>
+                        <p>
+                          To connect {active.name}, you must create an OAuth App in their developer portal.
+                        </p>
+                        <div className="space-y-1">
+                          <p className="font-medium">Redirect URI:</p>
+                          <code className="block bg-background p-2 rounded border border-border select-all break-all">
+                            {origin}/api/oauth/callback/{active.id}
+                          </code>
+                        </div>
+                     </div>
+                  )}
+
+                  {"fields" in active.auth && active.auth.fields && active.auth.fields.map((f) => (
                     <FieldRenderer 
                       key={f.id} 
                       field={f} 
@@ -501,7 +505,7 @@ export default function IntegrationsPage() {
 
                   <div className="pt-4 flex justify-end">
                      <Button type="submit" disabled={submitting}>
-                       {submitting ? "Connecting..." : "Connect"}
+                       {submitting ? "Processing..." : active.connectionMode === "oauth" ? "Connect & Authorize" : "Connect"}
                      </Button>
                   </div>
                 </form>

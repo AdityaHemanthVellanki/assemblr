@@ -75,6 +75,7 @@ export type Database = {
           org_id: string;
           integration_id: string;
           encrypted_credentials: string;
+          status: string;
           created_at: string;
           updated_at: string;
         };
@@ -83,6 +84,7 @@ export type Database = {
           org_id: string;
           integration_id: string;
           encrypted_credentials: string;
+          status?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -91,8 +93,39 @@ export type Database = {
           org_id?: string;
           integration_id?: string;
           encrypted_credentials?: string;
+          status?: string;
           created_at?: string;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      integration_health: {
+        Row: {
+          integration_id: string;
+          org_id: string;
+          status: "ok" | "error";
+          error_message: string | null;
+          error_code: string | null;
+          latency_ms: number | null;
+          last_checked_at: string | null;
+        };
+        Insert: {
+          integration_id: string;
+          org_id: string;
+          status: "ok" | "error";
+          error_message?: string | null;
+          error_code?: string | null;
+          latency_ms?: number | null;
+          last_checked_at?: string | null;
+        };
+        Update: {
+          integration_id?: string;
+          org_id?: string;
+          status?: "ok" | "error";
+          error_message?: string | null;
+          error_code?: string | null;
+          latency_ms?: number | null;
+          last_checked_at?: string | null;
         };
         Relationships: [];
       };
