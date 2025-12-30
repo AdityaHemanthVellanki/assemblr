@@ -74,7 +74,9 @@ export type Database = {
           id: string;
           org_id: string;
           integration_id: string;
-          encrypted_credentials: string;
+          encrypted_credentials: string | null;
+          oauth_client_id: string | null;
+          source: string;
           status: string;
           created_at: string;
           updated_at: string;
@@ -83,7 +85,9 @@ export type Database = {
           id?: string;
           org_id: string;
           integration_id: string;
-          encrypted_credentials: string;
+          encrypted_credentials?: string | null;
+          oauth_client_id?: string | null;
+          source?: string;
           status?: string;
           created_at?: string;
           updated_at?: string;
@@ -92,7 +96,9 @@ export type Database = {
           id?: string;
           org_id?: string;
           integration_id?: string;
-          encrypted_credentials?: string;
+          encrypted_credentials?: string | null;
+          oauth_client_id?: string | null;
+          source?: string;
           status?: string;
           created_at?: string;
           updated_at?: string;

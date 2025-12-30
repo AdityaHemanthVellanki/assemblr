@@ -75,7 +75,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const env = getServerEnv();
+  getServerEnv();
 
   let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
   try {
@@ -97,10 +97,6 @@ export async function POST(req: Request) {
       { error: "Too many requests" },
       { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
     );
-  }
-
-  if (!env.DATA_ENCRYPTION_KEY) {
-    return NextResponse.json({ error: "Encryption is not configured" }, { status: 500 });
   }
 
   const json = await req.json().catch(() => null);

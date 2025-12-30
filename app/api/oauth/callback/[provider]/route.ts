@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { encryptJson, decryptJson } from "@/lib/security/encryption";
+import { encryptJson } from "@/lib/security/encryption";
 
 export async function GET(
   req: Request,
@@ -33,7 +33,7 @@ export async function GET(
   // 1. Verify State
   const cookieStore = await cookies();
   const storedStateRaw = cookieStore.get("oauth_state")?.value;
-  
+
   if (!storedStateRaw) {
     return NextResponse.json({ error: "State cookie missing or expired" }, { status: 400 });
   }
@@ -56,40 +56,24 @@ export async function GET(
   // Clear cookie
   cookieStore.delete("oauth_state");
 
-  // 2. Fetch Credentials from DB
   const supabase = createSupabaseAdminClient();
-  const { data: connection, error: connectionError } = await supabase
-    .from("integration_connections")
-    .select("id, encrypted_credentials")
-    .eq("org_id", storedState.orgId)
-    .eq("integration_id", providerId)
-    .single();
 
-  if (connectionError || !connection) {
-    console.error("Connection not found for callback", { orgId: storedState.orgId, providerId });
-    return NextResponse.json({ error: "Integration configuration not found" }, { status: 400 });
-  }
+  // 2. Retrieve Credentials from Env Vars (Hosted OAuth Only)
+  const idKey = `${providerId.toUpperCase()}_CLIENT_ID`;
+  const secretKey = `${providerId.toUpperCase()}_CLIENT_SECRET`;
+  const clientId = process.env[idKey] || "";
+  const clientSecret = process.env[secretKey] || "";
 
-  let clientId: string;
-  let clientSecret: string;
-  let existingCreds: Record<string, unknown>;
-
-  try {
-    existingCreds = decryptJson(JSON.parse(connection.encrypted_credentials)) as Record<string, unknown>;
-    clientId = existingCreds.clientId as string;
-    clientSecret = existingCreds.clientSecret as string;
-    if (!clientId || !clientSecret) throw new Error("Missing Client ID or Secret");
-  } catch (err) {
-    console.error("Failed to decrypt credentials during callback", err);
-    return NextResponse.json({ error: "Invalid integration configuration" }, { status: 500 });
+  if (!clientId || !clientSecret) {
+    console.error(`Missing hosted credentials for ${providerId}`);
+    return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
   }
 
   try {
     // Reconstruct Redirect URI
-    // BYOO: Use current origin
-    const redirectBase = url.origin; 
+    const redirectBase = url.origin;
     const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
-    
+
     const body = new URLSearchParams();
     body.append("grant_type", "authorization_code");
     body.append("code", code);
@@ -113,7 +97,7 @@ export async function GET(
     }
 
     const tokens = await tokenRes.json();
-    
+
     // Validate tokens
     if (!tokens.access_token) {
       console.error("Invalid token response", tokens);
@@ -123,30 +107,47 @@ export async function GET(
     // Normalize
     const expiresIn = tokens.expires_in; // seconds
     const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : undefined;
+
+    let providerAccountId = tokens.id_token ? "parsed_from_id_token" : undefined;
     
+    // Stripe specific: use stripe_user_id
+    if (providerId === "stripe" && tokens.stripe_user_id) {
+      providerAccountId = tokens.stripe_user_id;
+    }
+
     const tokenSet = {
-      ...existingCreds, // Preserve Client ID/Secret
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_at: expiresAt,
       scope: tokens.scope,
-      provider_account_id: tokens.id_token ? "parsed_from_id_token" : undefined, 
+      provider_account_id: providerAccountId,
       updated_at: new Date().toISOString(),
+      // Store raw stripe_user_id if available (critical for Stripe)
+      stripe_user_id: tokens.stripe_user_id,
     };
 
     // 3. Store Updated Credentials and Activate
     const encrypted = encryptJson(tokenSet);
-    
-    const { error: updateError } = await supabase
-      .from("integration_connections")
-      .update({ 
-        encrypted_credentials: JSON.stringify(encrypted),
-        status: 'active' 
-      })
-      .eq("id", connection.id);
 
-    if (updateError) {
-      console.error("Failed to store tokens", updateError);
+    // Upsert the connection
+    const { error: upsertError } = await supabase
+      .from("integration_connections")
+      .upsert(
+        {
+          org_id: storedState.orgId,
+          integration_id: providerId,
+          encrypted_credentials: JSON.stringify(encrypted),
+          status: "active",
+          source: "oauth_callback",
+          oauth_client_id: null, // Hosted doesn't store client ID in DB
+          // @ts-ignore - column added in migration
+          provider_account_id: providerAccountId,
+        },
+        { onConflict: "org_id,integration_id" }
+      );
+
+    if (upsertError) {
+      console.error("Failed to store tokens", upsertError);
       return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
     }
 

@@ -113,9 +113,12 @@ export async function testIntegrationConnection({
       if (connections.length > 1) {
         throw new Error(`Multiple connection rows found for integration ${integrationId}`);
       }
-      const connection = connections[0] as { encrypted_credentials: string };
+      const connection = connections[0] as { encrypted_credentials: string | null };
 
       const raw = connection.encrypted_credentials as unknown;
+      if (typeof raw !== "string" || !raw.trim()) {
+        throw new Error(`Failed to load credentials for ${integrationId}: missing credentials`);
+      }
       const enc = typeof raw === "string" ? JSON.parse(raw) : raw;
       const credentials = decryptJson(enc as never) as Record<string, string>;
 

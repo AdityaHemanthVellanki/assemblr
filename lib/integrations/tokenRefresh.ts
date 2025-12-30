@@ -38,13 +38,19 @@ export async function getValidAccessToken(
     throw new Error(`Multiple connection rows found for integration ${integrationId}`);
   }
 
-  const connection = connections[0] as { id: string; encrypted_credentials: string };
+  const connection = connections[0] as {
+    id: string;
+    encrypted_credentials: string | null;
+  };
   const connectionId = connection.id;
 
   // 2. Decrypt
   let tokens: TokenSet;
   try {
     const raw = connection.encrypted_credentials as unknown;
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new Error("Missing credentials");
+    }
     const enc = typeof raw === "string" ? JSON.parse(raw) : raw;
     tokens = decryptJson(enc as never) as TokenSet;
   } catch (e) {
@@ -78,12 +84,23 @@ export async function getValidAccessToken(
     params.append("grant_type", "refresh_token");
     params.append("refresh_token", tokens.refresh_token);
     
-    // Use stored credentials
-    const clientId = tokens.clientId;
-    const clientSecret = tokens.clientSecret;
+    // Determine credentials based on mode
+    let clientId: string | undefined;
+    let clientSecret: string | undefined;
+
+    if (provider.connectionMode === "hosted_oauth") {
+      const idKey = `${integrationId.toUpperCase()}_CLIENT_ID`;
+      const secretKey = `${integrationId.toUpperCase()}_CLIENT_SECRET`;
+      clientId = process.env[idKey];
+      clientSecret = process.env[secretKey];
+    } else {
+      // BYO: stored in blob
+      clientId = tokens.clientId;
+      clientSecret = tokens.clientSecret;
+    }
 
     if (!clientId || !clientSecret) {
-       throw new Error(`Missing Client ID/Secret in stored credentials for ${integrationId}`);
+       throw new Error(`Missing Client ID/Secret for ${integrationId} (mode: ${provider.connectionMode})`);
     }
 
     params.append("client_id", clientId);

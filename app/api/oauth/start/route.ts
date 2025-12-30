@@ -4,16 +4,13 @@ import crypto from "crypto";
 
 import { requireOrgMember } from "@/lib/auth/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
-import { getServerEnv } from "@/lib/env";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { decryptJson } from "@/lib/security/encryption";
 
 export async function GET(req: Request) {
-  getServerEnv();
-
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
   const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
+  // Source tracking (optional, but good for analytics/debugging)
+  // const source = url.searchParams.get("source") ?? "settings";
 
   if (!providerId || !OAUTH_PROVIDERS[providerId]) {
     return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
@@ -29,31 +26,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 2. Fetch User Configured Credentials
-  const supabase = await createSupabaseServerClient();
-  const { data: connection, error: connectionError } = await supabase
-    .from("integration_connections")
-    .select("encrypted_credentials")
-    .eq("org_id", ctx.orgId)
-    .eq("integration_id", providerId)
-    .single();
+  // 2. Get Client ID from Env Vars (Hosted OAuth Only)
+  // Normalize provider ID to env var format (e.g. google -> GOOGLE_CLIENT_ID)
+  const envKey = `${providerId.toUpperCase()}_CLIENT_ID`;
+  const clientId = process.env[envKey];
 
-  if (connectionError || !connection) {
+  if (!clientId) {
+    console.error(`Missing hosted client ID for ${providerId} (expected env: ${envKey})`);
     return NextResponse.json(
-      { error: "Integration not configured. Please enter your App Credentials in the Integrations settings." },
-      { status: 400 }
-    );
-  }
-
-  let clientId: string;
-  try {
-    const creds = decryptJson(JSON.parse(connection.encrypted_credentials)) as Record<string, unknown>;
-    clientId = creds.clientId as string;
-    if (!clientId) throw new Error("Missing Client ID");
-  } catch (err) {
-    console.error("Failed to decrypt oauth credentials", err);
-    return NextResponse.json(
-      { error: "Invalid integration configuration. Please reconnect." },
+      { error: `Server configuration error: Missing Client ID for ${provider.name}` },
       { status: 500 }
     );
   }
@@ -81,15 +62,15 @@ export async function GET(req: Request) {
   const params = new URLSearchParams();
   params.append("response_type", "code");
   params.append("client_id", clientId);
-  
-  // BYOO: We use the current origin as the redirect base. 
-  // Users must register this exact origin in their OAuth app.
-  const redirectBase = url.origin; 
+
+  // Redirect URI strategy
+  // Use the same callback endpoint
+  const redirectBase = url.origin;
   const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
-  
+
   params.append("redirect_uri", redirectUri);
   params.append("state", state);
-  
+
   if (provider.scopes.length > 0) {
     params.append("scope", provider.scopes.join(provider.scopeSeparator ?? " "));
   }

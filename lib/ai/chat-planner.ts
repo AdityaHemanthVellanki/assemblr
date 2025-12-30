@@ -5,9 +5,6 @@ import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { INTEGRATIONS } from "@/lib/integrations/capabilities";
 
-// Extract valid integration IDs for the prompt
-const VALID_INTEGRATION_IDS = INTEGRATIONS.map((i) => i.id).join(", ");
-
 const plannerSchema = z
   .object({
     intent: z.string(),
@@ -21,8 +18,15 @@ export type ChatPlan = z.infer<typeof plannerSchema>;
 const SYSTEM_PROMPT = `
 You are the Assemblr Chat Planner. Your job is to analyze user messages and extract intent, capabilities, and specific integration requests.
 
-You have access to the following valid Integration IDs:
-${VALID_INTEGRATION_IDS}
+We ONLY support the following 6 integrations (Phase 1):
+1. Stripe (id: "stripe")
+2. GitHub (id: "github")
+3. Slack (id: "slack")
+4. Notion (id: "notion")
+5. Linear (id: "linear")
+6. Google (id: "google") - covers Sheets, Docs, Gmail, Meet
+
+Any other integration (e.g. HubSpot, Salesforce, OpenAI, AWS) is OUT OF SCOPE. Do not request them.
 
 You MUST return valid JSON.
 You MUST include ALL of the following fields:
@@ -46,12 +50,13 @@ Hard Rules:
    - "integration_request": User explicitly wants to connect a new tool.
 
 2. Capability Extraction:
-   - Extract generic capabilities needed (e.g., "payment_transactions", "crm_leads").
+   - Extract generic capabilities needed (e.g., "payment_transactions", "issues", "messaging").
    - Do NOT guess capabilities if the user just asks a question.
 
 3. Integration Extraction:
-   - If the user mentions a specific vendor (e.g., "Show me Stripe data", "Connect HubSpot"), extract the matching ID from the valid list.
-   - If the user mentions a vendor NOT in the list, do not include it in requested_integration_ids.
+   - If the user mentions a supported vendor (Stripe, GitHub, Slack, Notion, Linear, Google), extract the matching ID.
+   - If the user mentions "Google Sheets", "Gmail", etc., map it to "google".
+   - If the user mentions a vendor NOT in the list, do not include it.
 
 Output JSON only.
 `;
@@ -60,10 +65,62 @@ export function parseChatPlan(value: unknown): ChatPlan {
   return plannerSchema.parse(value);
 }
 
+function detectIntegrationRequestFromText(userMessage: string): string[] {
+  const text = userMessage.toLowerCase();
+  const triggers = [
+    "connect",
+    "integrate",
+    "integration",
+    "link",
+    "sync",
+    "import",
+    "pull data",
+    "use ",
+    "set up",
+    "setup",
+    "hook up",
+    "authorize",
+    "oauth",
+  ];
+  const hasTrigger = triggers.some((t) => text.includes(t));
+  if (!hasTrigger) return [];
+
+  const hits: string[] = [];
+  for (const i of INTEGRATIONS) {
+    const id = i.id.toLowerCase();
+    const name = i.name.toLowerCase();
+    const idVariant = id.replaceAll("_", " ");
+    
+    // Special handling for Google sub-products
+    if (id === "google") {
+      if (
+        text.includes("google") ||
+        text.includes("gmail") ||
+        text.includes("sheets") ||
+        text.includes("docs") ||
+        text.includes("meet")
+      ) {
+        hits.push("google");
+        continue;
+      }
+    }
+
+    if (text.includes(name) || text.includes(id) || text.includes(idVariant)) {
+      hits.push(i.id);
+    }
+  }
+  return Array.from(new Set(hits));
+}
+
 export async function planChatResponse(userMessage: string): Promise<ChatPlan> {
   getServerEnv();
 
   try {
+    const detected = detectIntegrationRequestFromText(userMessage);
+    if (detected.length > 0) {
+      return { intent: "integration_request", required_capabilities: [], requested_integration_ids: detected };
+    }
+
     const response = (await azureOpenAIClient.chat.completions.create({
       messages: [
         { role: "system", content: SYSTEM_PROMPT },

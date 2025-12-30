@@ -1,8 +1,8 @@
 import { Capability } from "./capabilities";
 
-export type AuthType = "oauth" | "api_key" | "database" | "none";
+export type AuthType = "oauth";
 
-export type ConnectionMode = "zero_input" | "oauth" | "guided" | "advanced";
+export type ConnectionMode = "hosted_oauth";
 
 export interface IntegrationConnector {
   id: string;
@@ -116,33 +116,10 @@ export type NormalizedJson = {
   data: unknown;
 };
 
-export type IntegrationAuthSchema =
-  | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
-  | { type: "oauth"; scopes: string[]; fields?: FieldDef[]; advancedFields?: FieldDef[] }
-  | { type: "database"; fields: FieldDef[]; advancedFields?: FieldDef[] }
-  | { type: "none" };
-
-export type FieldDef =
-  | {
-      kind: "string";
-      id: string;
-      label: string;
-      placeholder?: string;
-      required?: boolean;
-      secret?: boolean;
-    }
-  | {
-      kind: "number";
-      id: string;
-      label: string;
-      placeholder?: string;
-      required?: boolean;
-    }
-  | {
-      kind: "boolean";
-      id: string;
-      label: string;
-    };
+export type IntegrationAuthSchema = {
+  type: "oauth";
+  scopes: string[];
+};
 
 export type IntegrationUIConfig = {
   id: string;

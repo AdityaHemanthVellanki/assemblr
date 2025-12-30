@@ -7,6 +7,8 @@ import { dashboardSpecSchema, type DashboardSpec } from "@/lib/spec/dashboardSpe
 import { planChatResponse } from "./chat-planner";
 import { resolveIntegrations } from "@/lib/integrations/resolveIntegrations";
 import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
+import { getIntegrationUIConfig } from "@/lib/integrations/registry";
+import type { Json } from "@/lib/supabase/database.types";
 
 // --- Schema Definitions ---
 
@@ -47,6 +49,8 @@ const SYSTEM_PROMPT = `
 You are Assemblr AI, an expert product engineer building internal tools.
 Your goal is to help the user build and modify a dashboard tool.
 
+If the user asks to connect an integration, do not explain how. The system will show connection controls.
+
 You will receive:
 1. The current tool specification (if any).
 2. A history of the conversation.
@@ -78,7 +82,27 @@ const chatResponseSchema = z.object({
   }).optional(),
 });
 
-export type ToolChatResponse = z.infer<typeof chatResponseSchema>;
+type LlmToolChatResponse = z.infer<typeof chatResponseSchema>;
+
+export type IntegrationCTA = {
+  id: string;
+  name: string;
+  logoUrl?: string;
+  connected: boolean;
+  label: string;
+  action: string;
+};
+
+export type ToolChatMessage =
+  | { type: "text"; content: string }
+  | { type: "integration_action"; integrations: IntegrationCTA[] };
+
+export type ToolChatResponse = {
+  explanation: string;
+  message: ToolChatMessage;
+  spec: DashboardSpec;
+  metadata?: Json | null;
+};
 
 // --- Helper: Spec Generation ---
 
@@ -86,7 +110,7 @@ async function generateSpecUpdate(input: {
   currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
-}): Promise<ToolChatResponse> {
+}): Promise<LlmToolChatResponse> {
   const systemMessage = {
     role: "system" as const,
     content: SYSTEM_PROMPT + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec)}`,
@@ -141,21 +165,47 @@ export async function processToolChat(input: {
   const plan = await planChatResponse(input.userMessage);
   console.log("[Chat Orchestrator] Plan:", plan);
 
-  // 2. Check Specific Requested Integrations
-  for (const id of plan.requested_integration_ids) {
-    if (!input.connectedIntegrationIds.includes(id)) {
-      // Find proper name for ID
-      const integrationName = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
-      
-      return {
-        explanation: `I need access to ${integrationName} to do this. Connect ${integrationName} to continue.`,
-        spec: input.currentSpec,
-        metadata: {
-          missing_integration_id: id,
-          action: "connect_integration",
-        },
-      };
-    }
+  function buildCtas(integrationIds: string[]) {
+    const uniq = Array.from(new Set(integrationIds));
+    return uniq.map((id) => {
+      let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
+      let logoUrl: string | undefined;
+      try {
+        const ui = getIntegrationUIConfig(id);
+        name = ui.name;
+        logoUrl = ui.logoUrl;
+      } catch {}
+      const connected = input.connectedIntegrationIds.includes(id);
+      const label = connected ? `Reconnect ${name}` : `Connect ${name}`;
+      const params = new URLSearchParams();
+      params.set("provider", id);
+      params.set("source", "chat");
+      const action = `/api/oauth/start?${params.toString()}`;
+      return { id, name, logoUrl, connected, label, action } satisfies IntegrationCTA;
+    });
+  }
+
+  if (plan.intent === "integration_request" && plan.requested_integration_ids.length > 0) {
+    const integrations = buildCtas(plan.requested_integration_ids);
+    return {
+      explanation: "",
+      message: { type: "integration_action", integrations },
+      spec: input.currentSpec,
+      metadata: { type: "integration_action", integrations },
+    };
+  }
+
+  const missingRequested = plan.requested_integration_ids.filter(
+    (id) => !input.connectedIntegrationIds.includes(id),
+  );
+  if (missingRequested.length > 0) {
+    const integrations = buildCtas(missingRequested);
+    return {
+      explanation: "",
+      message: { type: "integration_action", integrations },
+      spec: input.currentSpec,
+      metadata: { type: "integration_action", integrations },
+    };
   }
 
   // 3. Check Capabilities (if no specific integration requested)
@@ -175,28 +225,34 @@ export async function processToolChat(input: {
         .sort((a, b) => b.priority - a.priority)[0];
       
       if (candidate) {
+        const integrations = buildCtas([candidate.id]);
         return {
-          explanation: `I need an integration that supports ${missingCap.replace("_", " ")}. I recommend connecting ${candidate.name}.`,
+          explanation: "",
+          message: { type: "integration_action", integrations },
           spec: input.currentSpec,
-          metadata: {
-            missing_integration_id: candidate.id,
-            action: "connect_integration",
-          },
+          metadata: { type: "integration_action", integrations },
         };
       }
       
       // If no candidate found (rare), generic error
       return {
         explanation: `I need a data source that supports ${missingCap.replace("_", " ")}.`,
+        message: { type: "text", content: `I need a data source that supports ${missingCap.replace("_", " ") }.`, },
         spec: input.currentSpec,
       };
     }
   }
 
   // 4. Proceed to Spec Generation
-  return generateSpecUpdate({
+  const llm = await generateSpecUpdate({
     currentSpec: input.currentSpec,
     messages: input.messages,
     userMessage: input.userMessage,
   });
+  return {
+    explanation: llm.explanation,
+    message: { type: "text", content: llm.explanation },
+    spec: llm.spec,
+    metadata: llm.metadata ?? null,
+  };
 }

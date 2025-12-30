@@ -55,6 +55,9 @@ export async function executeIntegrationFetch({
 
       try {
         const raw = connection.encrypted_credentials as unknown;
+        if (typeof raw !== "string" || !raw.trim()) {
+          throw new Error("Missing credentials");
+        }
         const enc =
           typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
         credentials = decryptJson(enc as never);

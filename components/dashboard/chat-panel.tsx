@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import { Send } from "lucide-react";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -11,23 +10,71 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
 
-type Message = {
+type IntegrationCTA = {
+  id: string;
+  name?: string;
+  logoUrl?: string;
+  connected?: boolean;
+  label?: string;
+  action?: string;
+};
+
+type RawMessage = {
   role: "user" | "assistant";
   content: string;
-  metadata?: {
-    missing_integration_id?: string;
-    action?: "connect_integration";
-  };
+  metadata?: Record<string, unknown> | null;
 };
+
+type Message =
+  | { role: "user" | "assistant"; type: "text"; content: string }
+  | { role: "assistant"; type: "integration_action"; integrations: IntegrationCTA[] };
 
 interface ChatPanelProps {
   toolId: string;
-  initialMessages?: Message[];
+  initialMessages?: RawMessage[];
   onSpecUpdate: (spec: DashboardSpec) => void;
 }
 
 export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPanelProps) {
-  const [messages, setMessages] = React.useState<Message[]>(initialMessages);
+  const [messages, setMessages] = React.useState<Message[]>(() => {
+    return initialMessages.map((m) => {
+      const meta = m.metadata ?? undefined;
+      if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+        const rec = meta as Record<string, unknown>;
+        const type = rec.type;
+        const integrations = rec.integrations;
+        if (type === "integration_action" && Array.isArray(integrations)) {
+          const parsed = integrations.flatMap((raw): IntegrationCTA[] => {
+            if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+            const r = raw as Record<string, unknown>;
+            const id = typeof r.id === "string" ? r.id : "";
+            if (!id) return [];
+            const cta: IntegrationCTA = { id };
+            if (typeof r.name === "string") cta.name = r.name;
+            if (typeof r.logoUrl === "string") cta.logoUrl = r.logoUrl;
+            if (typeof r.connected === "boolean") cta.connected = r.connected;
+            if (typeof r.label === "string") cta.label = r.label;
+            if (typeof r.action === "string") cta.action = r.action;
+            return [cta];
+          });
+          if (parsed.length > 0) {
+            return { role: "assistant", type: "integration_action", integrations: parsed };
+          }
+        }
+
+        const action = rec.action;
+        const missingId = rec.missing_integration_id;
+        if (action === "connect_integration" && typeof missingId === "string") {
+          return {
+            role: "assistant",
+            type: "integration_action",
+            integrations: [{ id: missingId, label: `Connect ${missingId}` }],
+          };
+        }
+      }
+      return { role: m.role, type: "text", content: m.content };
+    });
+  });
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -45,7 +92,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
 
     const userMessage = input.trim();
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+    setMessages((prev) => [...prev, { role: "user", type: "text", content: userMessage }]);
     setIsLoading(true);
 
     try {
@@ -58,15 +105,16 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       if (!res.ok) throw new Error("Failed to send message");
 
       const data = await res.json();
-      
-      setMessages((prev) => [
-        ...prev,
-        { 
-          role: "assistant", 
-          content: data.explanation,
-          metadata: data.metadata ?? undefined,
-        },
-      ]);
+
+      if (data?.message?.type === "integration_action" && Array.isArray(data.message.integrations)) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", type: "integration_action", integrations: data.message.integrations },
+        ]);
+      } else {
+        const content = typeof data.explanation === "string" ? data.explanation : "";
+        setMessages((prev) => [...prev, { role: "assistant", type: "text", content }]);
+      }
       
       if (data.spec) {
         onSpecUpdate(data.spec);
@@ -75,22 +123,26 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       console.error(error);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Sorry, something went wrong. Please try again." },
+        { role: "assistant", type: "text", content: "Sorry, something went wrong. Please try again." },
       ]);
     } finally {
       setIsLoading(false);
     }
   }
 
-  function getConnectUrl(integrationId?: string) {
-    if (!integrationId) return "/dashboard/integrations";
-    
+  function getConnectUrl(integrationId: string) {
     const params = new URLSearchParams();
     params.set("provider", integrationId);
+    params.set("source", "chat");
     if (pathname) {
       params.set("redirectPath", pathname);
     }
     return `/api/oauth/start?${params.toString()}`;
+  }
+
+  function handleConnectClick(integrationId: string) {
+    // Phase 1: Always Hosted OAuth -> Immediate Redirect
+    window.location.href = getConnectUrl(integrationId);
   }
 
   return (
@@ -112,23 +164,22 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                   : "bg-muted"
               )}
             >
-              <div>{msg.content}</div>
-              
-              {msg.metadata?.action === "connect_integration" && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="mt-2 w-full border border-border bg-background hover:bg-accent"
-                  asChild
-                >
-                  <Link 
-                    href={getConnectUrl(msg.metadata.missing_integration_id)}
-                    target={msg.metadata.missing_integration_id ? "_self" : "_blank"}
-                    rel={msg.metadata.missing_integration_id ? undefined : "noopener noreferrer"}
-                  >
-                    Connect Integration
-                  </Link>
-                </Button>
+              {msg.type === "text" ? (
+                <div>{msg.content}</div>
+              ) : (
+                <div className="space-y-2">
+                  {msg.integrations.map((cta) => (
+                    <Button
+                      key={cta.id}
+                      variant="secondary"
+                      size="sm"
+                      className="w-full border border-border bg-background hover:bg-accent"
+                      onClick={() => handleConnectClick(cta.id)}
+                    >
+                      {cta.label || `Connect ${cta.name || cta.id}`}
+                    </Button>
+                  ))}
+                </div>
               )}
             </div>
           ))}

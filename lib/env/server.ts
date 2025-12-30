@@ -44,11 +44,20 @@ const serverEnvSchema = z
   })
   .superRefine((env, ctx) => {
     const isProd = env.NODE_ENV === "production";
+    const isProdBuildPhase = process.env.NEXT_PHASE === "phase-production-build";
     if (isProd && !env.NEXT_PUBLIC_SITE_URL) {
+      if (isProdBuildPhase) return;
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["NEXT_PUBLIC_SITE_URL"],
         message: "NEXT_PUBLIC_SITE_URL is required in production",
+      });
+    }
+    if (!env.DATA_ENCRYPTION_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["DATA_ENCRYPTION_KEY"],
+        message: "DATA_ENCRYPTION_KEY is required",
       });
     }
   });
