@@ -24,8 +24,8 @@ export const dashboardSpecSchema = z
   .object({
     title: z.string().min(1),
     description: z.string().min(1).optional(),
-    metrics: z.array(metricSchema).min(1),
-    views: z.array(viewSchema).min(1),
+    metrics: z.array(metricSchema).default([]),
+    views: z.array(viewSchema).default([]),
   })
   .strict()
   .superRefine((spec, ctx) => {

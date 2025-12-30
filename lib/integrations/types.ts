@@ -2,6 +2,8 @@ import { Capability } from "./capabilities";
 
 export type AuthType = "oauth" | "api_key" | "database" | "none";
 
+export type ConnectionMode = "zero_input" | "oauth" | "guided" | "advanced";
+
 export interface IntegrationConnector {
   id: string;
   name: string;
@@ -115,9 +117,9 @@ export type NormalizedJson = {
 };
 
 export type IntegrationAuthSchema =
-  | { type: "api_key"; fields: FieldDef[] }
-  | { type: "oauth"; scopes: string[] }
-  | { type: "database"; fields: FieldDef[] }
+  | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
+  | { type: "oauth"; scopes: string[]; advancedFields?: FieldDef[] }
+  | { type: "database"; fields: FieldDef[]; advancedFields?: FieldDef[] }
   | { type: "none" };
 
 export type FieldDef =
@@ -148,5 +150,6 @@ export type IntegrationUIConfig = {
   category: string;
   logoUrl: string;
   description: string;
+  connectionMode: ConnectionMode;
   auth: IntegrationAuthSchema;
 };

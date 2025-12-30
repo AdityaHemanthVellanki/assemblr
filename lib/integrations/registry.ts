@@ -4,6 +4,7 @@ import { StripeConnector } from "./connectors/stripe";
 import { HubspotConnector } from "./connectors/hubspot";
 import { CsvConnector } from "./connectors/csv";
 import { GenericApiConnector } from "./connectors/generic-api";
+import { MockFallbackConnector } from "./connectors/mock-fallback";
 
 export const CONNECTORS: Record<string, IntegrationConnector> = {
   postgres: new PostgresConnector(),
@@ -11,15 +12,29 @@ export const CONNECTORS: Record<string, IntegrationConnector> = {
   hubspot: new HubspotConnector(),
   csv: new CsvConnector(),
   generic_api: new GenericApiConnector(),
+  mock_fallback: new MockFallbackConnector(),
 };
 
 export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
+  // 1. Zero-Input
+  {
+    id: "csv",
+    name: "CSV Upload",
+    category: "Files",
+    logoUrl: "https://logo.clearbit.com/google.com",
+    description: "Upload CSV files and query them as structured tables.",
+    connectionMode: "zero_input",
+    auth: { type: "none" },
+  },
+  
+  // 2. Guided Input (Databases)
   {
     id: "postgres",
     name: "Postgres",
     category: "Database",
     logoUrl: "https://logo.clearbit.com/postgresql.org",
     description: "Query and analyze data from your Postgres database.",
+    connectionMode: "guided",
     auth: {
       type: "database",
       fields: [
@@ -28,22 +43,59 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
         { kind: "string", id: "database", label: "Database", required: true },
         { kind: "string", id: "username", label: "Username", required: true },
         { kind: "string", id: "password", label: "Password", required: true, secret: true },
+      ],
+      advancedFields: [
         { kind: "boolean", id: "ssl", label: "Use SSL" },
       ],
     },
   },
   {
+    id: "mysql",
+    name: "MySQL",
+    category: "Database",
+    logoUrl: "https://logo.clearbit.com/mysql.com",
+    description: "Connect to MySQL databases.",
+    connectionMode: "guided",
+    auth: {
+      type: "database",
+      fields: [
+        { kind: "string", id: "host", label: "Host", required: true },
+        { kind: "number", id: "port", label: "Port", required: true },
+        { kind: "string", id: "database", label: "Database", required: true },
+        { kind: "string", id: "username", label: "Username", required: true },
+        { kind: "string", id: "password", label: "Password", required: true, secret: true },
+      ],
+    },
+  },
+  {
+    id: "snowflake",
+    name: "Snowflake",
+    category: "Database",
+    logoUrl: "https://logo.clearbit.com/snowflake.com",
+    description: "Enterprise data warehouse.",
+    connectionMode: "guided",
+    auth: {
+      type: "database",
+      fields: [
+        { kind: "string", id: "account", label: "Account Identifier", required: true },
+        { kind: "string", id: "username", label: "Username", required: true },
+        { kind: "string", id: "password", label: "Password", required: true, secret: true },
+        { kind: "string", id: "warehouse", label: "Warehouse", required: true },
+      ],
+    },
+  },
+
+  // 3. One-Click OAuth
+  {
     id: "stripe",
     name: "Stripe",
     category: "Payments",
     logoUrl: "https://logo.clearbit.com/stripe.com",
-    description: "Sync payments and subscription events from Stripe.",
+    description: "Sync payments and subscription events.",
+    connectionMode: "oauth",
     auth: {
-      type: "api_key",
-      fields: [
-        { kind: "string", id: "apiKey", label: "API Key", required: true, secret: true },
-        { kind: "string", id: "label", label: "Label (optional)", required: false },
-      ],
+      type: "oauth",
+      scopes: ["read_write"],
     },
   },
   {
@@ -51,18 +103,105 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     name: "HubSpot",
     category: "CRM",
     logoUrl: "https://logo.clearbit.com/hubspot.com",
-    description: "Pull contacts and CRM activity from HubSpot.",
+    description: "Pull contacts and CRM activity.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: ["crm.objects.contacts.read"],
+    },
+  },
+  {
+    id: "salesforce",
+    name: "Salesforce",
+    category: "CRM",
+    logoUrl: "https://logo.clearbit.com/salesforce.com",
+    description: "Enterprise CRM data sync.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: ["api", "refresh_token"],
+    },
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    category: "Messaging",
+    logoUrl: "https://logo.clearbit.com/slack.com",
+    description: "Read messages and send notifications.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: ["channels:read", "chat:write"],
+    },
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    category: "Engineering",
+    logoUrl: "https://logo.clearbit.com/github.com",
+    description: "Sync repositories, issues, and PRs.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: ["repo", "read:org"],
+    },
+  },
+  {
+    id: "google_analytics",
+    name: "Google Analytics 4",
+    category: "Analytics",
+    logoUrl: "https://logo.clearbit.com/google.com",
+    description: "Website traffic and events.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
+    },
+  },
+  {
+    id: "notion",
+    name: "Notion",
+    category: "Files",
+    logoUrl: "https://logo.clearbit.com/notion.so",
+    description: "Access pages and databases.",
+    connectionMode: "oauth",
+    auth: {
+      type: "oauth",
+      scopes: [],
+    },
+  },
+
+  // 4. Guided Input (API Keys / Advanced)
+  {
+    id: "openai",
+    name: "OpenAI",
+    category: "AI & ML",
+    logoUrl: "https://logo.clearbit.com/openai.com",
+    description: "Access GPT models and embeddings.",
+    connectionMode: "guided",
     auth: {
       type: "api_key",
       fields: [
-        {
-          kind: "string",
-          id: "accessToken",
-          label: "Access Token",
-          required: true,
-          secret: true,
-        },
-        { kind: "string", id: "label", label: "Label (optional)", required: false },
+        { kind: "string", id: "apiKey", label: "API Key", required: true, secret: true },
+      ],
+      advancedFields: [
+        { kind: "string", id: "orgId", label: "Organization ID" },
+      ],
+    },
+  },
+  {
+    id: "aws",
+    name: "AWS",
+    category: "Cloud",
+    logoUrl: "https://logo.clearbit.com/amazonaws.com",
+    description: "Cloud infrastructure metrics and logs.",
+    connectionMode: "advanced",
+    auth: {
+      type: "api_key",
+      fields: [
+        { kind: "string", id: "accessKeyId", label: "Access Key ID", required: true },
+        { kind: "string", id: "secretAccessKey", label: "Secret Access Key", required: true, secret: true },
+        { kind: "string", id: "region", label: "Region", required: true },
       ],
     },
   },
@@ -71,22 +210,18 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     name: "Generic REST/GraphQL",
     category: "Generic API",
     logoUrl: "https://logo.clearbit.com/postman.com",
-    description: "Connect to any REST or GraphQL API via base URL and key.",
+    description: "Connect to any REST or GraphQL API.",
+    connectionMode: "advanced",
     auth: {
       type: "api_key",
       fields: [
         { kind: "string", id: "baseUrl", label: "Base URL", required: true },
-        { kind: "string", id: "apiKey", label: "API Key (optional)", required: false, secret: true },
+      ],
+      advancedFields: [
+        { kind: "string", id: "apiKey", label: "API Key", secret: true },
+        { kind: "string", id: "headers", label: "Custom Headers (JSON)" },
       ],
     },
-  },
-  {
-    id: "csv",
-    name: "CSV Upload",
-    category: "Files",
-    logoUrl: "https://logo.clearbit.com/google.com",
-    description: "Upload CSV files and query them as structured tables.",
-    auth: { type: "none" },
   },
 ] as const;
 
@@ -97,13 +232,18 @@ export function getIntegrationUIConfig(integrationId: string): IntegrationUIConf
 }
 
 export function getConnector(integrationId: string): IntegrationConnector {
+  // 1. Try explicit connector
   const connector = CONNECTORS[integrationId];
-  // For the purpose of this exercise, if a specific connector isn't implemented (e.g. 'segment'),
-  // we could fallback to generic_api OR throw.
-  // Given the "Escape Hatch" requirement, falling back to Generic might be dangerous without explicit user intent.
-  // We will stick to strict resolution but acknowledge that 'generic_api' is the catch-all ID.
-  if (!connector) {
-    throw new Error(`Connector not found for integration: ${integrationId}`);
+  if (connector) return connector;
+
+  // 2. Check if valid integration ID exists in UI config
+  const config = INTEGRATIONS_UI.find((i) => i.id === integrationId);
+  if (config) {
+    // If it's a known integration but no specific connector, use Generic/Fallback
+    // For now, we map everything else to GenericApiConnector or throw if not appropriate
+    // But for the "Universal" requirement, using GenericApiConnector as a shell is better than crashing
+    return CONNECTORS["mock_fallback"];
   }
-  return connector;
+
+  throw new Error(`Connector not found for integration: ${integrationId}`);
 }

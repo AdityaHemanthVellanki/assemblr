@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Send } from "lucide-react";
+import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,10 @@ import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
 type Message = {
   role: "user" | "assistant";
   content: string;
+  metadata?: {
+    missing_integration_id?: string;
+    action?: "connect_integration";
+  };
 };
 
 interface ChatPanelProps {
@@ -54,7 +59,11 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.explanation },
+        { 
+          role: "assistant", 
+          content: data.explanation,
+          metadata: data.metadata 
+        },
       ]);
       
       if (data.spec) {
@@ -90,7 +99,20 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                   : "bg-muted"
               )}
             >
-              {msg.content}
+              <div>{msg.content}</div>
+              
+              {msg.metadata?.action === "connect_integration" && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-2 w-full border border-border bg-background hover:bg-accent"
+                  asChild
+                >
+                  <Link href="/dashboard/integrations" target="_blank" rel="noopener noreferrer">
+                    Connect Integration
+                  </Link>
+                </Button>
+              )}
             </div>
           ))}
           {isLoading && (

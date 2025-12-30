@@ -7,25 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-type IntegrationListItem = {
-  id: string;
-  name: string;
-  category: string;
-  logoUrl: string;
-  description: string;
-  auth: IntegrationAuthSchema;
-  connected: boolean;
-  connectedAt: string | null;
-  updatedAt: string | null;
-};
+// --- Types mirroring backend types ---
 
-type FilterMode = "all" | "connected" | "not_connected";
-
-type IntegrationAuthSchema =
-  | { type: "api_key"; fields: FieldDef[] }
-  | { type: "database"; fields: FieldDef[] }
-  | { type: "oauth"; scopes: string[] }
-  | { type: "none" };
+type ConnectionMode = "zero_input" | "oauth" | "guided" | "advanced";
 
 type FieldDef =
   | {
@@ -49,14 +33,29 @@ type FieldDef =
       label: string;
     };
 
+type IntegrationAuthSchema =
+  | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
+  | { type: "database"; fields: FieldDef[]; advancedFields?: FieldDef[] }
+  | { type: "oauth"; scopes: string[]; advancedFields?: FieldDef[] }
+  | { type: "none" };
+
 type IntegrationUiConfig = {
   id: string;
   name: string;
   category: string;
   logoUrl: string;
   description: string;
+  connectionMode: ConnectionMode;
   auth: IntegrationAuthSchema;
 };
+
+type IntegrationListItem = IntegrationUiConfig & {
+  connected: boolean;
+  connectedAt: string | null;
+  updatedAt: string | null;
+};
+
+type FilterMode = "all" | "connected" | "not_connected";
 
 function statusDotClass(connected: boolean) {
   return connected ? "bg-emerald-500" : "bg-muted-foreground/50";
@@ -76,6 +75,53 @@ function formatTimestamp(ts: string) {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(d);
 }
 
+function FieldRenderer({
+  field,
+  value,
+  onChange,
+}: {
+  field: FieldDef;
+  value: unknown;
+  onChange: (val: unknown) => void;
+}) {
+  if (field.kind === "boolean") {
+    const checked = Boolean(value);
+    return (
+      <label className="flex items-center justify-between gap-3 text-sm cursor-pointer hover:bg-muted/50 p-2 rounded-md -mx-2">
+        <span>{field.label}</span>
+        <input
+          type="checkbox"
+          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      </label>
+    );
+  }
+
+  const strValue =
+    typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
+  const inputType =
+    field.kind === "number" ? "number" : field.secret ? "password" : "text";
+
+  return (
+    <div className="space-y-1">
+      <label className="text-sm font-medium">
+        {field.label}
+        {field.required && <span className="text-red-500 ml-1">*</span>}
+      </label>
+      <Input
+        type={inputType}
+        value={strValue}
+        placeholder={field.placeholder}
+        onChange={(e) =>
+          onChange(field.kind === "number" ? Number(e.target.value) : e.target.value)
+        }
+      />
+    </div>
+  );
+}
+
 export default function IntegrationsPage() {
   const [integrations, setIntegrations] = React.useState<IntegrationListItem[]>([]);
   const [search, setSearch] = React.useState("");
@@ -88,7 +134,7 @@ export default function IntegrationsPage() {
   const [submitting, setSubmitting] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [disconnectMode, setDisconnectMode] = React.useState(false);
-  const [disconnectConfirm, setDisconnectConfirm] = React.useState(false);
+  const [advancedOpen, setAdvancedOpen] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -135,29 +181,33 @@ export default function IntegrationsPage() {
     return integrations.find((i) => i.id === active.id) ?? null;
   }, [active, integrations]);
 
-  const openConnect = React.useCallback(async (integrationId: string) => {
+  const openConnect = React.useCallback((integrationId: string) => {
     setFormError(null);
     setDisconnectMode(false);
-    setDisconnectConfirm(false);
     setSubmitting(false);
+    setAdvancedOpen(false);
 
     const current = integrations.find((i) => i.id === integrationId);
     if (!current) return;
 
+    // Pre-fill defaults
     const initialValues: Record<string, unknown> = {};
     if (current.auth.type === "database") {
       initialValues.port = 5432;
-      initialValues.ssl = true;
     }
     setFormValues(initialValues);
-    setActive({
+    
+    // Create a clean config object to avoid mutating state ref
+    const config: IntegrationUiConfig = {
       id: current.id,
       name: current.name,
       category: current.category,
       logoUrl: current.logoUrl,
       description: current.description,
+      connectionMode: current.connectionMode,
       auth: current.auth,
-    });
+    };
+    setActive(config);
   }, [integrations]);
 
   const closeModal = React.useCallback(() => {
@@ -166,7 +216,6 @@ export default function IntegrationsPage() {
     setFormError(null);
     setSubmitting(false);
     setDisconnectMode(false);
-    setDisconnectConfirm(false);
   }, []);
 
   React.useEffect(() => {
@@ -182,7 +231,18 @@ export default function IntegrationsPage() {
     if (!active) return;
     setSubmitting(true);
     setFormError(null);
+
     try {
+      // Mock OAuth delay
+      if (active.connectionMode === "oauth") {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      
+      // Zero input delay
+      if (active.connectionMode === "zero_input") {
+         await new Promise((r) => setTimeout(r, 800));
+      }
+
       const res = await fetch("/api/integrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -233,10 +293,18 @@ export default function IntegrationsPage() {
     }
   }, [active, closeModal, load]);
 
+  // Zero Input Auto-Submit
+  React.useEffect(() => {
+    if (active?.connectionMode === "zero_input" && !activeStatus?.connected && !submitting && !formError) {
+      void submit();
+    }
+  }, [active, activeStatus, submitting, formError, submit]);
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
       <div className="space-y-1">
         <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
+        <p className="text-muted-foreground">Connect your tools and data sources to Assemblr.</p>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -248,32 +316,22 @@ export default function IntegrationsPage() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant={filter === "all" ? "default" : "outline"}
-            onClick={() => setFilter("all")}
-          >
-            All
-          </Button>
-          <Button
-            type="button"
-            variant={filter === "connected" ? "default" : "outline"}
-            onClick={() => setFilter("connected")}
-          >
-            Connected
-          </Button>
-          <Button
-            type="button"
-            variant={filter === "not_connected" ? "default" : "outline"}
-            onClick={() => setFilter("not_connected")}
-          >
-            Not Connected
-          </Button>
+          {["all", "connected", "not_connected"].map((m) => (
+            <Button
+              key={m}
+              type="button"
+              variant={filter === m ? "default" : "outline"}
+              onClick={() => setFilter(m as FilterMode)}
+              className="capitalize"
+            >
+              {m.replace("_", " ")}
+            </Button>
+          ))}
         </div>
       </div>
 
       {pageError ? (
-        <div className="rounded-md border border-border bg-card p-4 text-sm">
+        <div className="rounded-md border border-border bg-destructive/10 p-4 text-sm text-destructive">
           {pageError}
         </div>
       ) : null}
@@ -282,7 +340,7 @@ export default function IntegrationsPage() {
         {(loading ? Array.from({ length: 6 }) : visible).map((item, idx) => {
           if (loading) {
             return (
-              <Card key={`skeleton-${idx}`} className="h-[140px]">
+              <Card key={`skeleton-${idx}`} className="h-[140px] animate-pulse bg-muted/50">
                 <CardHeader />
               </Card>
             );
@@ -290,17 +348,17 @@ export default function IntegrationsPage() {
 
           const i = item as IntegrationListItem;
           return (
-            <Card key={i.id} className="flex flex-col border border-border">
+            <Card key={i.id} className="flex flex-col border border-border transition-colors hover:border-foreground/20">
               <CardHeader className="space-y-3">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-background">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background p-1">
                       <Image
                         src={i.logoUrl}
                         alt=""
-                        width={24}
-                        height={24}
-                        className="h-6 w-6 object-contain"
+                        width={32}
+                        height={32}
+                        className="h-full w-full object-contain"
                         unoptimized
                       />
                     </div>
@@ -316,13 +374,14 @@ export default function IntegrationsPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs text-muted-foreground">
-                    {i.connectedAt ? `Connected ${formatTimestamp(i.connectedAt)}` : " "}
+                <div className="flex items-center justify-between gap-3 pt-2">
+                  <div className="text-xs text-muted-foreground truncate">
+                    {i.connectedAt ? `Synced ${formatTimestamp(i.connectedAt)}` : "Ready to connect"}
                   </div>
                   <Button
                     type="button"
                     variant={i.connected ? "secondary" : "default"}
+                    size="sm"
                     onClick={() => void openConnect(i.id)}
                   >
                     {i.connected ? "Manage" : "Connect"}
@@ -336,142 +395,153 @@ export default function IntegrationsPage() {
 
       {active ? (
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/30"
+          className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeModal();
           }}
           role="dialog"
           aria-modal="true"
         >
-          <div className="h-full w-full max-w-md border-l border-border bg-background p-6">
+          <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300">
             <div className="space-y-1">
-              <h2 className="text-lg font-semibold">{active.name}</h2>
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                 <Image
+                    src={active.logoUrl}
+                    alt=""
+                    width={20}
+                    height={20}
+                    className="h-5 w-5 object-contain"
+                    unoptimized
+                  />
+                {active.name}
+              </h2>
               <p className="text-sm text-muted-foreground">{active.description}</p>
             </div>
 
-            <div className="mt-6 space-y-4">
+            <div className="mt-8 space-y-6">
               {activeStatus?.connected ? (
-                <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
-                  Connected{activeStatus.connectedAt ? ` · ${formatTimestamp(activeStatus.connectedAt)}` : ""}
+                <div className="rounded-md border border-border bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
+                   ✓ Connected since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
                 </div>
               ) : null}
 
               {formError ? (
-                <div className="rounded-md border border-border bg-card p-3 text-sm">
+                <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
                   {formError}
                 </div>
               ) : null}
 
-              {active.auth.type === "none" ? (
-                <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
-                  This integration does not require credentials.
+              {/* MODE SPECIFIC UI */}
+              
+              {/* Zero Input */}
+              {active.connectionMode === "zero_input" && !activeStatus?.connected ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
+                   <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                   <p className="text-sm text-muted-foreground">Connecting to {active.name}...</p>
                 </div>
-              ) : active.auth.type === "oauth" ? (
-                <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
-                  OAuth is not configured for this integration.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {active.auth.fields.map((f) => {
-                    if (f.kind === "boolean") {
-                      const checked = Boolean(formValues[f.id]);
-                      return (
-                        <label key={f.id} className="flex items-center justify-between gap-3 text-sm">
-                          <span>{f.label}</span>
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
-                            checked={checked}
-                            onChange={(e) =>
-                              setFormValues((prev) => ({ ...prev, [f.id]: e.target.checked }))
-                            }
-                          />
-                        </label>
-                      );
-                    }
+              ) : null}
 
-                    const raw = formValues[f.id];
-                    const value =
-                      typeof raw === "string"
-                        ? raw
-                        : typeof raw === "number"
-                          ? String(raw)
-                          : "";
-                    const inputType =
-                      f.kind === "number" ? "number" : f.secret ? "password" : "text";
+              {/* OAuth */}
+              {active.connectionMode === "oauth" && !activeStatus?.connected ? (
+                 <div className="py-4 space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      Connect your {active.name} account to sync data automatically.
+                    </p>
+                    <Button 
+                      className="w-full" 
+                      onClick={() => void submit()} 
+                      disabled={submitting}
+                    >
+                      {submitting ? "Connecting..." : `Connect with ${active.name}`}
+                    </Button>
+                    <p className="text-xs text-center text-muted-foreground">
+                      You will be redirected to {active.name} to authorize access.
+                    </p>
+                 </div>
+              ) : null}
 
-                    return (
-                      <div key={f.id} className="space-y-1">
-                        <label className="text-sm font-medium">{f.label}</label>
-                        <Input
-                          type={inputType}
-                          value={value}
-                          placeholder={f.placeholder}
-                          onChange={(e) =>
-                            setFormValues((prev) => ({
-                              ...prev,
-                              [f.id]:
-                                f.kind === "number" ? Number(e.target.value) : e.target.value,
-                            }))
-                          }
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              {/* Guided / Advanced Form */}
+              {(active.connectionMode === "guided" || active.connectionMode === "advanced") && !activeStatus?.connected ? (
+                <form 
+                  onSubmit={(e) => { e.preventDefault(); void submit(); }}
+                  className="space-y-4"
+                >
+                  {"fields" in active.auth && active.auth.fields.map((f) => (
+                    <FieldRenderer 
+                      key={f.id} 
+                      field={f} 
+                      value={formValues[f.id]} 
+                      onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+                    />
+                  ))}
 
-              <div className="flex items-center justify-between gap-3 pt-2">
-                <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>
-                  Cancel
+                  {"advancedFields" in active.auth && active.auth.advancedFields && active.auth.advancedFields.length > 0 && (
+                    <div className="pt-2">
+                       <button
+                         type="button"
+                         onClick={() => setAdvancedOpen(!advancedOpen)}
+                         className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                       >
+                         {advancedOpen ? "Hide" : "Show"} Advanced Options
+                       </button>
+                       {advancedOpen && (
+                         <div className="mt-3 space-y-4 border-l-2 border-border pl-4">
+                           {active.auth.advancedFields.map((f) => (
+                              <FieldRenderer 
+                                key={f.id} 
+                                field={f} 
+                                value={formValues[f.id]} 
+                                onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+                              />
+                           ))}
+                         </div>
+                       )}
+                    </div>
+                  )}
+
+                  <div className="pt-4 flex justify-end">
+                     <Button type="submit" disabled={submitting}>
+                       {submitting ? "Connecting..." : "Connect"}
+                     </Button>
+                  </div>
+                </form>
+              ) : null}
+
+
+              {/* Disconnect / Close Logic */}
+              <div className="border-t border-border pt-6 flex items-center justify-between">
+                <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting}>
+                  Close
                 </Button>
 
-                <div className="flex items-center gap-2">
-                  {activeStatus?.connected ? (
-                    disconnectMode ? (
-                      <>
-                        <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
-                            checked={disconnectConfirm}
-                            onChange={(e) => setDisconnectConfirm(e.target.checked)}
-                            disabled={submitting}
-                          />
-                          Confirm
-                        </label>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          onClick={() => void disconnect()}
-                          disabled={submitting || !disconnectConfirm}
-                        >
-                          Disconnect
-                        </Button>
-                      </>
+                {activeStatus?.connected && (
+                  <div className="flex items-center gap-2">
+                    {disconnectMode ? (
+                       <>
+                         <Button 
+                           type="button" 
+                           variant="destructive" 
+                           onClick={() => void disconnect()}
+                           disabled={submitting}
+                         >
+                           Confirm Disconnect
+                         </Button>
+                       </>
                     ) : (
-                      <Button
-                        type="button"
-                        variant="outline"
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        className="text-destructive hover:bg-destructive/10"
                         onClick={() => setDisconnectMode(true)}
                         disabled={submitting}
                       >
                         Disconnect
                       </Button>
-                    )
-                  ) : null}
-
-                  <Button
-                    type="button"
-                    onClick={() => void submit()}
-                    disabled={
-                      submitting || active.auth.type === "none" || activeStatus?.connected === true
-                    }
-                  >
-                    {submitting ? "Connecting..." : activeStatus?.connected ? "Connected" : "Connect"}
-                  </Button>
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
+
             </div>
           </div>
         </div>

@@ -4,8 +4,12 @@ import { z } from "zod";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { dashboardSpecSchema, type DashboardSpec } from "@/lib/spec/dashboardSpec";
+import { planChatResponse } from "./chat-planner";
+import { resolveIntegrations } from "@/lib/integrations/resolveIntegrations";
+import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
 
-// Re-use the core schema definition text, but adapted for the chat wrapper
+// --- Schema Definitions ---
+
 const CORE_SPEC_INSTRUCTIONS = `
 The "spec" object must strictly follow this schema:
 {
@@ -68,18 +72,21 @@ Conventions:
 const chatResponseSchema = z.object({
   explanation: z.string(),
   spec: dashboardSpecSchema,
+  metadata: z.object({
+    missing_integration_id: z.string().optional(),
+    action: z.enum(["connect_integration"]).optional(),
+  }).optional(),
 });
 
 export type ToolChatResponse = z.infer<typeof chatResponseSchema>;
 
-export async function processToolChat(input: {
+// --- Helper: Spec Generation ---
+
+async function generateSpecUpdate(input: {
   currentSpec: DashboardSpec | null;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
 }): Promise<ToolChatResponse> {
-  getServerEnv();
-
-  // Construct the conversation
   const systemMessage = {
     role: "system" as const,
     content: SYSTEM_PROMPT + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec ?? { title: "New Tool", metrics: [], views: [] })}`,
@@ -118,4 +125,78 @@ export async function processToolChat(input: {
     console.error("Azure OpenAI error", err);
     throw new Error("AI service unavailable");
   }
+}
+
+// --- Main Orchestrator ---
+
+export async function processToolChat(input: {
+  currentSpec: DashboardSpec | null;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  userMessage: string;
+  connectedIntegrationIds: string[];
+}): Promise<ToolChatResponse> {
+  getServerEnv();
+
+  // 1. Plan and Extract Intent
+  const plan = await planChatResponse(input.userMessage);
+  console.log("[Chat Orchestrator] Plan:", plan);
+
+  // 2. Check Specific Requested Integrations
+  for (const id of plan.requested_integration_ids) {
+    if (!input.connectedIntegrationIds.includes(id)) {
+      // Find proper name for ID
+      const integrationName = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
+      
+      return {
+        explanation: `I need access to ${integrationName} to do this. Connect ${integrationName} to continue.`,
+        spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+        metadata: {
+          missing_integration_id: id,
+          action: "connect_integration",
+        },
+      };
+    }
+  }
+
+  // 3. Check Capabilities (if no specific integration requested)
+  if (plan.requested_integration_ids.length === 0 && plan.required_capabilities.length > 0) {
+    // Check if we have coverage
+    const resolution = resolveIntegrations({
+      required: plan.required_capabilities as Capability[],
+      connectedIds: input.connectedIntegrationIds,
+    });
+
+    if (resolution.missing.length > 0) {
+      // We are missing capabilities. We need to suggest an integration.
+      // Simple heuristic: Find the highest priority integration that covers the first missing capability.
+      const missingCap = resolution.missing[0];
+      const candidate = INTEGRATIONS
+        .filter(i => i.capabilities.includes(missingCap))
+        .sort((a, b) => b.priority - a.priority)[0];
+      
+      if (candidate) {
+        return {
+          explanation: `I need an integration that supports ${missingCap.replace("_", " ")}. I recommend connecting ${candidate.name}.`,
+          spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+          metadata: {
+            missing_integration_id: candidate.id,
+            action: "connect_integration",
+          },
+        };
+      }
+      
+      // If no candidate found (rare), generic error
+      return {
+        explanation: `I need a data source that supports ${missingCap.replace("_", " ")}.`,
+        spec: input.currentSpec ?? { title: "New Tool", metrics: [], views: [] },
+      };
+    }
+  }
+
+  // 4. Proceed to Spec Generation
+  return generateSpecUpdate({
+    currentSpec: input.currentSpec,
+    messages: input.messages,
+    userMessage: input.userMessage,
+  });
 }

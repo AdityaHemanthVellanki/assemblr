@@ -47,14 +47,18 @@ export async function POST(
       return NextResponse.json({ error: "Failed to save message" }, { status: 500 });
     }
 
-    const [toolRes, historyRes] = await Promise.all([
+    const [toolRes, historyRes, connectionsRes] = await Promise.all([
       supabase.from("projects").select("spec").eq("id", toolId).single(),
       supabase
         .from("chat_messages")
-        .select("role, content")
+        .select("role, content, metadata")
         .eq("tool_id", toolId)
         .order("created_at", { ascending: false })
         .limit(20),
+      supabase
+        .from("integration_connections")
+        .select("integration_id")
+        .eq("org_id", ctx.orgId),
     ]);
 
     if (toolRes.error || !toolRes.data) {
@@ -69,11 +73,14 @@ export async function POST(
     const history = (historyRes.data ?? [])
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    
+    const connectedIntegrationIds = (connectionsRes.data ?? []).map((c) => c.integration_id);
 
     const result = await processToolChat({
       currentSpec,
       messages: history,
       userMessage,
+      connectedIntegrationIds,
     });
 
     const { error: updateError } = await supabase
@@ -90,6 +97,7 @@ export async function POST(
       org_id: ctx.orgId,
       role: "assistant",
       content: result.explanation,
+      metadata: result.metadata ?? null, // Save metadata (e.g. missing_integration_id)
     });
     if (insertAiError) {
       console.error("Failed to save AI message", insertAiError);
@@ -104,4 +112,3 @@ export async function POST(
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
-

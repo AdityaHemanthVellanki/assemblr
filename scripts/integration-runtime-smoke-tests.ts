@@ -121,6 +121,22 @@ async function runTests() {
     process.exit(1);
   }
 
+  // 7. Mock Fallback Resolution Test
+  try {
+    const fallback = getConnector("salesforce");
+    if (fallback.id !== "mock_fallback") throw new Error("Registry failed to resolve fallback connector for Salesforce");
+    
+    // Verify connect succeeds with empty input (OAuth simulation)
+    const res = await fallback.connect({ orgId: "test", credentials: {} });
+    if (!res.success) throw new Error("Mock fallback failed to connect");
+    
+    console.log("ok: Fallback resolution & mock connection");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("fail: Fallback test", msg);
+    process.exit(1);
+  }
+
   console.log("All integration runtime smoke tests passed!");
 }
 

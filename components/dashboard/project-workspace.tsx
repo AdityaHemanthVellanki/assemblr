@@ -14,6 +14,7 @@ interface ProjectWorkspaceProps {
   initialMessages: Array<{
     role: "user" | "assistant";
     content: string;
+    metadata?: any;
   }>;
 }
 

@@ -31,7 +31,7 @@ export default async function ProjectPage({
 
   const messagesRes = await supabase
     .from("chat_messages")
-    .select("role, content")
+    .select("role, content, metadata")
     .eq("tool_id", toolId)
     .order("created_at", { ascending: true });
 
@@ -53,6 +53,7 @@ export default async function ProjectPage({
   const messages = (messagesRes.data ?? []).map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
+    metadata: m.metadata,
   }));
 
   return (
