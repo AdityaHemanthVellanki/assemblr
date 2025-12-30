@@ -117,7 +117,33 @@ export async function GET(
     const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : undefined;
 
     let providerAccountId = tokens.id_token ? "parsed_from_id_token" : undefined;
-    
+    let githubUser: { id: number; login: string } | undefined;
+
+    // Fetch GitHub identity if applicable
+    if (providerId === "github") {
+      const userRes = await fetch("https://api.github.com/user", {
+        headers: {
+          Authorization: `Bearer ${tokens.access_token}`,
+          Accept: "application/json",
+          "User-Agent": "Assemblr-OAuth",
+        },
+      });
+
+      if (!userRes.ok) {
+        console.error("Failed to fetch GitHub user", await userRes.text());
+        return redirectWithError("Failed to fetch GitHub identity", storedState.redirectPath);
+      }
+
+      const userData = await userRes.json();
+      if (!userData.id) {
+        console.error("Invalid GitHub user response", userData);
+        return redirectWithError("Invalid GitHub identity", storedState.redirectPath);
+      }
+
+      githubUser = { id: userData.id, login: userData.login };
+      providerAccountId = String(userData.id);
+    }
+
     const tokenSet = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -125,6 +151,9 @@ export async function GET(
       scope: tokens.scope,
       provider_account_id: providerAccountId,
       updated_at: new Date().toISOString(),
+      // Store GitHub specific fields
+      github_user_id: githubUser?.id,
+      github_username: githubUser?.login,
     };
 
     // 3. Store Updated Credentials and Activate

@@ -158,6 +158,8 @@ export async function processToolChat(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
+  integrationMode: "auto" | "manual";
+  selectedIntegrationIds?: string[];
 }): Promise<ToolChatResponse> {
   getServerEnv();
 
@@ -176,6 +178,12 @@ export async function processToolChat(input: {
         logoUrl = ui.logoUrl;
       } catch {}
       const connected = input.connectedIntegrationIds.includes(id);
+      
+      // If manual mode, and not selected, we prompt to Add
+      // If manual mode, and selected but not connected, we prompt to Connect
+      // If auto mode, and not connected, we prompt to Connect
+
+      // Default behavior (Auto-like):
       const label = connected ? `Reconnect ${name}` : `Connect ${name}`;
       const params = new URLSearchParams();
       params.set("provider", id);
@@ -183,6 +191,79 @@ export async function processToolChat(input: {
       const action = `/api/oauth/start?${params.toString()}`;
       return { id, name, logoUrl, connected, label, action } satisfies IntegrationCTA;
     });
+  }
+
+  // Handle Manual Mode Restrictions
+  if (input.integrationMode === "manual") {
+    const selected = input.selectedIntegrationIds || [];
+
+    // 1. Strict Rule: All selected integrations MUST be connected.
+    // If any selected integration is not connected, block execution immediately.
+    const disconnectedSelected = selected.filter((id) => !input.connectedIntegrationIds.includes(id));
+    
+    if (disconnectedSelected.length > 0) {
+      const ctas = disconnectedSelected.map((id) => {
+        let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
+        try {
+           const ui = getIntegrationUIConfig(id);
+           name = ui.name;
+        } catch {}
+
+        const params = new URLSearchParams();
+        params.set("provider", id);
+        params.set("source", "chat");
+        return {
+          id,
+          name,
+          connected: false,
+          label: `Connect ${name}`,
+          action: `/api/oauth/start?${params.toString()}`,
+        } satisfies IntegrationCTA;
+      });
+
+      const names = ctas.map((c) => c.name).join(", ");
+      return {
+        explanation: `${names} is not connected.`,
+        message: { type: "integration_action", integrations: ctas },
+        spec: input.currentSpec,
+        metadata: { type: "integration_action", integrations: ctas },
+      };
+    }
+
+    const requestedButNotSelected = plan.requested_integration_ids.filter((id) => !selected.includes(id));
+
+    if (requestedButNotSelected.length > 0) {
+      // Return error asking to add them
+      // We can use the 'integration_action' type but with a special label?
+      // Or just text + client side handling?
+      // Requirement: "Show error with option to add it. [ Add GitHub ]"
+      
+      // We'll return an integration action where the action is effectively "select it"
+      // But for now, let's just return the standard connect CTA but maybe the client handles "Add" vs "Connect"?
+      // Actually, if it's not selected, the client needs to know to select it.
+      // The current system returns "action" url.
+      
+      // Let's rely on the client to show the right UI based on selection state?
+      // No, the backend drives the chat.
+      
+      const ctas = requestedButNotSelected.map(id => {
+         const name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
+         return {
+             id,
+             name,
+             connected: input.connectedIntegrationIds.includes(id),
+             label: `Add ${name}`,
+             action: "ui:select_integration" // Special action for client
+         } satisfies IntegrationCTA;
+      });
+
+      return {
+        explanation: `This action requires ${ctas.map(c => c.name).join(", ")}. Please add them to your selection.`,
+        message: { type: "integration_action", integrations: ctas },
+        spec: input.currentSpec,
+        metadata: { type: "integration_action", integrations: ctas },
+      };
+    }
   }
 
   if (plan.intent === "integration_request" && plan.requested_integration_ids.length > 0) {
@@ -200,8 +281,9 @@ export async function processToolChat(input: {
   );
   if (missingRequested.length > 0) {
     const integrations = buildCtas(missingRequested);
+    const names = integrations.map((i) => i.name).join(", ");
     return {
-      explanation: "",
+      explanation: `I need access to ${names} to proceed. Please connect it below.`,
       message: { type: "integration_action", integrations },
       spec: input.currentSpec,
       metadata: { type: "integration_action", integrations },

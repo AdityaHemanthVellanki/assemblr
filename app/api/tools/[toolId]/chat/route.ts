@@ -10,6 +10,15 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z.object({
   message: z.string().min(1).max(5000),
+  integrationMode: z.enum(["auto", "manual"]).optional().default("auto"),
+  selectedIntegrations: z
+    .array(
+      z.object({
+        id: z.string(),
+        status: z.enum(["connected", "not_connected", "connecting", "error"]),
+      }),
+    )
+    .optional(),
 });
 
 export async function POST(
@@ -34,7 +43,8 @@ export async function POST(
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
 
-    const userMessage = parsed.data.message;
+    const { message: userMessage, integrationMode, selectedIntegrations } = parsed.data;
+    const selectedIntegrationIds = selectedIntegrations?.map((i) => i.id);
     const supabase = await createSupabaseServerClient();
 
     const { error: insertError } = await supabase.from("chat_messages").insert({
@@ -86,6 +96,8 @@ export async function POST(
       messages: history,
       userMessage,
       connectedIntegrationIds,
+      integrationMode,
+      selectedIntegrationIds,
     });
 
     const { error: updateError } = await supabase

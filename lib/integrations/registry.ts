@@ -19,7 +19,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "hosted_oauth",
     auth: {
       type: "oauth",
-      scopes: ["repo", "user"],
+      scopes: ["repo", "read:org", "user"],
     },
   },
   {

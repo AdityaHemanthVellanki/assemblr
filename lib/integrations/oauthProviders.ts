@@ -30,7 +30,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     name: "GitHub",
     authUrl: "https://github.com/login/oauth/authorize",
     tokenUrl: "https://github.com/login/oauth/access_token",
-    scopes: ["repo", "user"],
+    scopes: ["repo", "read:org", "user"],
     supportsRefreshToken: false,
     localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
