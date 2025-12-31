@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Send, ChevronDown, Plus, X, Check, Loader2, AlertCircle } from "lucide-react";
+import { Send, ChevronDown, Plus, X, Check, Loader2 } from "lucide-react";
 import { usePathname } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -103,7 +103,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         const data = await res.json();
         if (mounted && data.integrations && Array.isArray(data.integrations)) {
           const map: Record<string, IntegrationConnectionStatus> = {};
-          data.integrations.forEach((i: any) => {
+          data.integrations.forEach((i: { id: string; connected: boolean }) => {
             // Respect existing "connecting" or "error" if we have logic for it?
             // For now, map backend status.
             // If backend says connected, it's connected.
@@ -111,17 +111,10 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
             // We'll handle "connecting" via local override during action.
             map[i.id] = i.connected ? "connected" : "not_connected";
           });
-          setIntegrationStatuses((prev) => {
-             // If we have a local "connecting" state, and backend says "connected", we update.
-             // If backend says "not_connected", and we are "connecting", we might keep it if it's recent?
-             // But since we do full page reload for OAuth, the "connecting" state is lost on reload anyway.
-             // So we just use the backend state.
-             // UNLESS we are handling the return from OAuth with an error param.
-             return map;
-          });
+          setIntegrationStatuses(map);
         }
-      } catch (e) {
-        console.error(e);
+      } catch {
+        console.error("Failed to load integration statuses");
       }
     }
 
@@ -186,9 +179,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         if (Array.isArray(parsed)) {
           setSelectedIntegrationIds(parsed);
         }
-      } catch (e) {
-        // Ignore parse error
-      }
+      } catch {}
     }
   }, []);
 

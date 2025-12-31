@@ -25,6 +25,7 @@ const serverEnvSchema = z
     SUPABASE_SECRET_KEY: z.string().min(1),
 
     NEXT_PUBLIC_SITE_URL: optionalUrl(),
+    APP_BASE_URL: z.string().url(),
 
     GITHUB_ID: optionalString(),
     GITHUB_SECRET: optionalString(),
@@ -59,6 +60,9 @@ const serverEnvSchema = z
         path: ["DATA_ENCRYPTION_KEY"],
         message: "DATA_ENCRYPTION_KEY is required",
       });
+    }
+    if (env.APP_BASE_URL?.startsWith("http://")) {
+      console.error("APP_BASE_URL is using http://. Slack OAuth requires HTTPS.");
     }
   });
 

@@ -4,15 +4,17 @@ import crypto from "crypto";
 
 import { requireOrgMember } from "@/lib/auth/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
+import { getServerEnv } from "@/lib/env";
 
 export async function GET(req: Request) {
+  const env = getServerEnv();
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
   const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
 
   // Helper to redirect with error
   const redirectWithError = (msg: string) => {
-    const targetUrl = new URL(redirectPath, url.origin);
+    const targetUrl = new URL(redirectPath, env.APP_BASE_URL);
     targetUrl.searchParams.set("error", msg);
     return NextResponse.redirect(targetUrl);
   };
@@ -68,7 +70,7 @@ export async function GET(req: Request) {
 
   // Redirect URI strategy
   // Use the same callback endpoint
-  const redirectBase = url.origin;
+  const redirectBase = env.APP_BASE_URL;
   const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
 
   params.append("redirect_uri", redirectUri);

@@ -10,7 +10,7 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }
 ) {
-  getServerEnv();
+  const env = getServerEnv();
   const { provider: providerId } = await params;
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
@@ -19,7 +19,7 @@ export async function GET(
 
   // Helper to redirect with error
   const redirectWithError = (msg: string, path = "/dashboard") => {
-    const targetUrl = new URL(path, url.origin);
+    const targetUrl = new URL(path, env.APP_BASE_URL);
     targetUrl.searchParams.set("error", msg);
     return NextResponse.redirect(targetUrl);
   };
@@ -79,7 +79,7 @@ export async function GET(
 
   try {
     // Reconstruct Redirect URI
-    const redirectBase = url.origin;
+    const redirectBase = env.APP_BASE_URL;
     const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
 
     const body = new URLSearchParams();
@@ -190,9 +190,8 @@ export async function GET(
           integration_id: providerId,
           encrypted_credentials: JSON.stringify(encrypted),
           status: "active",
-          source: "oauth_callback",
-          oauth_client_id: null, // Hosted doesn't store client ID in DB
-          // @ts-ignore - column added in migration
+      source: "oauth_callback",
+      oauth_client_id: null, // Hosted doesn't store client ID in DB
           provider_account_id: providerAccountId,
         },
         { onConflict: "org_id,integration_id" }
@@ -204,7 +203,7 @@ export async function GET(
     }
 
     // 4. Redirect
-    const successUrl = new URL(storedState.redirectPath, req.url);
+    const successUrl = new URL(storedState.redirectPath, env.APP_BASE_URL);
     successUrl.searchParams.set("integration_connected", "true");
     return NextResponse.redirect(successUrl);
 
