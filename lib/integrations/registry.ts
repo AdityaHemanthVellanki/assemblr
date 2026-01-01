@@ -55,7 +55,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "hosted_oauth",
     auth: {
       type: "oauth",
-      scopes: ["read"],
+      scopes: ["read", "write"],
     },
   },
   {

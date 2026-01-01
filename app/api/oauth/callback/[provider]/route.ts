@@ -69,11 +69,35 @@ export async function GET(
   const idKey = `${providerId.toUpperCase()}_CLIENT_ID`;
   const secretKey = `${providerId.toUpperCase()}_CLIENT_SECRET`;
   
-  const clientId = process.env[idKey] || "";
-  const clientSecret = process.env[secretKey] || "";
+  // We use the validated env here, not process.env
+  let clientId: string | undefined;
+  let clientSecret: string | undefined;
+
+  switch (providerId) {
+    case "github": 
+      clientId = env.GITHUB_CLIENT_ID; 
+      clientSecret = env.GITHUB_CLIENT_SECRET;
+      break;
+    case "slack": 
+      clientId = env.SLACK_CLIENT_ID; 
+      clientSecret = env.SLACK_CLIENT_SECRET;
+      break;
+    case "notion": 
+      clientId = env.NOTION_CLIENT_ID; 
+      clientSecret = env.NOTION_CLIENT_SECRET;
+      break;
+    case "linear": 
+      clientId = env.LINEAR_CLIENT_ID; 
+      clientSecret = env.LINEAR_CLIENT_SECRET;
+      break;
+    case "google": 
+      clientId = env.GOOGLE_CLIENT_ID; 
+      clientSecret = env.GOOGLE_CLIENT_SECRET;
+      break;
+  }
 
   if (!clientId || !clientSecret) {
-    console.error(`Missing hosted credentials for ${providerId} (expected env: ${idKey}, ${secretKey})`);
+    console.error(`Missing hosted credentials for ${providerId}`);
     return redirectWithError("Server configuration error", storedState?.redirectPath);
   }
 
@@ -98,6 +122,17 @@ export async function GET(
         grant_type: "authorization_code",
         code: code,
         redirect_uri: redirectUri,
+      });
+    } else if (providerId === "linear") {
+      // Linear requires JSON body with client credentials in body
+      headers["Content-Type"] = "application/json";
+      
+      body = JSON.stringify({
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        client_secret: clientSecret,
       });
     } else {
       // Others use form-urlencoded body
@@ -143,6 +178,7 @@ export async function GET(
     let githubUser: { id: number; login: string } | undefined;
     let slackInfo: { team_id: string; team_name: string; bot_user_id: string } | undefined;
     let notionInfo: { workspace_id: string; workspace_name: string; bot_id: string; owner_user_id?: string } | undefined;
+    let linearInfo: { workspace_id: string; workspace_name: string } | undefined;
 
     // Fetch GitHub identity if applicable
     if (providerId === "github") {
@@ -192,6 +228,41 @@ export async function GET(
         bot_id: tokens.bot_id,
         owner_user_id: tokens.owner?.user?.id,
       };
+    } else if (providerId === "linear") {
+      // Linear Identity Fetch (GraphQL)
+      const gqlRes = await fetch("https://api.linear.app/graphql", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${tokens.access_token}`,
+        },
+        body: JSON.stringify({
+          query: `query { viewer { organization { id name } } }`
+        }),
+      });
+
+      if (!gqlRes.ok) {
+        console.error("Failed to fetch Linear identity", await gqlRes.text());
+        return redirectWithError("Failed to fetch Linear identity", storedState.redirectPath);
+      }
+
+      const gqlData = await gqlRes.json();
+      if (gqlData.errors) {
+         console.error("Linear GraphQL errors", gqlData.errors);
+         return redirectWithError("Linear API Error", storedState.redirectPath);
+      }
+
+      const org = gqlData.data?.viewer?.organization;
+      if (!org?.id) {
+        console.error("Invalid Linear identity response", gqlData);
+        return redirectWithError("Invalid Linear identity", storedState.redirectPath);
+      }
+
+      providerAccountId = org.id;
+      linearInfo = {
+        workspace_id: org.id,
+        workspace_name: org.name,
+      };
     }
 
     const tokenSet = {
@@ -213,6 +284,9 @@ export async function GET(
       notion_workspace_name: notionInfo?.workspace_name,
       notion_bot_id: notionInfo?.bot_id,
       notion_owner_user_id: notionInfo?.owner_user_id,
+      // Store Linear specific fields
+      linear_workspace_id: linearInfo?.workspace_id,
+      linear_workspace_name: linearInfo?.workspace_name,
     };
 
     // 3. Store Updated Credentials and Activate

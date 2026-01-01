@@ -49,7 +49,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     name: "Linear",
     authUrl: "https://linear.app/oauth/authorize",
     tokenUrl: "https://api.linear.app/oauth/token",
-    scopes: ["read"],
+    scopes: ["read", "write"],
     supportsRefreshToken: false,
     connectionMode: "hosted_oauth",
   },

@@ -37,10 +37,22 @@ export async function GET(req: Request) {
   // 2. Get Client ID from Env Vars (Hosted OAuth Only)
   // Normalize provider ID to env var format (e.g. google -> GOOGLE_CLIENT_ID)
   const envKey = `${providerId.toUpperCase()}_CLIENT_ID`;
-  const clientId = process.env[envKey];
+  // We use the validated env here, not process.env
+  // But env is typed with specific keys. We need to cast or access dynamically safely.
+  // Since we validated them in lib/env/server.ts, we can trust they exist if the app started.
+  // However, to satisfy TS and be explicit:
+  let clientId: string | undefined;
+
+  switch (providerId) {
+    case "github": clientId = env.GITHUB_CLIENT_ID; break;
+    case "slack": clientId = env.SLACK_CLIENT_ID; break;
+    case "notion": clientId = env.NOTION_CLIENT_ID; break;
+    case "linear": clientId = env.LINEAR_CLIENT_ID; break;
+    case "google": clientId = env.GOOGLE_CLIENT_ID; break;
+  }
 
   if (!clientId) {
-    console.error(`Missing hosted client ID for ${providerId} (expected env: ${envKey})`);
+    console.error(`Missing hosted client ID for ${providerId}`);
     return redirectWithError(`Server configuration error: Missing Client ID for ${provider.name}`);
   }
 

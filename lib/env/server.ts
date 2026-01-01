@@ -27,8 +27,24 @@ const serverEnvSchema = z
     NEXT_PUBLIC_SITE_URL: optionalUrl(),
     APP_BASE_URL: z.string().url(),
 
-    GITHUB_ID: optionalString(),
-    GITHUB_SECRET: optionalString(),
+    // OAuth Credentials (MANDATORY)
+    // These credentials come from the respective provider developer dashboards (e.g. GitHub OAuth Apps).
+    // Users NEVER supply these; they are platform-level secrets.
+    // If these are missing, the deployment is misconfigured and OAuth will fail fast.
+    GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required for OAuth"),
+    GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required for OAuth"),
+
+    SLACK_CLIENT_ID: z.string().min(1, "SLACK_CLIENT_ID is required for OAuth"),
+    SLACK_CLIENT_SECRET: z.string().min(1, "SLACK_CLIENT_SECRET is required for OAuth"),
+
+    NOTION_CLIENT_ID: z.string().min(1, "NOTION_CLIENT_ID is required for OAuth"),
+    NOTION_CLIENT_SECRET: z.string().min(1, "NOTION_CLIENT_SECRET is required for OAuth"),
+
+    LINEAR_CLIENT_ID: z.string().min(1, "LINEAR_CLIENT_ID is required for OAuth"),
+    LINEAR_CLIENT_SECRET: z.string().min(1, "LINEAR_CLIENT_SECRET is required for OAuth"),
+
+    GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required for OAuth"),
+    GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required for OAuth"),
 
     EMAIL_FROM: optionalString(),
     EMAIL_SERVER: optionalString(),
