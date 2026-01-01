@@ -56,6 +56,10 @@ function validateNoVendors(extraction: CapabilityExtraction) {
 const systemPrompt = `
 You extract required capabilities from a user's intent.
 
+You MUST respond with valid JSON only.
+Do NOT include explanations, prose, markdown, or comments.
+If you cannot comply, return a valid JSON error object.
+
 Hard rules:
 - Output ONLY valid JSON.
 - Output MUST conform exactly to the schema described below.
@@ -103,11 +107,18 @@ export async function extractCapabilities(prompt: string): Promise<CapabilityExt
     throw new Error("AI service unavailable");
   }
 
+  // Strict JSON validation
+  if (!content.trim().startsWith("{")) {
+    console.error("AI returned non-JSON response (parsed)", { content });
+    throw new Error("AI returned non-JSON response");
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
-  } catch {
-    throw new Error("AI service unavailable");
+  } catch (err) {
+    console.error("AI returned invalid response", { content, err });
+    throw new Error("AI returned invalid JSON");
   }
 
   const extraction = extractionSchema.parse(parsed) as CapabilityExtraction;

@@ -62,7 +62,7 @@ const serverEnvSchema = z
       });
     }
     if (env.APP_BASE_URL?.startsWith("http://")) {
-      console.error("APP_BASE_URL is using http://. Slack OAuth requires HTTPS.");
+      console.warn("⚠️  WARNING: APP_BASE_URL is using http://. OAuth providers (Slack, Notion, etc.) require HTTPS.");
     }
   });
 

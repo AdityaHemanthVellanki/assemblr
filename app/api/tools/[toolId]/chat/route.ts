@@ -125,6 +125,11 @@ export async function POST(
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === "AI returned non-JSON response" || message === "AI returned invalid JSON") {
+         console.error("Tool chat API error: AI Violation", err);
+         return NextResponse.json({ error: "AI response violated JSON contract" }, { status: 500 });
+    }
     console.error("Tool chat API error", err);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

@@ -11,6 +11,11 @@ export type LlmGenerate = (input: {
 }) => Promise<string>;
 
 export function parseAndValidateDashboardSpecFromJsonText(jsonText: string) {
+  // Strict JSON validation
+  if (!jsonText.trim().startsWith("{")) {
+    throw new Error("AI returned non-JSON response");
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
@@ -43,6 +48,13 @@ async function defaultLlm(input: { system: string; user: string }) {
     if (!content || typeof content !== "string") {
       throw new Error("Azure OpenAI returned empty content");
     }
+
+    // Strict JSON validation
+    if (!content.trim().startsWith("{")) {
+       console.error("AI returned non-JSON response (parsed)", { content });
+       throw new Error("AI returned non-JSON response");
+    }
+
     return content;
   } catch (err) {
     console.error("Azure OpenAI error", err);

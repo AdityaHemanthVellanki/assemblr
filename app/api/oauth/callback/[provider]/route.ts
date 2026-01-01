@@ -82,19 +82,37 @@ export async function GET(
     const redirectBase = env.APP_BASE_URL;
     const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
 
-    const body = new URLSearchParams();
-    body.append("grant_type", "authorization_code");
-    body.append("code", code);
-    body.append("client_secret", clientSecret);
-    body.append("client_id", clientId);
-    body.append("redirect_uri", redirectUri);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json",
+    };
+    let body: URLSearchParams | string;
+
+    if (providerId === "notion") {
+      // Notion requires Basic Auth + JSON body
+      const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+      headers["Authorization"] = `Basic ${auth}`;
+      headers["Content-Type"] = "application/json";
+      
+      body = JSON.stringify({
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: redirectUri,
+      });
+    } else {
+      // Others use form-urlencoded body
+      const params = new URLSearchParams();
+      params.append("grant_type", "authorization_code");
+      params.append("code", code);
+      params.append("redirect_uri", redirectUri);
+      params.append("client_secret", clientSecret);
+      params.append("client_id", clientId);
+      body = params;
+    }
 
     const tokenRes = await fetch(provider.tokenUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-      },
+      headers,
       body: body,
     });
 
@@ -124,6 +142,7 @@ export async function GET(
     let providerAccountId = tokens.id_token ? "parsed_from_id_token" : undefined;
     let githubUser: { id: number; login: string } | undefined;
     let slackInfo: { team_id: string; team_name: string; bot_user_id: string } | undefined;
+    let notionInfo: { workspace_id: string; workspace_name: string; bot_id: string; owner_user_id?: string } | undefined;
 
     // Fetch GitHub identity if applicable
     if (providerId === "github") {
@@ -160,6 +179,19 @@ export async function GET(
         team_name: tokens.team.name,
         bot_user_id: tokens.bot_user_id,
       };
+    } else if (providerId === "notion") {
+      // Notion returns workspace info in the token response
+      if (!tokens.workspace_id) {
+        console.error("Invalid Notion token response (missing workspace_id)", tokens);
+        return redirectWithError("Invalid Notion identity", storedState.redirectPath);
+      }
+      providerAccountId = tokens.workspace_id;
+      notionInfo = {
+        workspace_id: tokens.workspace_id,
+        workspace_name: tokens.workspace_name || "Notion Workspace",
+        bot_id: tokens.bot_id,
+        owner_user_id: tokens.owner?.user?.id,
+      };
     }
 
     const tokenSet = {
@@ -176,6 +208,11 @@ export async function GET(
       slack_team_id: slackInfo?.team_id,
       slack_team_name: slackInfo?.team_name,
       slack_bot_user_id: slackInfo?.bot_user_id,
+      // Store Notion specific fields
+      notion_workspace_id: notionInfo?.workspace_id,
+      notion_workspace_name: notionInfo?.workspace_name,
+      notion_bot_id: notionInfo?.bot_id,
+      notion_owner_user_id: notionInfo?.owner_user_id,
     };
 
     // 3. Store Updated Credentials and Activate

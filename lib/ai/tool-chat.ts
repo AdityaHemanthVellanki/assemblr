@@ -131,12 +131,19 @@ async function generateSpecUpdate(input: {
       messages: [systemMessage, ...history, lastMessage],
       temperature: 0.2,
       max_tokens: 1200,
+      response_format: { type: "json_object" },
     } as unknown as Parameters<typeof azureOpenAIClient.chat.completions.create>[0])) as unknown as {
       choices: Array<{ message?: { content?: string | null } | null }>;
     };
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error("AI returned empty content");
+
+    // Strict JSON validation
+    if (!content.trim().startsWith("{")) {
+       console.error("AI returned non-JSON response (parsed)", { content });
+       throw new Error("AI returned non-JSON response");
+    }
 
     try {
       const json = JSON.parse(content);

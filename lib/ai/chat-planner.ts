@@ -27,7 +27,10 @@ We ONLY support the following 5 integrations (Phase 1):
 
 Any other integration (e.g. Stripe, HubSpot, Salesforce, OpenAI, AWS) is OUT OF SCOPE. Do not request them.
 
-You MUST return valid JSON.
+You MUST respond with valid JSON only.
+Do NOT include explanations, prose, markdown, or comments.
+If you cannot comply, return a valid JSON error object.
+
 You MUST include ALL of the following fields:
 - intent (string)
 - required_capabilities (array, even if empty)
@@ -135,8 +138,19 @@ export async function planChatResponse(userMessage: string): Promise<ChatPlan> {
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error("Empty AI response");
 
-    const json = JSON.parse(content);
-    return parseChatPlan(json);
+    // Strict JSON validation
+    if (!content.trim().startsWith("{")) {
+       console.error("AI returned non-JSON response (parsed)", { content });
+       throw new Error("AI returned non-JSON response");
+    }
+
+    try {
+      const json = JSON.parse(content);
+      return parseChatPlan(json);
+    } catch (err) {
+      console.error("AI returned invalid response", { content, err });
+      throw new Error("AI returned invalid JSON");
+    }
   } catch (err) {
     console.error("Chat planner failed", err);
     throw err;

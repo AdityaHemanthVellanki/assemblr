@@ -160,6 +160,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         submitMessage(savedInput, storedMode || "auto", storedIds);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {

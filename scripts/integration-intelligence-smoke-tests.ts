@@ -19,9 +19,9 @@ async function expectThrows<T = unknown>(fn: () => Promise<T>) {
 async function run() {
   const stubExtract = async (prompt: string): Promise<CapabilityExtraction> => {
     const p = prompt.toLowerCase();
-    if (p.includes("revenue")) {
+    if (p.includes("issues from linear")) {
       return {
-        required_capabilities: ["payment_transactions", "revenue_metrics"],
+        required_capabilities: ["issues"],
         needs_real_time: false,
       };
     }
@@ -31,9 +31,9 @@ async function run() {
         needs_real_time: false,
       };
     }
-    if (p.includes("leads from crm")) {
+    if (p.includes("messages")) {
       return {
-        required_capabilities: ["crm_leads"],
+        required_capabilities: ["messaging"],
         needs_real_time: false,
       };
     }
@@ -49,19 +49,25 @@ async function run() {
 
   {
     const res = await selectIntegrations(
-      { prompt: "Leads from CRM", connectedIntegrations: ["hubspot"] },
+      { prompt: "Issues from Linear", connectedIntegrations: ["linear"] },
       { extract: stubExtract },
     );
-    assert(res.selected.length === 1 && res.selected[0]?.id === "hubspot", "expected HubSpot selected");
+    assert(res.selected.length === 1 && res.selected[0]?.id === "linear", "expected Linear selected");
     assert(res.requiresUserInput === false, "expected no user input required");
-    console.log("ok: Leads from CRM -> HubSpot");
+    console.log("ok: Issues from Linear -> Linear");
   }
 
   {
     const res = await selectIntegrations(
-      { prompt: "Users source ambiguous", connectedIntegrations: ["postgres", "hubspot"] },
+      { prompt: "Users source ambiguous", connectedIntegrations: ["google", "notion"] },
       { extract: stubExtract },
     );
+    // Note: google and notion both have tabular_data, but maybe not user_identity?
+    // Google has tabular_data. Notion has tabular_data.
+    // The stub returns user_identity. Neither explicitly claims user_identity in registry?
+    // Registry: Notion [document_store, tabular_data], Google [tabular_data, ...]
+    // So resolveIntegrations might fail or return nothing if capability is missing.
+    // But this test expects ambiguity questions, which short-circuit resolveIntegrations.
     assert(res.selected.length === 0, "expected no selection on ambiguity");
     assert(res.followUpQuestions.length === 1, "expected a clarification question");
     assert(res.requiresUserInput === true, "expected user input required");
@@ -70,11 +76,12 @@ async function run() {
 
   {
     const res = await selectIntegrations(
-      { prompt: "Revenue dashboard", connectedIntegrations: [] },
+      { prompt: "Messages", connectedIntegrations: [] },
       { extract: stubExtract },
     );
+    // Slack has messaging.
     assert(res.selected.length === 0, "expected no selection when nothing connected");
-    assert(res.missingCapabilities.includes("payment_transactions"), "expected missing payment_transactions");
+    assert(res.missingCapabilities.includes("messaging"), "expected missing messaging");
     assert(res.requiresUserInput === true, "expected user input required");
     console.log("ok: Capability requested but no integration connected -> prompt user");
   }

@@ -1,10 +1,3 @@
-export type LocalhostOAuthStrategy =
-  | "loopback" // http://localhost or http://127.0.0.1
-  | "https-localhost" // https://localhost with local cert
-  | "tunnel" // ngrok / cloudflared
-  | "device-flow" // OAuth device authorization flow
-  | "service-account"; // non-user OAuth alternative
-
 export type OAuthProvider = {
   id: string;
   name: string;
@@ -19,7 +12,6 @@ export type OAuthProvider = {
 
   extraAuthParams?: Record<string, string>;
 
-  localhostStrategy: LocalhostOAuthStrategy;
   requiresHttps?: boolean;
   connectionMode: "hosted_oauth";
 };
@@ -32,7 +24,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     tokenUrl: "https://github.com/login/oauth/access_token",
     scopes: ["repo", "read:org", "user"],
     supportsRefreshToken: false,
-    localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
   },
   slack: {
@@ -42,7 +33,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     tokenUrl: "https://slack.com/api/oauth.v2.access",
     scopes: ["channels:read", "chat:write", "files:read"],
     supportsRefreshToken: false,
-    localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
   },
   notion: {
@@ -52,7 +42,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     tokenUrl: "https://api.notion.com/v1/oauth/token",
     scopes: [],
     supportsRefreshToken: false,
-    localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
   },
   linear: {
@@ -62,7 +51,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     tokenUrl: "https://api.linear.app/oauth/token",
     scopes: ["read"],
     supportsRefreshToken: false,
-    localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
   },
   google: {
@@ -80,7 +68,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     ],
     supportsRefreshToken: true,
     extraAuthParams: { access_type: "offline", prompt: "consent" },
-    localhostStrategy: "loopback",
     connectionMode: "hosted_oauth",
   },
 };
