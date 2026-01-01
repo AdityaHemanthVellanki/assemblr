@@ -2,6 +2,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { decryptJson, encryptJson } from "@/lib/security/encryption";
 import { OAUTH_PROVIDERS } from "./oauthProviders";
+import { getServerEnv } from "@/lib/env";
 
 type TokenSet = {
   clientId?: string;
@@ -89,10 +90,14 @@ export async function getValidAccessToken(
     let clientSecret: string | undefined;
 
     if (provider.connectionMode === "hosted_oauth") {
-      const idKey = `${integrationId.toUpperCase()}_CLIENT_ID`;
-      const secretKey = `${integrationId.toUpperCase()}_CLIENT_SECRET`;
-      clientId = process.env[idKey];
-      clientSecret = process.env[secretKey];
+      const env = getServerEnv();
+      switch (integrationId) {
+        case "github": clientId = env.GITHUB_CLIENT_ID; clientSecret = env.GITHUB_CLIENT_SECRET; break;
+        case "slack": clientId = env.SLACK_CLIENT_ID; clientSecret = env.SLACK_CLIENT_SECRET; break;
+        case "notion": clientId = env.NOTION_CLIENT_ID; clientSecret = env.NOTION_CLIENT_SECRET; break;
+        case "linear": clientId = env.LINEAR_CLIENT_ID; clientSecret = env.LINEAR_CLIENT_SECRET; break;
+        case "google": clientId = env.GOOGLE_CLIENT_ID; clientSecret = env.GOOGLE_CLIENT_SECRET; break;
+      }
     } else {
       // BYO: stored in blob
       clientId = tokens.clientId;

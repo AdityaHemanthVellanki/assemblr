@@ -68,10 +68,14 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     auth: {
       type: "oauth",
       scopes: [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/documents.readonly",
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/meetings.space.readonly",
+        "https://www.googleapis.com/auth/calendar",
       ],
     },
   },

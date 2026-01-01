@@ -134,6 +134,15 @@ export async function GET(
         client_id: clientId,
         client_secret: clientSecret,
       });
+    } else if (providerId === "google") {
+      // Google requires application/x-www-form-urlencoded
+      const params = new URLSearchParams();
+      params.append("client_id", clientId);
+      params.append("client_secret", clientSecret);
+      params.append("code", code);
+      params.append("grant_type", "authorization_code");
+      params.append("redirect_uri", redirectUri);
+      body = params;
     } else {
       // Others use form-urlencoded body
       const params = new URLSearchParams();
@@ -179,6 +188,7 @@ export async function GET(
     let slackInfo: { team_id: string; team_name: string; bot_user_id: string } | undefined;
     let notionInfo: { workspace_id: string; workspace_name: string; bot_id: string; owner_user_id?: string } | undefined;
     let linearInfo: { workspace_id: string; workspace_name: string } | undefined;
+    let googleInfo: { google_user_id: string; email: string } | undefined;
 
     // Fetch GitHub identity if applicable
     if (providerId === "github") {
@@ -263,6 +273,30 @@ export async function GET(
         workspace_id: org.id,
         workspace_name: org.name,
       };
+    } else if (providerId === "google") {
+      // Google Identity Fetch
+      const userRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: {
+          Authorization: `Bearer ${tokens.access_token}`,
+        },
+      });
+
+      if (!userRes.ok) {
+        console.error("Failed to fetch Google identity", await userRes.text());
+        return redirectWithError("Failed to fetch Google identity", storedState.redirectPath);
+      }
+
+      const userData = await userRes.json();
+      if (!userData.sub) {
+        console.error("Invalid Google identity response", userData);
+        return redirectWithError("Invalid Google identity", storedState.redirectPath);
+      }
+
+      providerAccountId = userData.sub;
+      googleInfo = {
+        google_user_id: userData.sub,
+        email: userData.email,
+      };
     }
 
     const tokenSet = {
@@ -287,6 +321,9 @@ export async function GET(
       // Store Linear specific fields
       linear_workspace_id: linearInfo?.workspace_id,
       linear_workspace_name: linearInfo?.workspace_name,
+      // Store Google specific fields
+      google_user_id: googleInfo?.google_user_id,
+      google_email: googleInfo?.email,
     };
 
     // 3. Store Updated Credentials and Activate
