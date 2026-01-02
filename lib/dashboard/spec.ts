@@ -11,23 +11,10 @@ export function createDefaultDashboardSpec({
 }: {
   title?: string;
 } = {}): DashboardSpec {
-  const metricId = crypto.randomUUID();
-
   return parseDashboardSpec({
     title: title?.trim().length ? title.trim() : "New Project",
-    description: "A starter dashboard spec. This will be generated in Stage 2.",
-    metrics: [
-      {
-        id: metricId,
-        label: "Total Users",
-        type: "count",
-        table: "users",
-      },
-    ],
-    views: [
-      { id: crypto.randomUUID(), type: "metric", metricId },
-      { id: crypto.randomUUID(), type: "line_chart", metricId },
-      { id: crypto.randomUUID(), type: "table", table: "users" },
-    ],
+    description: "Empty tool. Describe what you want to build to get started.",
+    metrics: [],
+    views: [],
   });
 }

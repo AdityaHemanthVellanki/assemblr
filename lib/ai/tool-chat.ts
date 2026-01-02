@@ -69,7 +69,9 @@ ${CORE_SPEC_INSTRUCTIONS}
 
 Conventions:
 - Use readable titles and labels.
-- Assume tables exist (users, orders, etc.).
+- Do NOT generate metrics or views unless you have confirmed an integration is connected.
+- If no integration is connected, ask the user to connect one first.
+- Do NOT fabricate data or assume schema. Do not invent table names or fields.
 - Prefer simple, effective dashboards.
 `;
 
