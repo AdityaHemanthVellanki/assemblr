@@ -29,6 +29,16 @@ export type ExecutionPlan = {
     description: string;
     definition: any; // MetricDefinition
   };
+
+  // Phase 7: New Alert Definition
+  // If the planner decided to create a new alert, it populates this.
+  newAlert?: {
+    metricId: string; // "new" if creating a metric simultaneously, or existing ID
+    conditionType: "threshold" | "change";
+    comparisonOp: "gt" | "lt" | "eq" | "gte" | "lte";
+    thresholdValue: number;
+    actionConfig: { type: "email" | "slack"; target: string };
+  };
 };
 
 // Error Types
@@ -66,8 +76,11 @@ Instructions:
 3. If no metric matches, select the MOST appropriate capability from the list.
 4. Extract parameters (filters, sort) that are valid for that capability.
 5. If the request implies a reusable KPI (e.g. "active users", "open issues count"), suggest creating a NEW metric by filling "newMetric".
-6. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-7. If the request is unsupported, return an empty plan with an explanation.
+6. If the request implies monitoring or alerting (e.g. "notify me when", "alert if > 10"), suggest creating a NEW alert by filling "newAlert".
+   - If it refers to a new metric, set metricId="new".
+   - If it refers to an existing metric (from AVAILABLE METRICS), set metricId to the ID.
+7. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+8. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {
@@ -79,7 +92,8 @@ You MUST respond with valid JSON only. Structure:
       "params": { ... },
       "explanation": "string",
       "metricRef": { "id": "string", "version": 1 }, // Optional, if reusing
-      "newMetric": { "name": "string", "description": "string", "definition": { ... } } // Optional, if creating
+      "newMetric": { "name": "string", "description": "string", "definition": { ... } }, // Optional, if creating
+      "newAlert": { "metricId": "string", "conditionType": "threshold", "comparisonOp": "gt", "thresholdValue": 10, "actionConfig": { ... } } // Optional, if alerting
     }
   ],
   "error": "string (optional)"

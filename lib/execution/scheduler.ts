@@ -5,6 +5,8 @@ import { createExecution, updateExecutionStatus, getLatestExecution as getLatest
 import { executeDashboard } from "./engine";
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 
+import { evaluateAlerts } from "@/lib/alerts/evaluator";
+
 // Minimal spec wrapper to reuse executeDashboard
 function wrapMetricInSpec(metric: Metric): DashboardSpec {
   return {
@@ -56,6 +58,12 @@ export async function runMetricExecution(metricId: string, triggeredBy: string =
 
     // 4. Complete
     await updateExecutionStatus(execution.id, "completed", { result: result.data });
+    
+    // 5. Evaluate Alerts (Async, don't block)
+    evaluateAlerts(metricId, result.data, execution.id).catch(err => {
+      console.error(`Alert evaluation failed for metric ${metricId}`, err);
+    });
+    
   } catch (err) {
     console.error(`Execution failed for metric ${metricId}`, err);
     await updateExecutionStatus(execution.id, "failed", { error: err instanceof Error ? err.message : "Unknown error" });
