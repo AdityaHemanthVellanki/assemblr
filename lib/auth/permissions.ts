@@ -52,9 +52,34 @@ export const getSessionContext = cache(async (): Promise<SessionContext> => {
   };
 
   let membership = await loadMembership();
+  
+  // Retry logic (Race condition handling)
   if (!membership.error && !membership.data) {
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
     membership = await loadMembership();
+  }
+
+  // Phase 13: Auto-provision if still missing
+  if (!membership.error && !membership.data) {
+    console.warn("User has no organization. Attempting auto-provisioning...", { userId: user.id });
+    
+    // Create new org manually if trigger failed
+    const orgName = (user.user_metadata?.full_name || user.email?.split('@')[0] || "My Workspace") + "'s Workspace";
+    
+    // @ts-ignore
+    const newOrg = await (supabase.from("organizations") as any)
+      .insert({ name: orgName })
+      .select()
+      .single();
+      
+    if (newOrg.data) {
+      // Add membership
+      await (supabase.from("memberships") as any)
+        .insert({ user_id: user.id, org_id: newOrg.data.id, role: "owner" });
+        
+      // Reload
+      membership = await loadMembership();
+    }
   }
 
   if (process.env.NODE_ENV !== "production") {
