@@ -2,8 +2,9 @@ import "server-only";
 
 import { Workflow, WorkflowAction, updateWorkflowRun } from "./store";
 import { logAudit } from "@/lib/governance/store";
+import { withTrace } from "@/lib/observability/tracer";
 
-export async function runWorkflow(workflow: Workflow, runId: string, context: any) {
+export async function runWorkflow(workflow: Workflow, runId: string, context: any, parentTraceId?: string) {
   // Phase 9: Governance Check
   if (workflow.requiresApproval && workflow.approvalStatus !== "approved") {
     const err = "Governance Error: Workflow requires approval but is not approved.";
@@ -12,35 +13,51 @@ export async function runWorkflow(workflow: Workflow, runId: string, context: an
     return;
   }
 
-  await updateWorkflowRun(runId, { status: "running" });
-  
-  const logs: any[] = [];
-  
-  try {
-    for (const action of workflow.actions) {
-      logs.push({ type: "action_start", action: action.type, timestamp: new Date().toISOString() });
+  await withTrace(
+    {
+      orgId: workflow.orgId,
+      source: "dependency",
+      triggerRef: workflow.id,
+      dependencies: parentTraceId ? [parentTraceId] : [],
+      metadata: { workflowName: workflow.name, actions: workflow.actions.length }
+    },
+    "workflow",
+    { runId, context },
+    async (traceId) => {
+      await updateWorkflowRun(runId, { status: "running" });
+      
+      const logs: any[] = [];
       
       try {
-        await executeAction(action, context);
-        logs.push({ type: "action_success", action: action.type });
-        
-        // Log Audit for successful action execution
-        await logAudit(workflow.orgId, "workflow.action.execute", "workflow", workflow.id, { 
-          action: action.type, 
-          runId 
-        });
+        for (const action of workflow.actions) {
+          logs.push({ type: "action_start", action: action.type, timestamp: new Date().toISOString() });
+          
+          try {
+            await executeAction(action, context);
+            logs.push({ type: "action_success", action: action.type });
+            
+            // Log Audit for successful action execution
+            await logAudit(workflow.orgId, "workflow.action.execute", "workflow", workflow.id, { 
+              action: action.type, 
+              runId,
+              traceId
+            });
 
+          } catch (err) {
+            logs.push({ type: "action_error", action: action.type, error: String(err) });
+            throw err; // Stop workflow on failure (Phase 8 requirement)
+          }
+        }
+        
+        await updateWorkflowRun(runId, { status: "completed", logs });
+        return { logs };
       } catch (err) {
-        logs.push({ type: "action_error", action: action.type, error: String(err) });
-        throw err; // Stop workflow on failure (Phase 8 requirement)
+        console.error(`Workflow ${workflow.id} failed`, err);
+        await updateWorkflowRun(runId, { status: "failed", error: String(err), logs });
+        throw err;
       }
     }
-    
-    await updateWorkflowRun(runId, { status: "completed", logs });
-  } catch (err) {
-    console.error(`Workflow ${workflow.id} failed`, err);
-    await updateWorkflowRun(runId, { status: "failed", error: String(err), logs });
-  }
+  );
 }
 
 async function executeAction(action: WorkflowAction, context: any) {

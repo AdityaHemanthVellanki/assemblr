@@ -3,8 +3,9 @@ import "server-only";
 import { getAlertsForMetric, logAlertHistory } from "./store";
 import { triggerAction } from "./actions";
 import { getMetric } from "@/lib/metrics/store";
+import { withTrace } from "@/lib/observability/tracer";
 
-export async function evaluateAlerts(metricId: string, executionResult: any, executionId: string) {
+export async function evaluateAlerts(metricId: string, executionResult: any, executionId: string, parentTraceId?: string) {
   // 1. Fetch Alerts
   const alerts = await getAlertsForMetric(metricId);
   if (alerts.length === 0) return;
@@ -37,24 +38,39 @@ export async function evaluateAlerts(metricId: string, executionResult: any, exe
 
   // 3. Evaluate Each Alert
   for (const alert of alerts) {
-    let triggered = false;
-    const t = alert.thresholdValue;
+    await withTrace(
+      { 
+        orgId: alert.orgId, 
+        source: "dependency", 
+        triggerRef: alert.id, 
+        dependencies: parentTraceId ? [parentTraceId] : [],
+        metadata: { metricName, comparison: alert.comparisonOp, threshold: alert.thresholdValue } 
+      },
+      "alert",
+      { value, threshold: alert.thresholdValue },
+      async (traceId) => {
+        let triggered = false;
+        const t = alert.thresholdValue;
 
-    switch (alert.comparisonOp) {
-      case "gt": triggered = value > t; break;
-      case "lt": triggered = value < t; break;
-      case "gte": triggered = value >= t; break;
-      case "lte": triggered = value <= t; break;
-      case "eq": triggered = value === t; break;
-    }
+        switch (alert.comparisonOp) {
+          case "gt": triggered = value! > t; break;
+          case "lt": triggered = value! < t; break;
+          case "gte": triggered = value! >= t; break;
+          case "lte": triggered = value! <= t; break;
+          case "eq": triggered = value! === t; break;
+        }
 
-    // 4. Log History
-    await logAlertHistory(alert.id, executionId, triggered, value);
+        // 4. Log History
+        await logAlertHistory(alert.id, executionId, triggered, value!);
 
-    // 5. Trigger Action
-    if (triggered) {
-      // TODO: Check cooldown here (Phase 2)
-      await triggerAction(alert, value, metricName);
-    }
+        // 5. Trigger Action
+        if (triggered) {
+          // Pass traceId for lineage
+          await triggerAction(alert, value!, metricName, traceId);
+        }
+        
+        return { triggered };
+      }
+    );
   }
 }

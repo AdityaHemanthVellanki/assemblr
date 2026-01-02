@@ -2,7 +2,7 @@ import { Alert } from "./store";
 import { getWorkflowsForAlert, createWorkflowRun } from "@/lib/workflows/store";
 import { runWorkflow } from "@/lib/workflows/engine";
 
-export async function triggerAction(alert: Alert, value: number, metricName: string) {
+export async function triggerAction(alert: Alert, value: number, metricName: string, parentTraceId?: string) {
   const config = alert.actionConfig;
   const message = `[Assemblr Alert] Metric "${metricName}" triggered! Value: ${value} (${alert.comparisonOp} ${alert.thresholdValue})`;
   
@@ -25,7 +25,7 @@ export async function triggerAction(alert: Alert, value: number, metricName: str
     for (const wf of workflows) {
       const run = await createWorkflowRun(wf.id, { alertId: alert.id, value, metricName, timestamp: new Date().toISOString() });
       // Run async
-      runWorkflow(wf, run.id, { value, metricName }).catch(err => {
+      runWorkflow(wf, run.id, { value, metricName }, parentTraceId).catch(err => {
         console.error(`Workflow run ${run.id} failed asynchronously`, err);
       });
     }

@@ -84,8 +84,10 @@ Instructions:
 7. If the request implies automation or workflow (e.g. "if alert fires, do X", "every monday send report"), suggest creating a NEW workflow by filling "newWorkflow".
    - Use "newAlert" reference if the trigger is the alert being created.
    - WARN: Workflows with write actions may require approval.
-8. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-9. If the request is unsupported, return an empty plan with an explanation.
+8. If the request implies debugging or explanation (e.g. "Why did this run?", "Explain execution"), use the 'explain_trace' intent.
+   - For now, just return a plan with capabilityId="explain_trace" (this is a system capability).
+9. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+10. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {

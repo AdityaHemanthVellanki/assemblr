@@ -6,6 +6,7 @@ import { executeDashboard } from "./engine";
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 
 import { evaluateAlerts } from "@/lib/alerts/evaluator";
+import { withTrace } from "@/lib/observability/tracer";
 
 // Minimal spec wrapper to reuse executeDashboard
 function wrapMetricInSpec(metric: Metric): DashboardSpec {
@@ -39,35 +40,46 @@ export async function runMetricExecution(metricId: string, triggeredBy: string =
   const metric = await getMetric(metricId);
   if (!metric) throw new Error(`Metric ${metricId} not found`);
 
-  // 2. Create Execution Record
-  const execution = await createExecution(metricId, triggeredBy);
-  await updateExecutionStatus(execution.id, "running");
+  // Phase 10: Trace Wrapper
+  await withTrace(
+    { orgId: metric.orgId, source: triggeredBy, triggerRef: metricId, metadata: { metricName: metric.name } },
+    "metric",
+    { metricId, triggeredBy },
+    async (traceId) => {
+      // 2. Create Execution Record
+      const execution = await createExecution(metricId, triggeredBy);
+      await updateExecutionStatus(execution.id, "running");
 
-  try {
-    // 3. Execute via Engine
-    // We construct a temporary spec to execute ONLY this metric.
-    const spec = wrapMetricInSpec(metric);
-    
-    // We need to pass orgId. Metric has it.
-    const results = await executeDashboard(metric.orgId, spec, { forceRefresh: true }); // Pass force flag to bypass cache
-    
-    const result = results["exec-view"];
-    if (result.status === "error") {
-      throw new Error(result.error);
+      try {
+        // 3. Execute via Engine
+        // We construct a temporary spec to execute ONLY this metric.
+        const spec = wrapMetricInSpec(metric);
+        
+        // We need to pass orgId. Metric has it.
+        const results = await executeDashboard(metric.orgId, spec, { forceRefresh: true }); // Pass force flag to bypass cache
+        
+        const result = results["exec-view"];
+        if (result.status === "error") {
+          throw new Error(result.error);
+        }
+
+        // 4. Complete
+        await updateExecutionStatus(execution.id, "completed", { result: result.data });
+        
+        // 5. Evaluate Alerts (Async, don't block)
+        // Pass traceId for lineage
+        evaluateAlerts(metricId, result.data, execution.id, traceId).catch(err => {
+          console.error(`Alert evaluation failed for metric ${metricId}`, err);
+        });
+        
+        return result.data; // Return for trace output
+      } catch (err) {
+        console.error(`Execution failed for metric ${metricId}`, err);
+        await updateExecutionStatus(execution.id, "failed", { error: err instanceof Error ? err.message : "Unknown error" });
+        throw err;
+      }
     }
-
-    // 4. Complete
-    await updateExecutionStatus(execution.id, "completed", { result: result.data });
-    
-    // 5. Evaluate Alerts (Async, don't block)
-    evaluateAlerts(metricId, result.data, execution.id).catch(err => {
-      console.error(`Alert evaluation failed for metric ${metricId}`, err);
-    });
-    
-  } catch (err) {
-    console.error(`Execution failed for metric ${metricId}`, err);
-    await updateExecutionStatus(execution.id, "failed", { error: err instanceof Error ? err.message : "Unknown error" });
-  }
+  );
 }
 
 export async function scheduleMetricExecution(metricId: string): Promise<boolean> {
