@@ -3,6 +3,33 @@ import "server-only";
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 import { getDiscoveredSchemas } from "@/lib/schema/store";
 
+import { getCapability } from "@/lib/capabilities/registry";
+import { ExecutionPlan } from "@/lib/ai/planner";
+
+export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: boolean; error?: string } {
+  const capability = getCapability(plan.capabilityId);
+  if (!capability) {
+    return { valid: false, error: `Unknown capability ID: ${plan.capabilityId}` };
+  }
+
+  if (capability.integrationId !== plan.integrationId) {
+    return { valid: false, error: `Capability ${plan.capabilityId} does not belong to integration ${plan.integrationId}` };
+  }
+
+  if (capability.resource !== plan.resource) {
+    return { valid: false, error: `Capability ${plan.capabilityId} does not support resource ${plan.resource}` };
+  }
+
+  // Validate Params
+  for (const key of Object.keys(plan.params)) {
+    if (!capability.supportedFields.includes(key)) {
+      return { valid: false, error: `Parameter "${key}" is not supported by capability ${plan.capabilityId}` };
+    }
+  }
+
+  return { valid: true };
+}
+
 export async function validateSpecAgainstSchema(
   orgId: string,
   spec: DashboardSpec

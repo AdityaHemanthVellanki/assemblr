@@ -173,6 +173,9 @@ async function generateSpecUpdate(input: {
 
 // --- Main Orchestrator ---
 
+import { planExecution } from "./planner";
+import { validatePlanAgainstCapabilities } from "@/lib/execution/validation";
+
 export async function processToolChat(input: {
   orgId: string;
   currentSpec: DashboardSpec;
@@ -184,7 +187,42 @@ export async function processToolChat(input: {
 }): Promise<ToolChatResponse> {
   getServerEnv();
 
-  // 1. Plan and Extract Intent
+  // 0. Fetch Discovered Schemas
+  const schemasForPlanning = await getDiscoveredSchemas(input.orgId);
+
+  // 1. Run Capability Planner
+  // We only run this if the user seems to be requesting data/modification
+  // For now, run it for every message to be safe, or check intent.
+  // The planner itself will decide if it can map intent.
+  let executionPlans: any[] = [];
+  try {
+    const planResult = await planExecution(input.userMessage, input.connectedIntegrationIds, schemasForPlanning);
+    if (planResult.error) {
+       // If planning fails (e.g., ambiguity), we might want to return here.
+       // But usually we want to let the Chat LLM explain it or ask for clarification.
+       // We can inject the error into the Chat LLM prompt.
+       // For strict "No dashboards until planning succeeds", we should block here?
+       // The requirement says: "If synthesis is impossible: Reject the plan... Do NOT attempt execution"
+       // But here we are just generating the SPEC. The Spec Generation should be guided by the Plan.
+       
+       // If the planner returns "No integrations connected", we definitely want the Chat LLM to ask for them.
+    } else {
+       executionPlans = planResult.plans;
+       
+       // Validate Plans
+       for (const p of executionPlans) {
+         const val = validatePlanAgainstCapabilities(p);
+         if (!val.valid) {
+           console.warn(`Plan validation failed: ${val.error}`);
+           // Filter out invalid plans? Or fail?
+         }
+       }
+    }
+  } catch (err) {
+    console.warn("Planning step failed", err);
+  }
+
+  // 2. Plan Chat Response (Legacy High-Level Intent)
   const plan = await planChatResponse(input.userMessage);
   console.log("[Chat Orchestrator] Plan:", plan);
 
@@ -352,7 +390,14 @@ export async function processToolChat(input: {
     ? schemas.map(s => `Integration: ${s.integrationId}, Resource: ${s.resource}\nFields: ${s.fields.map(f => f.name).join(", ")}`).join("\n\n")
     : "No schemas discovered. Ask user to connect integrations.";
 
-  const finalSystemPrompt = SYSTEM_PROMPT.replace("{{SCHEMAS}}", schemaText);
+  // Inject Execution Plans into System Prompt
+  const plansText = executionPlans.length > 0
+    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(executionPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.`
+    : "No execution plans generated. If the user asked for data, explain why (e.g. missing capabilities).";
+
+  const finalSystemPrompt = SYSTEM_PROMPT
+    .replace("{{SCHEMAS}}", schemaText)
+    + `\n\n${plansText}`;
 
   const llm = await generateSpecUpdate({
     currentSpec: input.currentSpec,

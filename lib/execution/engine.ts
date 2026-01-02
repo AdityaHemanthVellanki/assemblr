@@ -9,6 +9,8 @@ import { SlackExecutor } from "@/lib/integrations/executors/slack";
 import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
 import { validateSpecAgainstSchema } from "./validation";
+import { synthesizeQuery } from "./synthesizer";
+import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -60,11 +62,22 @@ export async function executeDashboard(
     }
 
     if (integrationId && table) {
-      plans.push({
-        viewId: view.id,
+      // Synthesize query from high-level spec if possible
+      // In Phase 4, we ideally receive a PlannerExecutionPlan, but here we are deriving from Spec.
+      // We'll construct a mock Planner plan to run through synthesizer for validation/normalization.
+      const mockPlannerPlan: PlannerExecutionPlan = {
         integrationId,
+        capabilityId: `${integrationId}_${table}_list`, // Heuristic for now
         resource: table,
-      });
+        params: {}, // Spec doesn't have params yet except metrics filters
+        explanation: "Derived from spec",
+      };
+
+      const runtimePlan = synthesizeQuery(mockPlannerPlan);
+      // Ensure viewId is carried over
+      runtimePlan.viewId = view.id;
+      
+      plans.push(runtimePlan);
     }
   }
 
