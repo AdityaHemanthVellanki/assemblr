@@ -8,6 +8,7 @@ const metricSchema = z
     table: z.string().min(1),
     field: z.string().min(1).optional(),
     groupBy: z.enum(["day"]).optional(),
+    integrationId: z.string().optional(),
   })
   .strict();
 
@@ -17,6 +18,7 @@ const viewSchema = z
     type: z.enum(["metric", "line_chart", "bar_chart", "table"]),
     metricId: z.string().min(1).optional(),
     table: z.string().min(1).optional(),
+    integrationId: z.string().optional(),
   })
   .strict();
 
