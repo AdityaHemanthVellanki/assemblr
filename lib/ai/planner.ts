@@ -41,6 +41,18 @@ export type ExecutionPlan = {
     };
     actions: Array<{ type: "slack" | "email" | "github_issue"; config: any }>;
   };
+
+  // Phase 12: New Join Definition
+  newJoin?: {
+    name: string;
+    leftIntegrationId: string;
+    leftResource: string;
+    leftField: string;
+    rightIntegrationId: string;
+    rightResource: string;
+    rightField: string;
+    joinType: "inner" | "left" | "right";
+  };
 };
 
 // Error Types
@@ -87,8 +99,11 @@ Instructions:
 8. If the request implies debugging or explanation (e.g. "Why did this run?", "Explain execution"), use the 'explain_trace' intent.
    - For now, just return a plan with capabilityId="explain_trace" (this is a system capability).
 9. If the user asks about cost or budget (e.g., "Why was this blocked?", "Quota exceeded"), explain that execution was blocked by the Cost Control Layer.
-10. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-11. If the request is unsupported, return an empty plan with an explanation.
+10. If the request implies joining data from different integrations (e.g. "Join GitHub issues with Linear issues"), suggest creating a NEW join by filling "newJoin".
+    - Do NOT auto-join.
+    - Ask for confirmation.
+11. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+12. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {
@@ -102,7 +117,8 @@ You MUST respond with valid JSON only. Structure:
       "metricRef": { "id": "string", "version": 1 }, // Optional, if reusing
       "newMetric": { "name": "string", "description": "string", "definition": { ... } }, // Optional, if creating
       "newAlert": { "metricId": "string", "conditionType": "threshold", "comparisonOp": "gt", "thresholdValue": 10, "actionConfig": { ... } }, // Optional, if alerting
-      "newWorkflow": { "name": "string", "triggerConfig": { "type": "alert", "refId": "alert_from_newAlert" }, "actions": [{ "type": "slack", "config": { ... } }] } // Optional, if workflow
+      "newWorkflow": { "name": "string", "triggerConfig": { "type": "alert", "refId": "alert_from_newAlert" }, "actions": [{ "type": "slack", "config": { ... } }] }, // Optional, if workflow
+      "newJoin": { "name": "string", "leftIntegrationId": "string", "leftResource": "string", "leftField": "string", "rightIntegrationId": "string", "rightResource": "string", "rightField": "string", "joinType": "inner" } // Optional, if join
     }
   ],
   "error": "string (optional)"

@@ -13,6 +13,8 @@ import { synthesizeQuery } from "./synthesizer";
 import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
 import { resolveMetricDependency } from "./graph";
 import { getLatestExecution, runMetricExecution } from "./scheduler";
+import { getJoinDefinition } from "@/lib/joins/store";
+import { executeJoin } from "@/lib/joins/executor";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -63,7 +65,14 @@ export async function executeDashboard(
           // Resolve persisted metric
           try {
             const def = await resolveMetricDependency(metric.metricRef);
-            
+
+            // Phase 12: Joins
+            // If metric definition references a Join, we need to handle it.
+            // Metric struct doesn't have joinId yet, let's assume it's part of `definition` metadata or new field.
+            // For now, if we detect a join (via some hypothetical field), we'd execute it here.
+            // But joins are typically executed at runtime, not persisted as a single metric unless materialized.
+            // We'll stick to single metric execution for now, assuming joins are handled by specialized calls.
+
             // Phase 6: Check Cache
             // If we are NOT in forceRefresh mode, try to use cache.
             if (!options?.forceRefresh) {
