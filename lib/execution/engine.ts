@@ -8,6 +8,7 @@ import { LinearExecutor } from "@/lib/integrations/executors/linear";
 import { SlackExecutor } from "@/lib/integrations/executors/slack";
 import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
+import { validateSpecAgainstSchema } from "./validation";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -21,6 +22,24 @@ export async function executeDashboard(
   orgId: string,
   spec: DashboardSpec
 ): Promise<Record<string, ExecutionResult>> {
+  // 0. Validate Schema
+  const { valid, errors } = await validateSpecAgainstSchema(orgId, spec);
+  if (!valid) {
+    // Return errors for all views
+    const results: Record<string, ExecutionResult> = {};
+    const errorMsg = `Schema Validation Failed: ${errors.join(", ")}`;
+    for (const view of spec.views) {
+      results[view.id] = {
+        viewId: view.id,
+        status: "error",
+        error: errorMsg,
+        timestamp: new Date().toISOString(),
+        source: "system",
+      };
+    }
+    return results;
+  }
+
   const results: Record<string, ExecutionResult> = {};
 
   // 1. Compile Spec -> Execution Plans

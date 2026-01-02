@@ -10,6 +10,8 @@ import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
 import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 import type { Json } from "@/lib/supabase/database.types";
 
+import { getDiscoveredSchemas } from "@/lib/schema/store";
+
 // --- Schema Definitions ---
 
 const CORE_SPEC_INSTRUCTIONS = `
@@ -29,7 +31,8 @@ The "spec" object must strictly follow this schema:
     "id": string,
     "type": "metric" | "line_chart" | "bar_chart" | "table",
     "metricId"?: string,
-    "table"?: string
+    "table"?: string,
+    "integrationId"?: string
   }>
 }
 
@@ -37,10 +40,13 @@ Metric rules:
 - count: counts rows. No field.
 - sum: sums field. Field required.
 - groupBy: "day" or omitted.
+- table: MUST be one of the resources listed in "Available Schemas".
+- integrationId: MUST be the integration ID providing the table.
 
 View rules:
 - metric, line_chart, bar_chart: require metricId.
 - table: requires table. No metricId.
+- integrationId: MUST match the integration ID for the table.
 - Every metric.id and view.id must be unique.
 - Non-table views must reference existing metricIds.
 `;
@@ -65,13 +71,17 @@ You must output a JSON object with the following structure:
 "explanation": A brief, helpful message to the user describing the changes you made, or answering their question.
 "spec": The FULL, valid, updated dashboard specification. If no changes are needed, return the current spec exactly.
 
+AVAILABLE SCHEMAS:
+{{SCHEMAS}}
+
 ${CORE_SPEC_INSTRUCTIONS}
 
 Conventions:
 - Use readable titles and labels.
 - Do NOT generate metrics or views unless you have confirmed an integration is connected.
 - If no integration is connected, ask the user to connect one first.
-- Do NOT fabricate data or assume schema. Do not invent table names or fields.
+- Do NOT fabricate data or assume schema.
+- You must ONLY use fields defined in the 'Available Schemas' section.
 - Prefer simple, effective dashboards.
 `;
 
@@ -112,10 +122,11 @@ async function generateSpecUpdate(input: {
   currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
+  systemPrompt?: string;
 }): Promise<LlmToolChatResponse> {
   const systemMessage = {
     role: "system" as const,
-    content: SYSTEM_PROMPT + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec)}`,
+    content: (input.systemPrompt ?? SYSTEM_PROMPT) + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec)}`,
   };
 
   const history = input.messages.map((m) => ({
@@ -163,6 +174,7 @@ async function generateSpecUpdate(input: {
 // --- Main Orchestrator ---
 
 export async function processToolChat(input: {
+  orgId: string;
   currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
@@ -335,8 +347,16 @@ export async function processToolChat(input: {
   }
 
   // 4. Proceed to Spec Generation
+  const schemas = await getDiscoveredSchemas(input.orgId);
+  const schemaText = schemas.length > 0 
+    ? schemas.map(s => `Integration: ${s.integrationId}, Resource: ${s.resource}\nFields: ${s.fields.map(f => f.name).join(", ")}`).join("\n\n")
+    : "No schemas discovered. Ask user to connect integrations.";
+
+  const finalSystemPrompt = SYSTEM_PROMPT.replace("{{SCHEMAS}}", schemaText);
+
   const llm = await generateSpecUpdate({
     currentSpec: input.currentSpec,
+    systemPrompt: finalSystemPrompt,
     messages: input.messages,
     userMessage: input.userMessage,
   });

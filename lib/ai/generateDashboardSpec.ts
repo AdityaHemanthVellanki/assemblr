@@ -3,6 +3,7 @@ import { parseDashboardSpec, type DashboardSpec } from "@/lib/spec/dashboardSpec
 
 type GenerateDashboardSpecOptions = {
   prompt: string;
+  systemPrompt?: string;
 };
 
 export type LlmGenerate = (input: {
@@ -77,7 +78,7 @@ export async function generateDashboardSpec(
   let outputText: string;
   try {
     outputText = await llm({
-      system: DASHBOARD_SPEC_SYSTEM_PROMPT,
+      system: options.systemPrompt ?? DASHBOARD_SPEC_SYSTEM_PROMPT,
       user: prompt,
     });
   } catch (err) {

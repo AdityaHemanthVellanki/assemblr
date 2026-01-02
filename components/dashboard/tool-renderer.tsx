@@ -99,7 +99,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                     displayValue = result.data.length.toLocaleString();
                   } else if (metric.type === "sum" && metric.field) {
                     // Try to sum
-                    const sum = result.data.reduce((acc, row) => {
+                    const sum = result.data.reduce((acc: number, row) => {
                       const val = (row as Record<string, unknown>)[metric.field!];
                       return acc + (Number(val) || 0);
                     }, 0);

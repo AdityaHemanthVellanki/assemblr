@@ -92,6 +92,7 @@ export async function POST(
     const connectedIntegrationIds = connections.map((c) => c.integration_id);
 
     const result = await processToolChat({
+      orgId: ctx.orgId,
       currentSpec,
       messages: history,
       userMessage,

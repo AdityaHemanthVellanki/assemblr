@@ -6,6 +6,8 @@ import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { encryptJson } from "@/lib/security/encryption";
 
+import { fetchAndPersistSchemas } from "@/lib/schema/store";
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }
@@ -350,7 +352,21 @@ export async function GET(
       return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
     }
 
-    // 4. Redirect
+    // 4. Trigger Schema Discovery
+    // We fire and forget this so we don't block the redirect, 
+    // but we await it slightly to ensure it starts.
+    try {
+      // Re-construct minimal credentials for discovery
+      const discoveryCreds = { access_token: tokens.access_token };
+      // We don't await this fully if we want speed, but for reliability in Phase 1, let's await.
+      // It's a few API calls.
+      await fetchAndPersistSchemas(storedState.orgId, providerId, discoveryCreds);
+    } catch (discoveryErr) {
+      console.error("Schema discovery failed during callback", discoveryErr);
+      // Don't fail the auth flow for this
+    }
+
+    // 5. Redirect
     const successUrl = new URL(storedState.redirectPath, env.APP_BASE_URL);
     successUrl.searchParams.set("integration_connected", "true");
     return NextResponse.redirect(successUrl);

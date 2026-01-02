@@ -97,6 +97,7 @@ export async function POST(
 
     // 4. Call AI
     const result = await processToolChat({
+      orgId: ctx.orgId,
       currentSpec,
       messages: history,
       userMessage,
