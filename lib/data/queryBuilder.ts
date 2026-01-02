@@ -169,7 +169,10 @@ export function buildQueryForView({
   const metric = spec.metrics.find((m) => m.id === metricId);
   if (!metric) throw new Error(`View references missing metricId "${metricId}"`);
 
-  const table = getTable(schema, metric.table);
+  // Handle persisted vs inline metrics
+  const tableName = metric.table || "unknown";
+  const table = getTable(schema, tableName);
+  
   if (metric.type === "sum") {
     if (!metric.field) throw new Error("sum metric requires field");
     requireColumn(table, metric.field);
@@ -178,7 +181,7 @@ export function buildQueryForView({
   if (view.type === "metric") {
     const agg = metricAggSql(metric, table);
     const text = `SELECT ${agg.expr} AS ${agg.label} FROM ${quoteIdent(
-      metric.table,
+      metric.table || "unknown",
     )} LIMIT 1`;
     return { kind: "metric", query: { text, values: [] } };
   }
@@ -198,7 +201,7 @@ export function buildQueryForView({
       SELECT
         DATE_TRUNC('day', ${quoteIdent(timeCol)}) AS bucket,
         ${agg.expr} AS value
-      FROM ${quoteIdent(metric.table)}
+      FROM ${quoteIdent(metric.table || "unknown")}
       GROUP BY bucket
       ORDER BY bucket ASC
       LIMIT ${Math.min(365, maxRows)}

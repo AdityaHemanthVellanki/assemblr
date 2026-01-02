@@ -176,6 +176,8 @@ async function generateSpecUpdate(input: {
 import { planExecution } from "./planner";
 import { validatePlanAgainstCapabilities } from "@/lib/execution/validation";
 
+import { findMetrics } from "@/lib/metrics/store";
+
 export async function processToolChat(input: {
   orgId: string;
   currentSpec: DashboardSpec;
@@ -187,8 +189,9 @@ export async function processToolChat(input: {
 }): Promise<ToolChatResponse> {
   getServerEnv();
 
-  // 0. Fetch Discovered Schemas
+  // 0. Fetch Discovered Schemas and Existing Metrics
   const schemasForPlanning = await getDiscoveredSchemas(input.orgId);
+  const existingMetrics = await findMetrics(input.orgId);
 
   // 1. Run Capability Planner
   // We only run this if the user seems to be requesting data/modification
@@ -196,7 +199,12 @@ export async function processToolChat(input: {
   // The planner itself will decide if it can map intent.
   let executionPlans: any[] = [];
   try {
-    const planResult = await planExecution(input.userMessage, input.connectedIntegrationIds, schemasForPlanning);
+    const planResult = await planExecution(
+      input.userMessage, 
+      input.connectedIntegrationIds, 
+      schemasForPlanning,
+      existingMetrics
+    );
     if (planResult.error) {
        // If planning fails (e.g., ambiguity), we might want to return here.
        // But usually we want to let the Chat LLM explain it or ask for clarification.
@@ -392,7 +400,7 @@ export async function processToolChat(input: {
 
   // Inject Execution Plans into System Prompt
   const plansText = executionPlans.length > 0
-    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(executionPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.`
+    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(executionPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.\nIf "metricRef" is present, USE IT in the spec.`
     : "No execution plans generated. If the user asked for data, explain why (e.g. missing capabilities).";
 
   const finalSystemPrompt = SYSTEM_PROMPT

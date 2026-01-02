@@ -11,6 +11,7 @@ import { GoogleExecutor } from "@/lib/integrations/executors/google";
 import { validateSpecAgainstSchema } from "./validation";
 import { synthesizeQuery } from "./synthesizer";
 import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
+import { resolveMetricDependency } from "./graph";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -56,8 +57,21 @@ export async function executeDashboard(
     if (view.metricId) {
       const metric = spec.metrics.find((m) => m.id === view.metricId);
       if (metric) {
-        integrationId = integrationId || metric.integrationId;
-        table = table || metric.table;
+        if (metric.metricRef) {
+          // Resolve persisted metric
+          try {
+            const def = await resolveMetricDependency(metric.metricRef);
+            integrationId = def.integrationId;
+            table = def.resource;
+            // Also need to pass def.definition.filters if we had a way to merge them
+          } catch (err) {
+            console.error(`Failed to resolve metric ref ${metric.metricRef.id}`, err);
+          }
+        } else {
+          // Inline metric
+          integrationId = integrationId || metric.integrationId;
+          table = table || metric.table;
+        }
       }
     }
 

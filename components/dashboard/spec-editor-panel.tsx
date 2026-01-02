@@ -849,7 +849,7 @@ export function SpecEditorPanel({
                             Type
                           </div>
                           <Select
-                            value={metric.type}
+                            value={metric.type || "count"}
                             onChange={(value) => {
                               applySpecUpdate((prev) => ({
                                 ...prev,
@@ -888,7 +888,7 @@ export function SpecEditorPanel({
                           </div>
                           {schema ? (
                             <Select
-                              value={metric.table}
+                              value={metric.table || ""}
                               onChange={(value) => {
                                 applySpecUpdate((prev) => ({
                                   ...prev,
@@ -954,7 +954,7 @@ export function SpecEditorPanel({
                             <div className="text-xs text-muted-foreground">
                               Field
                             </div>
-                            {schema && numericColumns(metric.table).length ? (
+                            {schema && numericColumns(metric.table || "").length ? (
                               <Select
                                 value={metric.field ?? ""}
                                 onChange={(value) => {
@@ -968,7 +968,7 @@ export function SpecEditorPanel({
                                   }));
                                 }}
                               >
-                                {numericColumns(metric.table).map((c) => (
+                                {numericColumns(metric.table || "").map((c) => (
                                   <option key={c.name} value={c.name}>
                                     {c.name}
                                   </option>

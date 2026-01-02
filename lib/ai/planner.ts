@@ -5,6 +5,7 @@ import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
+import { Metric } from "@/lib/metrics/store";
 
 // The Plan structure
 export type ExecutionPlan = {
@@ -13,6 +14,21 @@ export type ExecutionPlan = {
   resource: string;
   params: Record<string, unknown>; // Filters, sort, etc.
   explanation: string;
+  
+  // Phase 5: Reused Metric Reference
+  // If the planner decided to use an existing metric, it populates this.
+  metricRef?: {
+    id: string;
+    version: number;
+  };
+  
+  // Phase 5: New Metric Definition
+  // If the planner decided to create a new metric, it populates this.
+  newMetric?: {
+    name: string;
+    description: string;
+    definition: any; // MetricDefinition
+  };
 };
 
 // Error Types
@@ -31,7 +47,10 @@ export class UnsupportedCapabilityError extends Error {
 }
 
 const SYSTEM_PROMPT = `
-You are the Assemblr Capability Planner. Your job is to map user intent to specific, registered capabilities.
+You are the Assemblr Capability Planner. Your job is to map user intent to specific, registered capabilities OR reuse existing metrics.
+
+AVAILABLE METRICS:
+{{METRICS}}
 
 AVAILABLE CAPABILITIES:
 {{CAPABILITIES}}
@@ -41,10 +60,14 @@ AVAILABLE SCHEMAS:
 
 Instructions:
 1. Analyze the user's request.
-2. Select the MOST appropriate capability from the list.
-3. Extract parameters (filters, sort) that are valid for that capability.
-4. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-5. If the request is unsupported, return an empty plan with an explanation.
+2. FIRST, check if an existing metric matches the intent.
+   - If yes, use it by filling "metricRef".
+   - Do NOT create a new plan if a metric exists.
+3. If no metric matches, select the MOST appropriate capability from the list.
+4. Extract parameters (filters, sort) that are valid for that capability.
+5. If the request implies a reusable KPI (e.g. "active users", "open issues count"), suggest creating a NEW metric by filling "newMetric".
+6. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+7. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {
@@ -54,7 +77,9 @@ You MUST respond with valid JSON only. Structure:
       "capabilityId": "string",
       "resource": "string",
       "params": { ... },
-      "explanation": "string"
+      "explanation": "string",
+      "metricRef": { "id": "string", "version": 1 }, // Optional, if reusing
+      "newMetric": { "name": "string", "description": "string", "definition": { ... } } // Optional, if creating
     }
   ],
   "error": "string (optional)"
@@ -64,12 +89,14 @@ Rules:
 - "params" keys MUST match "supportedFields" for the capability.
 - Do not invent capabilities.
 - Do not invent fields.
+- Prefer reuse -> extend -> create new.
 `;
 
 export async function planExecution(
   userMessage: string,
   connectedIntegrationIds: string[],
-  schemas: DiscoveredSchema[]
+  schemas: DiscoveredSchema[],
+  availableMetrics: Metric[] = []
 ): Promise<{ plans: ExecutionPlan[]; error?: string }> {
   getServerEnv();
 
@@ -81,6 +108,10 @@ export async function planExecution(
   if (availableCapabilities.length === 0) {
     return { plans: [], error: "No integrations connected." };
   }
+
+  const metricsText = availableMetrics.length > 0
+    ? availableMetrics.map(m => `- Name: ${m.name} (ID: ${m.id})\n  Desc: ${m.description || "None"}`).join("\n")
+    : "None";
 
   const capsText = availableCapabilities
     .map(
@@ -96,10 +127,10 @@ export async function planExecution(
     )
     .join("\n\n");
 
-  const prompt = SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsText).replace(
-    "{{SCHEMAS}}",
-    schemasText
-  );
+  const prompt = SYSTEM_PROMPT
+    .replace("{{METRICS}}", metricsText)
+    .replace("{{CAPABILITIES}}", capsText)
+    .replace("{{SCHEMAS}}", schemasText);
 
   try {
     const response = (await azureOpenAIClient.chat.completions.create({

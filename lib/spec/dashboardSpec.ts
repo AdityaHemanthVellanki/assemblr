@@ -4,13 +4,33 @@ const metricSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1),
-    type: z.enum(["count", "sum"]),
-    table: z.string().min(1),
+    // Existing inline definition
+    type: z.enum(["count", "sum"]).optional(),
+    table: z.string().min(1).optional(),
     field: z.string().min(1).optional(),
     groupBy: z.enum(["day"]).optional(),
     integrationId: z.string().optional(),
+    
+    // New Metric Registry Reference
+    metricRef: z.object({
+      id: z.string(),
+      version: z.number().optional(),
+    }).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    // Either inline definition or metricRef must be present
+    const hasInline = !!(data.type && data.table);
+    const hasRef = !!data.metricRef;
+
+    if (!hasInline && !hasRef) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["metricRef"],
+        message: "Metric must provide either inline definition (type, table) or metricRef",
+      });
+    }
+  });
 
 const viewSchema = z
   .object({
@@ -47,14 +67,6 @@ export const dashboardSpecSchema = z
           code: z.ZodIssueCode.custom,
           path: ["metrics"],
           message: `Metric "${metric.id}" is type "sum" and requires "field"`,
-        });
-      }
-
-      if (metric.type === "count" && metric.field) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["metrics"],
-          message: `Metric "${metric.id}" is type "count" and must not include "field"`,
         });
       }
     }
