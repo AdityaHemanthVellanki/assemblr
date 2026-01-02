@@ -83,6 +83,7 @@ Conventions:
 - Do NOT fabricate data or assume schema.
 - You must ONLY use fields defined in the 'Available Schemas' section.
 - Prefer simple, effective dashboards.
+- If you use an existing metric, mention that it might be cached.
 `;
 
 const chatResponseSchema = z.object({

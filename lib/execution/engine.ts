@@ -12,6 +12,7 @@ import { validateSpecAgainstSchema } from "./validation";
 import { synthesizeQuery } from "./synthesizer";
 import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
 import { resolveMetricDependency } from "./graph";
+import { getLatestExecution, runMetricExecution } from "./scheduler";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -23,7 +24,8 @@ const EXECUTORS: Record<string, IntegrationExecutor> = {
 
 export async function executeDashboard(
   orgId: string,
-  spec: DashboardSpec
+  spec: DashboardSpec,
+  options?: { forceRefresh?: boolean }
 ): Promise<Record<string, ExecutionResult>> {
   // 0. Validate Schema
   const { valid, errors } = await validateSpecAgainstSchema(orgId, spec);
@@ -61,6 +63,30 @@ export async function executeDashboard(
           // Resolve persisted metric
           try {
             const def = await resolveMetricDependency(metric.metricRef);
+            
+            // Phase 6: Check Cache
+            // If we are NOT in forceRefresh mode, try to use cache.
+            if (!options?.forceRefresh) {
+               const latest = await getLatestExecution(def.id);
+               // TODO: Check TTL. For now, if we have ANY completed execution, use it.
+               if (latest && latest.result) {
+                  results[view.id] = {
+                    viewId: view.id,
+                    status: "success",
+                    data: latest.result,
+                    timestamp: latest.completedAt || new Date().toISOString(),
+                    source: "cache"
+                  };
+                  continue; // Skip creating a plan for this view
+                } else {
+                 // Trigger async execution if not running? 
+                 // For Phase 6 mandatory part: "If stale: Trigger async execution... Show stale data"
+                 // Here we have NO data. So we must block and execute (or return loading).
+                 // We will proceed to creating a plan, which blocks.
+                 // Ideally we should kick off `runMetricExecution` in background if we had partial data.
+               }
+            }
+
             integrationId = def.integrationId;
             table = def.resource;
             // Also need to pass def.definition.filters if we had a way to merge them
