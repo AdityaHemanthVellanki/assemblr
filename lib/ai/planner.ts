@@ -86,8 +86,9 @@ Instructions:
    - WARN: Workflows with write actions may require approval.
 8. If the request implies debugging or explanation (e.g. "Why did this run?", "Explain execution"), use the 'explain_trace' intent.
    - For now, just return a plan with capabilityId="explain_trace" (this is a system capability).
-9. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-10. If the request is unsupported, return an empty plan with an explanation.
+9. If the user asks about cost or budget (e.g., "Why was this blocked?", "Quota exceeded"), explain that execution was blocked by the Cost Control Layer.
+10. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+11. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {

@@ -7,6 +7,8 @@ import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 
 import { evaluateAlerts } from "@/lib/alerts/evaluator";
 import { withTrace } from "@/lib/observability/tracer";
+import { estimateCost } from "@/lib/security/cost-model";
+import { checkAndConsumeBudget } from "@/lib/security/cost-store";
 
 // Minimal spec wrapper to reuse executeDashboard
 function wrapMetricInSpec(metric: Metric): DashboardSpec {
@@ -46,6 +48,10 @@ export async function runMetricExecution(metricId: string, triggeredBy: string =
     "metric",
     { metricId, triggeredBy },
     async (traceId) => {
+      // Phase 11: Cost Control
+      const estimatedCost = estimateCost("metric_execution");
+      await checkAndConsumeBudget(metric.orgId, estimatedCost);
+
       // 2. Create Execution Record
       const execution = await createExecution(metricId, triggeredBy);
       await updateExecutionStatus(execution.id, "running");

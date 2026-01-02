@@ -45,3 +45,21 @@ export function checkRateLimit({
   store.set(key, existing);
   return { ok: true };
 }
+
+export async function checkIntegrationLimit(integrationType: string): Promise<RateLimitResult> {
+  // In Phase 11, we hardcode limits or fetch from DB. 
+  // For simplicity/speed, using hardcoded map matching the DB defaults.
+  const LIMITS: Record<string, number> = {
+    github: 30,
+    slack: 20,
+    linear: 60
+  };
+  
+  const limit = LIMITS[integrationType] || 60;
+  
+  return checkRateLimit({
+    key: `integration:${integrationType}`,
+    windowMs: 60000, // 1 minute
+    max: limit
+  });
+}

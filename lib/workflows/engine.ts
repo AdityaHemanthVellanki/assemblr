@@ -3,6 +3,8 @@ import "server-only";
 import { Workflow, WorkflowAction, updateWorkflowRun } from "./store";
 import { logAudit } from "@/lib/governance/store";
 import { withTrace } from "@/lib/observability/tracer";
+import { estimateWorkflowCost } from "@/lib/security/cost-model";
+import { checkAndConsumeBudget } from "@/lib/security/cost-store";
 
 export async function runWorkflow(workflow: Workflow, runId: string, context: any, parentTraceId?: string) {
   // Phase 9: Governance Check
@@ -24,6 +26,10 @@ export async function runWorkflow(workflow: Workflow, runId: string, context: an
     "workflow",
     { runId, context },
     async (traceId) => {
+      // Phase 11: Cost Control
+      const estimatedCost = estimateWorkflowCost(workflow.actions);
+      await checkAndConsumeBudget(workflow.orgId, estimatedCost);
+
       await updateWorkflowRun(runId, { status: "running" });
       
       const logs: any[] = [];
