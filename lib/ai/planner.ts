@@ -30,14 +30,16 @@ export type ExecutionPlan = {
     definition: any; // MetricDefinition
   };
 
-  // Phase 7: New Alert Definition
-  // If the planner decided to create a new alert, it populates this.
-  newAlert?: {
-    metricId: string; // "new" if creating a metric simultaneously, or existing ID
-    conditionType: "threshold" | "change";
-    comparisonOp: "gt" | "lt" | "eq" | "gte" | "lte";
-    thresholdValue: number;
-    actionConfig: { type: "email" | "slack"; target: string };
+  // Phase 8: New Workflow Definition
+  // If the planner decided to create a new workflow, it populates this.
+  newWorkflow?: {
+    name: string;
+    triggerConfig: {
+      type: "alert" | "schedule";
+      refId?: "alert_from_newAlert" | string; // alert_id or reference
+      cron?: string;
+    };
+    actions: Array<{ type: "slack" | "email" | "github_issue"; config: any }>;
   };
 };
 
@@ -79,8 +81,10 @@ Instructions:
 6. If the request implies monitoring or alerting (e.g. "notify me when", "alert if > 10"), suggest creating a NEW alert by filling "newAlert".
    - If it refers to a new metric, set metricId="new".
    - If it refers to an existing metric (from AVAILABLE METRICS), set metricId to the ID.
-7. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-8. If the request is unsupported, return an empty plan with an explanation.
+7. If the request implies automation or workflow (e.g. "if alert fires, do X", "every monday send report"), suggest creating a NEW workflow by filling "newWorkflow".
+   - Use "newAlert" reference if the trigger is the alert being created.
+8. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
+9. If the request is unsupported, return an empty plan with an explanation.
 
 You MUST respond with valid JSON only. Structure:
 {
@@ -93,7 +97,8 @@ You MUST respond with valid JSON only. Structure:
       "explanation": "string",
       "metricRef": { "id": "string", "version": 1 }, // Optional, if reusing
       "newMetric": { "name": "string", "description": "string", "definition": { ... } }, // Optional, if creating
-      "newAlert": { "metricId": "string", "conditionType": "threshold", "comparisonOp": "gt", "thresholdValue": 10, "actionConfig": { ... } } // Optional, if alerting
+      "newAlert": { "metricId": "string", "conditionType": "threshold", "comparisonOp": "gt", "thresholdValue": 10, "actionConfig": { ... } }, // Optional, if alerting
+      "newWorkflow": { "name": "string", "triggerConfig": { "type": "alert", "refId": "alert_from_newAlert" }, "actions": [{ "type": "slack", "config": { ... } }] } // Optional, if workflow
     }
   ],
   "error": "string (optional)"
