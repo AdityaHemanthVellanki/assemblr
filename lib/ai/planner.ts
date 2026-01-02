@@ -83,6 +83,7 @@ Instructions:
    - If it refers to an existing metric (from AVAILABLE METRICS), set metricId to the ID.
 7. If the request implies automation or workflow (e.g. "if alert fires, do X", "every monday send report"), suggest creating a NEW workflow by filling "newWorkflow".
    - Use "newAlert" reference if the trigger is the alert being created.
+   - WARN: Workflows with write actions may require approval.
 8. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
 9. If the request is unsupported, return an empty plan with an explanation.
 

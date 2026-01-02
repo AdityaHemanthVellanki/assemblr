@@ -157,6 +157,32 @@ export function canManageIntegrations(role: OrgRole) {
   return role === "owner" || role === "editor";
 }
 
+// Phase 9: Governance
+export function canCreateWorkflows(role: OrgRole) {
+  // Editors can create workflows, but they might need approval
+  return role === "owner" || role === "editor";
+}
+
+export function canApproveWorkflows(role: OrgRole) {
+  // Only owners can approve workflows
+  return role === "owner";
+}
+
+export function requiresApproval(role: OrgRole, actions: any[]) {
+  // Owners bypass approval
+  if (role === "owner") return false;
+  
+  // Editors need approval if workflow has ANY write actions
+  if (role === "editor") {
+    // Check if actions list contains any side-effect actions
+    // For Phase 9, let's assume ALL configured actions are risky except maybe 'log'
+    // But our Engine only supports slack/email/github which are all risky.
+    return actions.length > 0; 
+  }
+  
+  return true;
+}
+
 export function roleLabel(role: OrgRole) {
   if (role === "owner") return "Owner";
   if (role === "editor") return "Editor";

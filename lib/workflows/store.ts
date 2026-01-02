@@ -1,6 +1,8 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getSessionContext, requireUserRole, requiresApproval, canCreateWorkflows } from "@/lib/auth/permissions";
+import { createApprovalRequest, logAudit } from "@/lib/governance/store";
 
 export type WorkflowAction = {
   type: "slack" | "email" | "github_issue" | "linear_issue";
@@ -18,6 +20,8 @@ export type Workflow = {
     cron?: string;
   };
   actions: WorkflowAction[];
+  approvalStatus?: "pending" | "approved" | "rejected";
+  requiresApproval?: boolean;
 };
 
 export type WorkflowRun = {
@@ -30,9 +34,18 @@ export type WorkflowRun = {
   error?: string;
 };
 
-export async function createWorkflow(input: Omit<Workflow, "id">): Promise<Workflow> {
+export async function createWorkflow(input: Omit<Workflow, "id" | "approvalStatus" | "requiresApproval">): Promise<Workflow> {
   const supabase = await createSupabaseServerClient();
-  
+  const ctx = await getSessionContext();
+  const { role } = await requireUserRole(ctx);
+
+  if (!canCreateWorkflows(role)) {
+    throw new Error("Insufficient permissions to create workflows");
+  }
+
+  const needApproval = requiresApproval(role, input.actions);
+  const initialStatus = needApproval ? "pending" : "approved";
+
   // @ts-ignore
   const { data, error } = await (supabase.from("workflows") as any)
     .insert({
@@ -41,12 +54,28 @@ export async function createWorkflow(input: Omit<Workflow, "id">): Promise<Workf
       enabled: input.enabled,
       trigger_config: input.triggerConfig,
       actions: input.actions,
+      approval_status: initialStatus,
+      requires_approval: needApproval,
     })
     .select()
     .single();
 
   if (error) throw new Error(`Failed to create workflow: ${error.message}`);
-  return mapRowToWorkflow(data);
+  
+  const workflow = mapRowToWorkflow(data);
+
+  // Log Audit
+  await logAudit(input.orgId, "workflow.create", "workflow", workflow.id, { 
+    approvalStatus: initialStatus,
+    requiresApproval: needApproval 
+  });
+
+  // Create Approval Request if needed
+  if (needApproval) {
+    await createApprovalRequest(input.orgId, workflow.id, ctx.userId);
+  }
+
+  return workflow;
 }
 
 export async function getWorkflowsForAlert(alertId: string): Promise<Workflow[]> {
@@ -58,6 +87,7 @@ export async function getWorkflowsForAlert(alertId: string): Promise<Workflow[]>
   const { data, error } = await (supabase.from("workflows") as any)
     .select()
     .eq("enabled", true)
+    .eq("approval_status", "approved") // Enforce governance: Only approved workflows can run
     .contains("trigger_config", { type: "alert", refId: alertId });
 
   if (error || !data) return [];
@@ -105,6 +135,8 @@ function mapRowToWorkflow(row: any): Workflow {
     enabled: row.enabled,
     triggerConfig: row.trigger_config,
     actions: row.actions,
+    approvalStatus: row.approval_status,
+    requiresApproval: row.requires_approval,
   };
 }
 
