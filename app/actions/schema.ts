@@ -33,7 +33,8 @@ export async function refreshSchemas(orgId?: string) {
     const results = await Promise.allSettled(
       connections.map(async (conn) => {
         const token = await getValidAccessToken(targetOrgId, conn.integration_id);
-        await fetchAndPersistSchemas(targetOrgId, conn.integration_id, { access_token: token });
+        // Using integration_id as both type and ID for now, as DB doesn't have a separate ID column in this query
+        await fetchAndPersistSchemas(targetOrgId, conn.integration_id, conn.integration_id, { access_token: token });
       })
     );
 

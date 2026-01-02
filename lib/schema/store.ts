@@ -1,43 +1,40 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { DiscoveredSchema, SchemaDiscoverer } from "./types";
-import { GitHubSchemaDiscoverer } from "@/lib/integrations/schema-discovery/github";
-import { LinearSchemaDiscoverer } from "@/lib/integrations/schema-discovery/linear";
-import { SlackSchemaDiscoverer } from "@/lib/integrations/schema-discovery/slack";
-import { NotionSchemaDiscoverer } from "@/lib/integrations/schema-discovery/notion";
-import { GoogleSchemaDiscoverer } from "@/lib/integrations/schema-discovery/google";
-
-const DISCOVERERS: Record<string, SchemaDiscoverer> = {
-  github: new GitHubSchemaDiscoverer(),
-  linear: new LinearSchemaDiscoverer(),
-  slack: new SlackSchemaDiscoverer(),
-  notion: new NotionSchemaDiscoverer(),
-  google: new GoogleSchemaDiscoverer(),
-};
+import { DiscoveredSchema } from "./types";
+import { discoverSchemas } from "./discovery";
 
 export async function fetchAndPersistSchemas(
   orgId: string,
-  integrationId: string,
+  integrationType: string,
+  integrationId: string, // Database ID of the integration row
   credentials: Record<string, unknown>
 ): Promise<void> {
-  const discoverer = DISCOVERERS[integrationId];
-  if (!discoverer) {
-    console.warn(`No schema discoverer for ${integrationId}`);
-    return;
-  }
-
-  const schemas = await discoverer.discoverSchemas(credentials);
+  // 1. Discover
+  const schemas = await discoverSchemas(orgId, integrationType, integrationId, credentials);
   const supabase = await createSupabaseServerClient();
 
+  // 2. Persist
   for (const schema of schemas) {
+    // 2a. Insert into Version History (Log)
+    // @ts-ignore
+    await (supabase.from("integration_schema_versions") as any)
+      .insert({
+        org_id: orgId,
+        integration_id: integrationType, // Using type as ID for now, or real UUID if available
+        resource: schema.resource,
+        schema_json: JSON.stringify(schema),
+        is_active: true
+      });
+
+    // 2b. Update Active View (Current State)
     // @ts-ignore: Supabase types not yet updated with new table
     const { error } = await (supabase
       .from("integration_schemas") as any)
       .upsert(
         {
           org_id: orgId,
-          integration_id: integrationId,
+          integration_id: integrationType,
           resource: schema.resource,
           schema_json: JSON.stringify(schema),
           last_discovered_at: new Date().toISOString(),
@@ -47,7 +44,7 @@ export async function fetchAndPersistSchemas(
       );
 
     if (error) {
-      console.error(`Failed to persist schema for ${integrationId}:${schema.resource}`, error);
+      console.error(`Failed to persist schema for ${integrationType}:${schema.resource}`, error);
     }
   }
 }

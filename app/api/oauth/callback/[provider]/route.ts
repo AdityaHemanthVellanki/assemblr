@@ -353,17 +353,23 @@ export async function GET(
     }
 
     // 4. Trigger Schema Discovery
-    // We fire and forget this so we don't block the redirect, 
-    // but we await it slightly to ensure it starts.
     try {
-      // Re-construct minimal credentials for discovery
-      const discoveryCreds = { access_token: tokens.access_token };
-      // We don't await this fully if we want speed, but for reliability in Phase 1, let's await.
-      // It's a few API calls.
-      await fetchAndPersistSchemas(storedState.orgId, providerId, discoveryCreds);
+      console.log(`Triggering schema discovery for ${providerId} (Org: ${storedState.orgId})...`);
+      // We pass the full token set so discoverers can use what they need (e.g. refresh tokens if implemented later)
+      await fetchAndPersistSchemas(storedState.orgId, providerId, providerId, tokenSet); // Pass providerId as integrationId for now
+      console.log("Schema discovery completed successfully.");
     } catch (discoveryErr) {
       console.error("Schema discovery failed during callback", discoveryErr);
-      // Don't fail the auth flow for this
+      // Mark as failed in DB?
+      // For Phase 14, we just log it. The UI will show "No schema" state.
+      // Ideally update status to 'schema_failed'
+      await supabase
+        .from("integration_connections")
+        .update({ status: "schema_failed" })
+        .eq("org_id", storedState.orgId)
+        .eq("integration_id", providerId);
+        
+      return redirectWithError("Schema discovery failed", storedState.redirectPath);
     }
 
     // 5. Redirect

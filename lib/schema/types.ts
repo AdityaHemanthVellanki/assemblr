@@ -10,7 +10,7 @@ export type DiscoveredSchema = {
   resource: string; // e.g., "issues", "users", "pages"
   fields: SchemaField[];
   primaryKey?: string;
-  lastDiscoveredAt: string;
+  lastDiscoveredAt?: string;
 };
 
 export interface SchemaDiscoverer {
