@@ -27,34 +27,13 @@ const serverEnvSchema = z
     NEXT_PUBLIC_SITE_URL: optionalUrl(),
     APP_BASE_URL: z.string().url(),
 
-    // OAuth Credentials (MANDATORY)
-    // These credentials come from the respective provider developer dashboards (e.g. GitHub OAuth Apps).
-    // Users NEVER supply these; they are platform-level secrets.
-    // If these are missing, the deployment is misconfigured and OAuth will fail fast.
-    GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required for OAuth"),
-    GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required for OAuth"),
-
-    SLACK_CLIENT_ID: z.string().min(1, "SLACK_CLIENT_ID is required for OAuth"),
-    SLACK_CLIENT_SECRET: z.string().min(1, "SLACK_CLIENT_SECRET is required for OAuth"),
-
-    NOTION_CLIENT_ID: z.string().min(1, "NOTION_CLIENT_ID is required for OAuth"),
-    NOTION_CLIENT_SECRET: z.string().min(1, "NOTION_CLIENT_SECRET is required for OAuth"),
-
-    LINEAR_CLIENT_ID: z.string().min(1, "LINEAR_CLIENT_ID is required for OAuth"),
-    LINEAR_CLIENT_SECRET: z.string().min(1, "LINEAR_CLIENT_SECRET is required for OAuth"),
-
-    GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required for OAuth"),
-    GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required for OAuth"),
-
-    EMAIL_FROM: optionalString(),
-    EMAIL_SERVER: optionalString(),
-
+    // --------------------------------------------------------------------------
+    // AI CONFIGURATION (MANDATORY)
+    // --------------------------------------------------------------------------
     AZURE_OPENAI_ENDPOINT: z.string().url("AZURE_OPENAI_ENDPOINT is required").refine((url) => {
-      // Must not contain /openai or /v1
-      if (url.includes("/openai") || url.includes("/v1")) return false;
-      // Must not have a path (other than /)
       try {
         const u = new URL(url);
+        // Ensure strictly base URL (no path segments)
         return u.pathname === "/" || u.pathname === "";
       } catch {
         return false;
@@ -67,6 +46,36 @@ const serverEnvSchema = z
     AZURE_OPENAI_API_VERSION: z.string().refine((val) => val === "2024-08-01-preview", {
       message: "AZURE_OPENAI_API_VERSION must be exactly '2024-08-01-preview'",
     }),
+
+    // --------------------------------------------------------------------------
+    // OAUTH PROVIDERS (OPTIONAL AT STARTUP)
+    // --------------------------------------------------------------------------
+    // These are required only when a user attempts to connect the specific integration.
+    // We allow the app to boot without them to simplify self-hosting and development.
+    // --------------------------------------------------------------------------
+    
+    // GitHub
+    GITHUB_CLIENT_ID: z.string().optional(),
+    GITHUB_CLIENT_SECRET: z.string().optional(),
+
+    // Slack
+    SLACK_CLIENT_ID: z.string().optional(),
+    SLACK_CLIENT_SECRET: z.string().optional(),
+
+    // Notion
+    NOTION_CLIENT_ID: z.string().optional(),
+    NOTION_CLIENT_SECRET: z.string().optional(),
+
+    // Linear
+    LINEAR_CLIENT_ID: z.string().optional(),
+    LINEAR_CLIENT_SECRET: z.string().optional(),
+
+    // Google
+    GOOGLE_CLIENT_ID: z.string().optional(),
+    GOOGLE_CLIENT_SECRET: z.string().optional(),
+
+    EMAIL_FROM: optionalString(),
+    EMAIL_SERVER: optionalString(),
 
     DATA_ENCRYPTION_KEY: optionalString(),
   })
