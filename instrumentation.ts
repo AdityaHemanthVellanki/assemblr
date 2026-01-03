@@ -1,3 +1,8 @@
 import "@/lib/env";
 
-export function register() {}
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { validateAzureDeployment } = await import("@/lib/ai/azureOpenAI");
+    await validateAzureDeployment();
+  }
+}

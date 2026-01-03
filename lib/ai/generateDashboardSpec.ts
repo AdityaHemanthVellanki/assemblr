@@ -33,7 +33,8 @@ async function defaultLlm(input: { system: string; user: string }) {
   getServerEnv();
 
   try {
-    const res = (await azureOpenAIClient.chat.completions.create({
+    const res = await azureOpenAIClient.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       temperature: 0.2,
       max_tokens: 900,
       response_format: { type: "json_object" },
@@ -41,9 +42,7 @@ async function defaultLlm(input: { system: string; user: string }) {
         { role: "system", content: input.system },
         { role: "user", content: input.user },
       ],
-    } as unknown as Parameters<typeof azureOpenAIClient.chat.completions.create>[0])) as unknown as {
-      choices: Array<{ message?: { content?: string | null } | null }>;
-    };
+    });
 
     const content = res.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") {

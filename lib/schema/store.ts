@@ -23,7 +23,7 @@ export async function fetchAndPersistSchemas(
         org_id: orgId,
         integration_id: integrationType, // Using type as ID for now, or real UUID if available
         resource: schema.resource,
-        schema_json: JSON.stringify(schema),
+        schema: JSON.stringify(schema),
         is_active: true
       });
 
@@ -36,7 +36,7 @@ export async function fetchAndPersistSchemas(
           org_id: orgId,
           integration_id: integrationType,
           resource: schema.resource,
-          schema_json: JSON.stringify(schema),
+          schema: JSON.stringify(schema),
           last_discovered_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
@@ -53,7 +53,7 @@ export async function getDiscoveredSchemas(orgId: string): Promise<DiscoveredSch
   const supabase = await createSupabaseServerClient();
   const { data, error } = await (supabase
     .from("integration_schemas") as any)
-    .select("schema_json")
+    .select("schema")
     .eq("org_id", orgId);
 
   if (error || !data) {
@@ -62,5 +62,5 @@ export async function getDiscoveredSchemas(orgId: string): Promise<DiscoveredSch
   }
 
   // @ts-ignore: Supabase types not yet updated with new table
-  return data.map((row: any) => JSON.parse(row.schema_json as string) as DiscoveredSchema);
+  return data.map((row: any) => JSON.parse(row.schema as string) as DiscoveredSchema);
 }

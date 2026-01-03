@@ -141,14 +141,13 @@ async function generateSpecUpdate(input: {
   };
 
   try {
-    const response = (await azureOpenAIClient.chat.completions.create({
+    const response = await azureOpenAIClient.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [systemMessage, ...history, lastMessage],
       temperature: 0.2,
       max_tokens: 1200,
       response_format: { type: "json_object" },
-    } as unknown as Parameters<typeof azureOpenAIClient.chat.completions.create>[0])) as unknown as {
-      choices: Array<{ message?: { content?: string | null } | null }>;
-    };
+    });
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error("AI returned empty content");

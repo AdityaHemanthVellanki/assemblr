@@ -3,7 +3,7 @@ create table if not exists public.integration_schemas (
   org_id uuid not null references public.organizations(id) on delete cascade,
   integration_id text not null,
   resource text not null,
-  schema_json jsonb not null, -- Stores DiscoveredSchema structure
+  schema jsonb not null, -- Stores DiscoveredSchema structure
   last_discovered_at timestamptz default now(),
   created_at timestamptz default now(),
   updated_at timestamptz default now(),

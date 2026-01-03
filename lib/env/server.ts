@@ -49,13 +49,24 @@ const serverEnvSchema = z
     EMAIL_FROM: optionalString(),
     EMAIL_SERVER: optionalString(),
 
-    AZURE_OPENAI_ENDPOINT: optionalUrl(),
-    AZURE_OPENAI_API_KEY: optionalString(),
-    AZURE_OPENAI_DEPLOYMENT_NAME: optionalString(),
-    AZURE_OPENAI_API_VERSION: z.preprocess(
-      emptyToUndefined,
-      z.string().min(1).default("2024-02-15-preview"),
-    ),
+    AZURE_OPENAI_ENDPOINT: z.string().url("AZURE_OPENAI_ENDPOINT is required").refine((url) => {
+      // Must not contain /openai or /v1
+      if (url.includes("/openai") || url.includes("/v1")) return false;
+      // Must not have a path (other than /)
+      try {
+        const u = new URL(url);
+        return u.pathname === "/" || u.pathname === "";
+      } catch {
+        return false;
+      }
+    }, {
+      message: "AZURE_OPENAI_ENDPOINT must be the base resource URL (e.g. https://resource.openai.azure.com). Do not include /openai or /v1 paths."
+    }),
+    AZURE_OPENAI_API_KEY: z.string().min(1, "AZURE_OPENAI_API_KEY is required"),
+    AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1, "AZURE_OPENAI_DEPLOYMENT_NAME is required"),
+    AZURE_OPENAI_API_VERSION: z.string().refine((val) => val === "2024-08-01-preview", {
+      message: "AZURE_OPENAI_API_VERSION must be exactly '2024-08-01-preview'",
+    }),
 
     DATA_ENCRYPTION_KEY: optionalString(),
   })

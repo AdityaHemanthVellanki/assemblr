@@ -84,9 +84,10 @@ If the user's intent is ambiguous, add "ambiguity_questions" instead of guessing
 export async function extractCapabilities(prompt: string): Promise<CapabilityExtraction> {
   getServerEnv();
 
-  let response: { choices: Array<{ message?: { content?: string | null } | null }> };
+  let response;
   try {
-    response = (await azureOpenAIClient.chat.completions.create({
+    response = await azureOpenAIClient.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: systemPrompt.trim() },
         { role: "user", content: prompt },
@@ -94,9 +95,7 @@ export async function extractCapabilities(prompt: string): Promise<CapabilityExt
       temperature: 0,
       max_tokens: 1200,
       response_format: { type: "json_object" },
-    } as unknown as Parameters<typeof azureOpenAIClient.chat.completions.create>[0])) as unknown as {
-      choices: Array<{ message?: { content?: string | null } | null }>;
-    };
+    });
   } catch (err) {
     console.error("Azure OpenAI error", err);
     throw new Error("AI service unavailable");
