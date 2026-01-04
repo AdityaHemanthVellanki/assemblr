@@ -35,7 +35,9 @@ export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: b
   // Validate Params
   for (const key of Object.keys(plan.params)) {
     if (!capability.supportedFields.includes(key)) {
-      return { valid: false, error: `Parameter "${key}" is not supported by capability ${plan.capabilityId}` };
+      // PERMISSIVE: Warn but do not fail.
+      // The executor should ignore unsupported params.
+      console.warn(`[Validation Warning] Parameter "${key}" is not supported by capability ${plan.capabilityId}. Ignoring.`);
     }
   }
 

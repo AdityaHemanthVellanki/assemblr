@@ -71,6 +71,11 @@ const SYSTEM_PROMPT = `
 You are Assemblr AI, an expert product engineer building internal tools.
 Your goal is to help the user build and modify a dashboard tool.
 
+CRITICAL:
+- If the user asks a question (e.g., "Show me latest commits"), just answer it using the provided data.
+- Do NOT mention dashboards, tables, schemas, fields, or "connecting schemas" in your explanation unless the user EXPLICITLY asked to modify the dashboard (e.g., "Save this", "Create a chart").
+- If you are just showing data, keep it simple. "Here are the commits..."
+
 If the user asks to connect an integration, do not explain how. The system will show connection controls.
 
 You will receive:
@@ -96,8 +101,7 @@ Conventions:
 - Use readable titles and labels.
 - Do NOT generate metrics or views unless you have confirmed an integration is connected.
 - Use only integrations listed as connected: {{CONNECTED}}. Do not ask to connect any of these.
-- Do NOT fabricate data or assume schema.
-- You must ONLY use fields defined in the 'Available Schemas' section.
+- Do NOT fabricate data.
 - Prefer simple, effective dashboards.
 - If you use an existing metric, mention that it might be cached.
 `;
@@ -241,16 +245,25 @@ export async function processToolChat(input: {
       schemasForPlanning,
       existingMetrics
     );
+
+    // CRITICAL: If the planner gives an explanation without plans (e.g. asking for clarification), return immediately.
+    // This prevents falling through to schema-dependent logic.
+    if ((!planResult.plans || planResult.plans.length === 0) && (planResult.explanation || planResult.error)) {
+        return {
+            explanation: planResult.explanation || planResult.error || "I could not understand the request.",
+            message: { type: "text", content: planResult.explanation || planResult.error || "Please clarify." },
+            spec: input.currentSpec
+        };
+    }
+
     if (planResult.error) {
-       // If planning fails (e.g., ambiguity), we might want to return here.
-       // But usually we want to let the Chat LLM explain it or ask for clarification.
-       // We can inject the error into the Chat LLM prompt.
-       // For strict "No dashboards until planning succeeds", we should block here?
-       // The requirement says: "If synthesis is impossible: Reject the plan... Do NOT attempt execution"
-       // But here we are just generating the SPEC. The Spec Generation should be guided by the Plan.
-       
-       // If the planner returns "No integrations connected", we definitely want the Chat LLM to ask for them.
-    } else {
+       console.warn("Planning error:", planResult.error);
+       // If there are plans, we might proceed? No, usually error means failure.
+       // But if we handled the explanation above, this might be a system error?
+       // Let's assume if plans exist, we ignore error or log it.
+    }
+    
+    if (planResult.plans) {
        executionPlans = planResult.plans.map(resolveCapabilities);
        
        // Validate Plans
@@ -258,7 +271,6 @@ export async function processToolChat(input: {
          const val = validatePlanAgainstCapabilities(p);
          if (!val.valid) {
            console.warn(`Plan validation failed: ${val.error}`);
-           // Filter out invalid plans? Or fail?
          }
        }
     }
@@ -319,30 +331,65 @@ export async function processToolChat(input: {
   // --- BRANCH A: EPHEMERAL MODE ---
   if (!isMaterialize) {
       if (successfulExecutions.length > 0) {
-          // Construct text response
-          let content = "Here is what I found:\n\n";
+          let content = "";
+          let totalRows = 0;
+
           for (const { plan, result } of successfulExecutions) {
               const count = result.rows.length;
+              totalRows += count;
+
               if (count > 0) {
-                  // If it's a metric/count intent, just show the number
-                   const firstRow = result.rows[0] as any;
-                   if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
-                       content += `**${plan.resource}**: ${firstRow.count}\n`;
-                   } else {
-                      content += `**${plan.resource}** (${count} items):\n`;
-                      content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
-                      if (count > 3) content += `*(and ${count - 3} more)*\n`;
+                  // Specific Formatting for known resources
+                  if (plan.resource === "commits") {
+                      content += `### Latest commits in ${plan.params?.repo || "repo"}:\n\n`;
+                      // Limit to 5 for chat readability
+                      content += result.rows.slice(0, 5).map((row: any) => {
+                          const msg = row.message?.split("\n")[0] || "No message";
+                          const author = row.author?.name || row.author?.login || "Unknown";
+                          const date = row.date ? new Date(row.date).toLocaleString() : "Unknown date";
+                          const sha = row.sha ? row.sha.substring(0, 7) : "???";
+                          return `- **${msg}**\n  - Author: ${author}\n  - Date: ${date}\n  - SHA: \`${sha}\``;
+                      }).join("\n");
+                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
+                      content += "\n\n";
+                  } else if (plan.resource === "issues") {
+                      content += `### Issues:\n\n`;
+                      content += result.rows.slice(0, 5).map((row: any) => {
+                          return `- **#${row.number} ${row.title}** (${row.state})`;
+                      }).join("\n");
+                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
+                      content += "\n\n";
+                  } else {
+                      // Generic Fallback
+                       const firstRow = result.rows[0] as any;
+                       if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
+                           content += `**${plan.resource}**: ${firstRow.count}\n\n`;
+                       } else {
+                          content += `**${plan.resource}** (${count} items):\n`;
+                          content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
+                          if (count > 3) content += `*(and ${count - 3} more)*\n`;
+                          content += "\n";
+                      }
                   }
               } else {
-                  content += `**${plan.resource}**: No items found.\n`;
+                  content += `**${plan.resource}**: No items found.\n\n`;
               }
           }
           
-          content += "\n\n_This data is not saved to your dashboard. Ask 'Save this' to persist it._";
+          // Only append the ephemeral footer if we actually showed data
+          if (totalRows > 0) {
+             content += "_This data is temporary. Ask 'Save this' to add it to your project._";
+          }
+
+          // TRUTHFULNESS CHECK:
+          // If execution succeeded but returned no data, simply state that.
+          const explanation = totalRows > 0 
+            ? "Here are the results from your query:" 
+            : "I executed the search but found no matching data.";
 
           return {
-              explanation: "I've fetched the data for you.",
-              message: { type: "text", content },
+              explanation,
+              message: { type: "text", content: content || explanation },
               spec: input.currentSpec,
               metadata: { 
                   source: "ephemeral",

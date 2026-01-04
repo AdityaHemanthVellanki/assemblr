@@ -57,5 +57,5 @@ export const DASHBOARD_SPEC_SYSTEM_PROMPT = [
   "Conventions:",
   "- Use readable titles and labels.",
   "- Use stable, lowercase table names like: users, orders, payments, events.",
-  "- Use stable, lowercase field names like: amount, revenue, createdAt.",
+  "- Use stable, camelCase field names like: amount, revenue, createdAt.",
 ].join("\n");

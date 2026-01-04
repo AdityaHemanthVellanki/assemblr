@@ -74,7 +74,11 @@ export class UnsupportedCapabilityError extends Error {
 
 const SYSTEM_PROMPT = `
 You are the Assemblr Capability Planner. Your job is to map user intent to specific execution plans.
-You are NOT limited to existing schemas. If an integration is connected, you can plan ANY valid resource request.
+
+CRITICAL PRINCIPLES:
+1. **EPHEMERAL FIRST**: Defaults to "ephemeral" mode. You do NOT need a schema, table, or dashboard view to answer questions.
+2. **DIRECT EXECUTION**: If an integration is connected, you can plan ANY valid resource request (using "ad_hoc_{resource}").
+3. **NO BLOCKING**: Never refuse a request because a schema is missing.
 
 AVAILABLE METRICS:
 {{METRICS}}
@@ -107,6 +111,8 @@ Instructions:
    - "direct_answer" if mode is "ephemeral".
    - "persistent_view" if mode is "materialize".
 
+If you cannot form a plan (e.g. missing repo param), return an empty "plans" array and a clear "explanation" asking for clarification.
+
 You MUST respond with valid JSON only. Structure:
 {
   "plans": [
@@ -123,6 +129,7 @@ You MUST respond with valid JSON only. Structure:
       ...
     }
   ],
+  "explanation": "string (optional - use this to ask for clarification if no plans generated)",
   "error": "string (optional)"
 }
 `;
@@ -133,7 +140,7 @@ export async function planExecution(
   connectedIntegrationIds: string[],
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = []
-): Promise<{ plans: ExecutionPlan[]; error?: string }> {
+): Promise<{ plans: ExecutionPlan[]; error?: string; explanation?: string }> {
   getServerEnv();
 
   // Filter registry to only connected integrations
