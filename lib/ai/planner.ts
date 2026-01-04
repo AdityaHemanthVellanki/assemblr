@@ -14,7 +14,8 @@ export type ExecutionPlan = {
   resource: string;
   params: Record<string, unknown>; // Filters, sort, etc.
   explanation: string;
-  intent: "direct_answer" | "persistent_view"; // New field
+  execution_mode: "ephemeral" | "materialize" | "tool"; // NEW: Determines execution path
+  intent: "direct_answer" | "persistent_view"; // Legacy, keep for now or map to mode
   
   // Phase 5: Reused Metric Reference
   // If the planner decided to use an existing metric, it populates this.
@@ -86,12 +87,14 @@ AVAILABLE SCHEMAS:
 
 Instructions:
 1. Analyze the user's request.
-2. Determine the INTENT:
-   - "direct_answer": One-off question (e.g., "Who am I?", "List my repos"). No dashboard needed.
-   - "persistent_view": Reusable data (e.g., "Track open issues", "Show latest commit"). Needs a view/metric.
-3. FIRST, check if an existing metric matches the intent.
-   - If yes, use it by filling "metricRef".
-4. If no metric matches, construct a plan.
+2. Determine the EXECUTION MODE ("execution_mode"):
+   - "ephemeral" (DEFAULT): For ANY informational query (e.g., "Show me...", "List...", "Count...", "Who is...").
+     -> NO schema creation, NO dashboard updates.
+   - "materialize": ONLY if the user EXPLICITLY asks to "save", "track", "add to dashboard", or "create a widget".
+     -> Triggers schema discovery and dashboard mutation.
+   - "tool": For complex workflows or multi-step joins.
+
+3. Construct the Plan:
    - If the integration is connected, you CAN plan for resources even if not listed in CAPABILITIES.
    - Use standard API resource names (e.g., "user", "repos", "issues", "commits").
    - IMPORTANT: If a capability is not in the registry, you MUST generate a capabilityId in the format "ad_hoc_{resource}".
@@ -99,8 +102,10 @@ Instructions:
      Example: If the user wants "users.list", use "ad_hoc_users_list".
    - CRITICAL: For "commits", you MUST require a "repo" parameter (e.g., "owner/repo"). If the user did not specify a repo, do NOT generate a plan. Instead, explain that you need the repository name.
    - CRITICAL: Check "REQUIRED PARAMS" in the Capabilities list. If a param is required but missing, do NOT plan.
-5. If the request implies a reusable KPI, set intent="persistent_view" and suggest "newMetric".
-6. If the request is a simple lookup, set intent="direct_answer".
+
+4. Set "intent":
+   - "direct_answer" if mode is "ephemeral".
+   - "persistent_view" if mode is "materialize".
 
 You MUST respond with valid JSON only. Structure:
 {
@@ -111,6 +116,7 @@ You MUST respond with valid JSON only. Structure:
       "resource": "string",
       "params": { ... },
       "explanation": "string",
+      "execution_mode": "ephemeral" | "materialize" | "tool",
       "intent": "direct_answer" | "persistent_view",
       "metricRef": { ... },
       "newMetric": { ... },

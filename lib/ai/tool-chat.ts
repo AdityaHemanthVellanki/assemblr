@@ -271,7 +271,6 @@ export async function processToolChat(input: {
   let executionError: string | undefined;
 
   for (const plan of executionPlans) {
-    const isDirect = plan.intent === "direct_answer";
     // Check if schema exists for this resource (for inference purposes)
     const schemaExists = schemasForPlanning.some(
       s => s.integrationId === plan.integrationId && s.resource === plan.resource
@@ -300,39 +299,6 @@ export async function processToolChat(input: {
 
       if (result.status === "success" && Array.isArray(result.rows)) {
          successfulExecutions.push({ plan, result });
-
-         // Infer & Persist Schema if missing
-         if (!schemaExists && result.rows.length > 0) {
-            const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
-            await persistSchema(input.orgId, plan.integrationId, discovered);
-            // Add to current list so Spec Generation knows about it
-            schemasForPlanning.push(discovered);
-         }
-
-         // If direct answer, return immediately
-         if (isDirect) {
-           let content = "Here is the data I found:\n\n";
-           if (result.rows.length > 0) {
-             content += `Found ${result.rows.length} items.\n`;
-             // Simple pretty print for now
-             content += "```json\n" + JSON.stringify(result.rows.slice(0, 5), null, 2) + "\n```";
-           } else {
-             content += "No items found.";
-           }
-           
-           content += "\n\nWant me to save this as a data source or view?";
-
-           return {
-             explanation: plan.explanation || "I found the information you requested.",
-             message: { type: "text", content },
-             spec: input.currentSpec,
-             metadata: { 
-               source: plan.integrationId, 
-               data: result.rows as Json,
-               intent: "direct_answer"
-             }
-           };
-         }
       } else if (result.status === "error") {
          console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
          executionError = result.error;
@@ -343,14 +309,75 @@ export async function processToolChat(input: {
     }
   }
 
-  // If we had a direct answer intent but failed to produce a result, report error.
-  const hasDirectIntent = executionPlans.some(p => p.intent === "direct_answer");
-  if (hasDirectIntent && successfulExecutions.length === 0) {
-     return {
-       explanation: `I tried to fetch the information but failed: ${executionError || "No data returned"}.`,
-       message: { type: "text", content: "Execution failed." },
-       spec: input.currentSpec
-     };
+  // Determine Overall Execution Mode
+  // If ANY plan is "materialize" or "tool", we treat the whole request as materialized.
+  // Otherwise, default to "ephemeral".
+  const isMaterialize = successfulExecutions.some(
+    e => e.plan.execution_mode === "materialize" || e.plan.execution_mode === "tool" || e.plan.intent === "persistent_view"
+  );
+
+  // --- BRANCH A: EPHEMERAL MODE ---
+  if (!isMaterialize) {
+      if (successfulExecutions.length > 0) {
+          // Construct text response
+          let content = "Here is what I found:\n\n";
+          for (const { plan, result } of successfulExecutions) {
+              const count = result.rows.length;
+              if (count > 0) {
+                  // If it's a metric/count intent, just show the number
+                   const firstRow = result.rows[0] as any;
+                   if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
+                       content += `**${plan.resource}**: ${firstRow.count}\n`;
+                   } else {
+                      content += `**${plan.resource}** (${count} items):\n`;
+                      content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
+                      if (count > 3) content += `*(and ${count - 3} more)*\n`;
+                  }
+              } else {
+                  content += `**${plan.resource}**: No items found.\n`;
+              }
+          }
+          
+          content += "\n\n_This data is not saved to your dashboard. Ask 'Save this' to persist it._";
+
+          return {
+              explanation: "I've fetched the data for you.",
+              message: { type: "text", content },
+              spec: input.currentSpec,
+              metadata: { 
+                  source: "ephemeral",
+                  data: successfulExecutions.map(e => ({ resource: e.plan.resource, rows: e.result.rows })) as Json
+              }
+          };
+      } else if (executionError) {
+          // Report error
+          return {
+              explanation: `I couldn't fetch the data: ${executionError}`,
+              message: { type: "text", content: "Execution failed." },
+              spec: input.currentSpec
+          };
+      }
+      // If no plans and no error, fall through (unlikely, planner usually gives plans or error)
+  }
+
+  // --- BRANCH B: MATERIALIZE MODE ---
+  // If we are here, we are persisting schemas and updating the spec.
+  
+  // 1. Infer & Persist Schemas
+  for (const { plan, result } of successfulExecutions) {
+      const schemaExists = schemasForPlanning.some(
+          s => s.integrationId === plan.integrationId && s.resource === plan.resource
+      );
+      
+      if (!schemaExists && result.rows.length > 0) {
+          try {
+            const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
+            await persistSchema(input.orgId, plan.integrationId, discovered);
+            schemasForPlanning.push(discovered); // Update local context for spec generator
+          } catch (e) {
+             console.warn("Schema inference failed", e);
+          }
+      }
   }
 
   // 2. Plan Chat Response (Legacy High-Level Intent)
