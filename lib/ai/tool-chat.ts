@@ -10,9 +10,23 @@ import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
 import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 import type { Json } from "@/lib/supabase/database.types";
 
-import { getDiscoveredSchemas } from "@/lib/schema/store";
+import { getDiscoveredSchemas, persistSchema } from "@/lib/schema/store";
+import { inferSchemaFromData } from "@/lib/schema/discovery";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { GitHubExecutor } from "@/lib/integrations/executors/github";
+import { LinearExecutor } from "@/lib/integrations/executors/linear";
+import { SlackExecutor } from "@/lib/integrations/executors/slack";
+import { NotionExecutor } from "@/lib/integrations/executors/notion";
+import { GoogleExecutor } from "@/lib/integrations/executors/google";
+import { IntegrationExecutor, ExecutionResult } from "@/lib/execution/types";
+
+const EXECUTORS: Record<string, IntegrationExecutor> = {
+  github: new GitHubExecutor(),
+  linear: new LinearExecutor(),
+  slack: new SlackExecutor(),
+  notion: new NotionExecutor(),
+  google: new GoogleExecutor(),
+};
 
 // --- Schema Definitions ---
 
@@ -180,6 +194,25 @@ import { validatePlanAgainstCapabilities } from "@/lib/execution/validation";
 
 import { findMetrics } from "@/lib/metrics/store";
 
+import { ExecutionPlan } from "@/lib/ai/planner";
+
+function resolveCapabilities(plan: ExecutionPlan): ExecutionPlan {
+  // If it's an ad-hoc capability, ensure we have a valid resource
+  if (plan.capabilityId.startsWith("ad_hoc_")) {
+    // If resource is missing or undefined, try to infer from ID
+    if (!plan.resource || plan.resource === "undefined") {
+      const parts = plan.capabilityId.split("_");
+      // e.g. ad_hoc_commits -> commits
+      // e.g. ad_hoc_github_repos -> github_repos (might be wrong)
+      // Usually ad_hoc_{resource}
+      if (parts.length >= 3) {
+         plan.resource = parts.slice(2).join("_");
+      }
+    }
+  }
+  return plan;
+}
+
 export async function processToolChat(input: {
   orgId: string;
   currentSpec: DashboardSpec;
@@ -203,6 +236,7 @@ export async function processToolChat(input: {
   try {
     const planResult = await planExecution(
       input.userMessage, 
+      input.messages,
       input.connectedIntegrationIds, 
       schemasForPlanning,
       existingMetrics
@@ -217,7 +251,7 @@ export async function processToolChat(input: {
        
        // If the planner returns "No integrations connected", we definitely want the Chat LLM to ask for them.
     } else {
-       executionPlans = planResult.plans;
+       executionPlans = planResult.plans.map(resolveCapabilities);
        
        // Validate Plans
        for (const p of executionPlans) {
@@ -230,6 +264,93 @@ export async function processToolChat(input: {
     }
   } catch (err) {
     console.warn("Planning step failed", err);
+  }
+
+  // 4. Handle Execution Plans (Execution-First Pipeline)
+  const successfulExecutions: Array<{ plan: any; result: ExecutionResult }> = [];
+  let executionError: string | undefined;
+
+  for (const plan of executionPlans) {
+    const isDirect = plan.intent === "direct_answer";
+    // Check if schema exists for this resource (for inference purposes)
+    const schemaExists = schemasForPlanning.some(
+      s => s.integrationId === plan.integrationId && s.resource === plan.resource
+    );
+    
+    // EXECUTE EVERYTHING. We need data to create views or answer questions.
+    try {
+      const executor = EXECUTORS[plan.integrationId];
+      if (!executor) {
+        console.warn(`No executor for ${plan.integrationId}`);
+        continue;
+      }
+
+      const accessToken = await getValidAccessToken(input.orgId, plan.integrationId);
+      const result = await executor.execute({
+        plan: {
+          viewId: "temp_exec_" + Date.now(),
+          integrationId: plan.integrationId,
+          resource: plan.resource,
+          params: plan.params,
+          // @ts-ignore - Pass intent for executor logic
+          intent: plan.intent
+        },
+        credentials: { access_token: accessToken }
+      });
+
+      if (result.status === "success" && Array.isArray(result.rows)) {
+         successfulExecutions.push({ plan, result });
+
+         // Infer & Persist Schema if missing
+         if (!schemaExists && result.rows.length > 0) {
+            const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
+            await persistSchema(input.orgId, plan.integrationId, discovered);
+            // Add to current list so Spec Generation knows about it
+            schemasForPlanning.push(discovered);
+         }
+
+         // If direct answer, return immediately
+         if (isDirect) {
+           let content = "Here is the data I found:\n\n";
+           if (result.rows.length > 0) {
+             content += `Found ${result.rows.length} items.\n`;
+             // Simple pretty print for now
+             content += "```json\n" + JSON.stringify(result.rows.slice(0, 5), null, 2) + "\n```";
+           } else {
+             content += "No items found.";
+           }
+           
+           content += "\n\nWant me to save this as a data source or view?";
+
+           return {
+             explanation: plan.explanation || "I found the information you requested.",
+             message: { type: "text", content },
+             spec: input.currentSpec,
+             metadata: { 
+               source: plan.integrationId, 
+               data: result.rows as Json,
+               intent: "direct_answer"
+             }
+           };
+         }
+      } else if (result.status === "error") {
+         console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
+         executionError = result.error;
+      }
+    } catch (err) {
+      console.error("Ad-hoc execution failed", err);
+      executionError = err instanceof Error ? err.message : "Unknown error";
+    }
+  }
+
+  // If we had a direct answer intent but failed to produce a result, report error.
+  const hasDirectIntent = executionPlans.some(p => p.intent === "direct_answer");
+  if (hasDirectIntent && successfulExecutions.length === 0) {
+     return {
+       explanation: `I tried to fetch the information but failed: ${executionError || "No data returned"}.`,
+       message: { type: "text", content: "Execution failed." },
+       spec: input.currentSpec
+     };
   }
 
   // 2. Plan Chat Response (Legacy High-Level Intent)
@@ -405,9 +526,10 @@ export async function processToolChat(input: {
     : "No schemas discovered.";
 
   // Inject Execution Plans into System Prompt
-  const plansText = executionPlans.length > 0
-    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(executionPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.\nIf "metricRef" is present, USE IT in the spec.`
-    : "No execution plans generated. If the user asked for data, explain why (e.g. missing capabilities).";
+  const validPlans = successfulExecutions.map(e => e.plan);
+  const plansText = validPlans.length > 0
+    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(validPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.\nIf "metricRef" is present, USE IT in the spec.`
+    : `No successful execution plans. Execution Error: ${executionError || "None"}. If the user asked for data, explain the error. Do NOT create new metrics or views.`;
 
   const connectedText = input.connectedIntegrationIds.length > 0
     ? input.connectedIntegrationIds.join(", ")
@@ -416,27 +538,6 @@ export async function processToolChat(input: {
     .replace("{{SCHEMAS}}", schemaText)
     .replace("{{CONNECTED}}", connectedText)
     + `\n\n${plansText}`;
-
-  if (input.connectedIntegrationIds.includes("github") && /repo|repositories/i.test(input.userMessage)) {
-    try {
-      const accessToken = await getValidAccessToken(input.orgId, "github");
-      const executor = new GitHubExecutor();
-      const result = await executor.execute({
-        plan: { viewId: "chat_github_repos_count", integrationId: "github", resource: "repos", params: {} },
-        credentials: { access_token: accessToken },
-      });
-      if (result.status === "success") {
-        const count = Array.isArray(result.data) ? result.data.length : 0;
-        const explanation = `You have ${count} repositories.`;
-        return {
-          explanation,
-          message: { type: "text", content: explanation },
-          spec: input.currentSpec,
-          metadata: { source: "github", kind: "repos_count", count },
-        };
-      }
-    } catch {}
-  }
 
   const llm = await generateSpecUpdate({
     currentSpec: input.currentSpec,

@@ -44,7 +44,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
   // AND views are defined.
   const hasRealData =
     spec.views.length > 0 &&
-    Object.values(executionResults).some((r) => r.status === "success" && r.data && r.data.length > 0);
+    Object.values(executionResults).some((r) => r.status === "success" && Array.isArray(r.rows) && r.rows.length > 0);
 
   return (
     <div className="h-full overflow-auto bg-muted/5 p-6">
@@ -83,11 +83,12 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
               .map((view) => {
                 const metric = spec.metrics.find((m) => m.id === view.metricId);
                 const result = executionResults[view.id];
+                const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
                 
                 if (!metric) return null;
 
                 let displayValue = "-";
-                if (result?.status === "success" && result.data) {
+                if (result?.status === "success" && rows.length > 0) {
                   // Naive aggregation: count rows
                   // For "sum", we need to sum the field.
                   // But the Executor currently returns raw rows.
@@ -96,10 +97,10 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                   // and show "N/A" for sum unless we parse it.
                   
                   if (metric.type === "count") {
-                    displayValue = result.data.length.toLocaleString();
+                    displayValue = rows.length.toLocaleString();
                   } else if (metric.type === "sum" && metric.field) {
                     // Try to sum
-                    const sum = result.data.reduce((acc: number, row) => {
+                    const sum = rows.reduce((acc: number, row) => {
                       const val = (row as Record<string, unknown>)[metric.field!];
                       return acc + (Number(val) || 0);
                     }, 0);
@@ -132,7 +133,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
               .map((view) => {
                 const metric = spec.metrics.find((m) => m.id === view.metricId);
                 const result = executionResults[view.id];
-                const data = (result?.status === "success" ? result.data : []) as any[];
+                const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
 
                 if (view.type === "table") {
                   return (
@@ -148,17 +149,17 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                             <Table>
                               <TableHeader>
                                 <TableRow>
-                                  {data.length > 0 && Object.keys(data[0]).slice(0, 5).map(key => (
+                                  {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
                                     <TableHead key={key}>{key}</TableHead>
                                   ))}
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {data.slice(0, 20).map((row, i) => (
+                                {rows.slice(0, 20).map((row, i) => (
                                   <TableRow key={i}>
-                                     {Object.keys(row).slice(0, 5).map(key => (
+                                     {Object.keys(row as object).slice(0, 5).map(key => (
                                        <TableCell key={key}>
-                                         {typeof row[key] === 'object' ? JSON.stringify(row[key]) : String(row[key])}
+                                         {typeof (row as any)[key] === 'object' ? JSON.stringify((row as any)[key]) : String((row as any)[key])}
                                        </TableCell>
                                      ))}
                                   </TableRow>
@@ -182,7 +183,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                 // If we can't map it, show empty.
                 
                 // Try to find a date field
-                const dateField = Object.keys(data[0] || {}).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at");
+                const dateField = rows.length > 0 ? Object.keys(rows[0] as object).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at") : undefined;
                 
                 return (
                   <Card key={view.id} className="col-span-1">
@@ -195,7 +196,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                             <div className="flex h-full items-center justify-center text-red-500">
                               {result.error}
                             </div>
-                         ) : data.length === 0 ? (
+                         ) : rows.length === 0 ? (
                             <div className="flex h-full items-center justify-center text-muted-foreground">
                               No data
                             </div>
@@ -206,7 +207,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                          ) : (
                            <ResponsiveContainer width="100%" height="100%">
                              {view.type === "bar_chart" ? (
-                               <BarChart data={data}>
+                               <BarChart data={rows}>
                                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
                                  <XAxis
                                    dataKey={dateField}
@@ -221,7 +222,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                                  <Bar dataKey={metric.field || "count"} fill="currentColor" radius={[4, 4, 0, 0]} className="fill-primary" />
                                </BarChart>
                              ) : (
-                               <LineChart data={data}>
+                               <LineChart data={rows}>
                                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
                                  <XAxis
                                    dataKey={dateField}

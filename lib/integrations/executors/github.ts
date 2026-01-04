@@ -39,59 +39,84 @@ export class GitHubExecutor implements IntegrationExecutor {
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
         data = await res.json();
       } else if (plan.resource === "commits") {
-        // 1. Get Username (if not in credentials)
-        let username = credentials.github_username as string;
-        if (!username) {
-          const userRes = await fetch("https://api.github.com/user", {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (!userRes.ok) throw new Error("Failed to fetch GitHub user");
-          const user = await userRes.json();
-          username = user.login;
+        if (!plan.params?.repo) {
+             throw new Error("Repository not specified. Please tell me which repo to use (e.g. 'owner/repo').");
         }
 
-        // 2. Fetch User Events (includes private if authenticated)
-        const res = await fetch(`https://api.github.com/users/${username}/events?per_page=20`, {
+        // Specific repo commits
+        const repo = plan.params.repo; // Expect "owner/repo"
+        const res = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=100`, {
+           headers: {
+               Authorization: `Bearer ${token}`,
+               Accept: "application/vnd.github.v3+json",
+           },
+        });
+        
+        if (!res.ok) {
+            if (res.status === 404) {
+                 throw new Error(`Repository '${repo}' not found. Please check the name and your permissions.`);
+            }
+            throw new Error(`GitHub API error: ${res.statusText}`);
+        }
+
+        const commits = await res.json();
+        
+        // @ts-ignore
+        if (plan.intent === "metric" || plan.intent === "count") {
+            data = [{ count: Array.isArray(commits) ? commits.length : 0 }];
+        } else {
+            data = Array.isArray(commits) ? commits.map((c: any) => ({
+               sha: c.sha,
+               message: c.commit.message,
+               author: c.commit.author,
+               date: c.commit.author.date,
+               repo_full_name: repo
+            })) : [];
+        }
+      } else if (plan.resource === "user") {
+        const res = await fetch("https://api.github.com/user", {
           headers: {
             Authorization: `Bearer ${token}`,
             Accept: "application/vnd.github.v3+json",
           },
         });
-        
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
-        const events = await res.json();
-
-        // 3. Filter PushEvents and Flatten Commits
-        // @ts-ignore
-        const pushEvents = events.filter((e) => e.type === "PushEvent");
-        data = pushEvents.flatMap((e: any) => {
-          return e.payload.commits.map((c: any) => ({
-            sha: c.sha,
-            message: c.message,
-            author: c.author, // { email, name }
-            date: e.created_at, // Use event time as commit time approximation for display
-            repo_full_name: e.repo.name,
-          }));
-        });
+        const json = await res.json();
+        data = [json]; // Wrap in array
       } else {
-        throw new Error(`Unsupported GitHub resource: ${plan.resource}`);
+        // Fallback: Try to fetch as direct path
+        // We allow both "repos/owner/repo" and simple resources like "user" if missed above
+        const path = plan.resource.startsWith("/") ? plan.resource.slice(1) : plan.resource;
+        const res = await fetch(`https://api.github.com/${path}`, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          });
+          if (res.ok) {
+            const json = await res.json();
+             data = Array.isArray(json) ? json : [json];
+          } else {
+             // If generic fetch fails, throw error
+             throw new Error(`Unsupported GitHub resource: ${plan.resource}`);
+          }
       }
 
       return {
         viewId: plan.viewId,
         status: "success",
-        data,
+        rows: data,
+        source: "live_api",
         timestamp: new Date().toISOString(),
-        source: "github",
       };
-
     } catch (err) {
       return {
         viewId: plan.viewId,
         status: "error",
+        rows: [],
+        source: "live_api",
         error: err instanceof Error ? err.message : "Unknown GitHub error",
         timestamp: new Date().toISOString(),
-        source: "github",
       };
     }
   }

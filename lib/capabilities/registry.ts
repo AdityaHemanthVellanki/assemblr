@@ -28,6 +28,14 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read", "filter"],
     supportedFields: ["type", "sort", "direction"],
   },
+  {
+    id: "github_commits_list",
+    integrationId: "github",
+    resource: "commits",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["repo", "author", "since", "until"],
+    constraints: { requiredFilters: ["repo"] },
+  },
 
   // Linear
   {

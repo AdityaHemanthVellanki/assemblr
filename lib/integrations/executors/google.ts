@@ -39,17 +39,18 @@ export class GoogleExecutor implements IntegrationExecutor {
       return {
         viewId: plan.viewId,
         status: "success",
-        data,
+        rows: data,
+        source: "live_api",
         timestamp: new Date().toISOString(),
-        source: "google",
       };
     } catch (err) {
       return {
         viewId: plan.viewId,
         status: "error",
+        rows: [],
+        source: "live_api",
         error: err instanceof Error ? err.message : "Unknown Google error",
         timestamp: new Date().toISOString(),
-        source: "google",
       };
     }
   }

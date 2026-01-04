@@ -15,6 +15,8 @@ import { resolveMetricDependency } from "./graph";
 import { getLatestExecution, runMetricExecution } from "./scheduler";
 import { getJoinDefinition } from "@/lib/joins/store";
 import { executeJoin } from "@/lib/joins/executor";
+import { inferSchemaFromData } from "@/lib/schema/discovery";
+import { persistSchema } from "@/lib/schema/store";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -29,22 +31,12 @@ export async function executeDashboard(
   spec: DashboardSpec,
   options?: { forceRefresh?: boolean }
 ): Promise<Record<string, ExecutionResult>> {
-  // 0. Validate Schema
+  // 0. Validate Schema (Non-blocking)
   const { valid, errors } = await validateSpecAgainstSchema(orgId, spec);
   if (!valid) {
-    // Return errors for all views
-    const results: Record<string, ExecutionResult> = {};
-    const errorMsg = `Schema Validation Failed: ${errors.join(", ")}`;
-    for (const view of spec.views) {
-      results[view.id] = {
-        viewId: view.id,
-        status: "error",
-        error: errorMsg,
-        timestamp: new Date().toISOString(),
-        source: "system",
-      };
-    }
-    return results;
+    console.warn("Schema validation warnings:", errors);
+    // We do NOT block execution. We try to execute anyway.
+    // The executor will fail if the resource is truly inaccessible.
   }
 
   const results: Record<string, ExecutionResult> = {};
@@ -145,6 +137,16 @@ export async function executeDashboard(
         plan,
         credentials: { access_token: accessToken },
       });
+
+      // Silent Schema Inference
+      if (result.status === "success" && result.data) {
+        try {
+           const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.data);
+           await persistSchema(orgId, plan.integrationId, discovered);
+        } catch (schemaErr) {
+           console.warn("Failed to infer/persist schema during execution", schemaErr);
+        }
+      }
 
       results[plan.viewId] = result;
     } catch (err) {

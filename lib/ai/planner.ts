@@ -14,6 +14,7 @@ export type ExecutionPlan = {
   resource: string;
   params: Record<string, unknown>; // Filters, sort, etc.
   explanation: string;
+  intent: "direct_answer" | "persistent_view"; // New field
   
   // Phase 5: Reused Metric Reference
   // If the planner decided to use an existing metric, it populates this.
@@ -71,12 +72,13 @@ export class UnsupportedCapabilityError extends Error {
 }
 
 const SYSTEM_PROMPT = `
-You are the Assemblr Capability Planner. Your job is to map user intent to specific, registered capabilities OR reuse existing metrics.
+You are the Assemblr Capability Planner. Your job is to map user intent to specific execution plans.
+You are NOT limited to existing schemas. If an integration is connected, you can plan ANY valid resource request.
 
 AVAILABLE METRICS:
 {{METRICS}}
 
-AVAILABLE CAPABILITIES:
+AVAILABLE CAPABILITIES (Reference only - you may go beyond these if integration is connected):
 {{CAPABILITIES}}
 
 AVAILABLE SCHEMAS:
@@ -84,55 +86,44 @@ AVAILABLE SCHEMAS:
 
 Instructions:
 1. Analyze the user's request.
-2. FIRST, check if an existing metric matches the intent.
+2. Determine the INTENT:
+   - "direct_answer": One-off question (e.g., "Who am I?", "List my repos"). No dashboard needed.
+   - "persistent_view": Reusable data (e.g., "Track open issues", "Show latest commit"). Needs a view/metric.
+3. FIRST, check if an existing metric matches the intent.
    - If yes, use it by filling "metricRef".
-   - Do NOT create a new plan if a metric exists.
-3. If no metric matches, select the MOST appropriate capability from the list.
-4. Extract parameters (filters, sort) that are valid for that capability.
-5. If the request implies a reusable KPI (e.g. "active users", "open issues count"), suggest creating a NEW metric by filling "newMetric".
-6. If the request implies monitoring or alerting (e.g. "notify me when", "alert if > 10"), suggest creating a NEW alert by filling "newAlert".
-   - If it refers to a new metric, set metricId="new".
-   - If it refers to an existing metric (from AVAILABLE METRICS), set metricId to the ID.
-7. If the request implies automation or workflow (e.g. "if alert fires, do X", "every monday send report"), suggest creating a NEW workflow by filling "newWorkflow".
-   - Use "newAlert" reference if the trigger is the alert being created.
-   - WARN: Workflows with write actions may require approval.
-8. If the request implies debugging or explanation (e.g. "Why did this run?", "Explain execution"), use the 'explain_trace' intent.
-   - For now, just return a plan with capabilityId="explain_trace" (this is a system capability).
-9. If the user asks about cost or budget (e.g., "Why was this blocked?", "Quota exceeded"), explain that execution was blocked by the Cost Control Layer.
-10. If the request implies joining data from different integrations (e.g. "Join GitHub issues with Linear issues"), suggest creating a NEW join by filling "newJoin".
-    - Do NOT auto-join.
-    - Ask for confirmation.
-11. If the request is ambiguous (e.g., "show issues" but both GitHub and Linear are connected), ask for clarification by returning an error or explanation.
-12. If the request is unsupported, return an empty plan with an explanation.
+4. If no metric matches, construct a plan.
+   - If the integration is connected, you CAN plan for resources even if not listed in CAPABILITIES.
+   - Use standard API resource names (e.g., "user", "repos", "issues", "commits").
+   - IMPORTANT: If a capability is not in the registry, you MUST generate a capabilityId in the format "ad_hoc_{resource}".
+     Example: If the user wants "commits" and it's not registered, use "ad_hoc_commits".
+     Example: If the user wants "users.list", use "ad_hoc_users_list".
+   - CRITICAL: For "commits", you MUST require a "repo" parameter (e.g., "owner/repo"). If the user did not specify a repo, do NOT generate a plan. Instead, explain that you need the repository name.
+   - CRITICAL: Check "REQUIRED PARAMS" in the Capabilities list. If a param is required but missing, do NOT plan.
+5. If the request implies a reusable KPI, set intent="persistent_view" and suggest "newMetric".
+6. If the request is a simple lookup, set intent="direct_answer".
 
 You MUST respond with valid JSON only. Structure:
 {
   "plans": [
     {
       "integrationId": "string",
-      "capabilityId": "string",
+      "capabilityId": "string", // Use "ad_hoc_{resource}" if not in registry
       "resource": "string",
       "params": { ... },
       "explanation": "string",
-      "metricRef": { "id": "string", "version": 1 }, // Optional, if reusing
-      "newMetric": { "name": "string", "description": "string", "definition": { ... } }, // Optional, if creating
-      "newAlert": { "metricId": "string", "conditionType": "threshold", "comparisonOp": "gt", "thresholdValue": 10, "actionConfig": { ... } }, // Optional, if alerting
-      "newWorkflow": { "name": "string", "triggerConfig": { "type": "alert", "refId": "alert_from_newAlert" }, "actions": [{ "type": "slack", "config": { ... } }] }, // Optional, if workflow
-      "newJoin": { "name": "string", "leftIntegrationId": "string", "leftResource": "string", "leftField": "string", "rightIntegrationId": "string", "rightResource": "string", "rightField": "string", "joinType": "inner" } // Optional, if join
+      "intent": "direct_answer" | "persistent_view",
+      "metricRef": { ... },
+      "newMetric": { ... },
+      ...
     }
   ],
   "error": "string (optional)"
 }
-
-Rules:
-- "params" keys MUST match "supportedFields" for the capability.
-- Do not invent capabilities.
-- Do not invent fields.
-- Prefer reuse -> extend -> create new.
 `;
 
 export async function planExecution(
   userMessage: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
   connectedIntegrationIds: string[],
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = []
@@ -140,11 +131,13 @@ export async function planExecution(
   getServerEnv();
 
   // Filter registry to only connected integrations
-  const availableCapabilities = CAPABILITY_REGISTRY.filter((c) =>
+  // We NO LONGER limit to registry capabilities. We allow ad-hoc.
+  // But we still pass the registry for reference.
+  const connectedCapabilities = CAPABILITY_REGISTRY.filter((c) =>
     connectedIntegrationIds.includes(c.integrationId)
   );
 
-  if (availableCapabilities.length === 0) {
+  if (connectedIntegrationIds.length === 0) {
     return { plans: [], error: "No integrations connected." };
   }
 
@@ -152,10 +145,10 @@ export async function planExecution(
     ? availableMetrics.map(m => `- Name: ${m.name} (ID: ${m.id})\n  Desc: ${m.description || "None"}`).join("\n")
     : "None";
 
-  const capsText = availableCapabilities
+  const capsText = connectedCapabilities
     .map(
       (c) =>
-        `- ID: ${c.id}\n  Integration: ${c.integrationId}\n  Resource: ${c.resource}\n  Fields: ${c.supportedFields.join(", ")}`
+        `- ID: ${c.id}\n  Integration: ${c.integrationId}\n  Resource: ${c.resource}\n  Fields: ${c.supportedFields.join(", ")}${c.constraints?.requiredFilters ? `\n  REQUIRED PARAMS: ${c.constraints.requiredFilters.join(", ")}` : ""}`
     )
     .join("\n\n");
 
@@ -172,10 +165,17 @@ export async function planExecution(
     .replace("{{SCHEMAS}}", schemasText);
 
   try {
+    // Convert history to OpenAI format, limiting context if needed
+    const contextMessages = history.map(m => ({
+      role: m.role,
+      content: m.content
+    })).slice(-10); // Last 10 messages for context
+
     const response = await azureOpenAIClient.chat.completions.create({
       model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: prompt },
+        ...contextMessages,
         { role: "user", content: userMessage },
       ],
       temperature: 0,

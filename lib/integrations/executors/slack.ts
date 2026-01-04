@@ -26,23 +26,40 @@ export class SlackExecutor implements IntegrationExecutor {
         if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
         data = json.channels || [];
       } else {
-        throw new Error(`Unsupported Slack resource: ${plan.resource}`);
+        // Fallback: Try to call the resource as a Slack API method (e.g. "users_list" -> "users.list")
+        const method = plan.resource.replace(/_/g, ".");
+        const res = await fetch(`https://slack.com/api/${method}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
+        
+        // Slack responses usually have a key matching the resource name or "members" for users
+        // We'll try to find an array in the response
+        const possibleKeys = Object.keys(json).filter(k => Array.isArray(json[k]));
+        if (possibleKeys.length > 0) {
+           data = json[possibleKeys[0]];
+        } else {
+           // If no array found, just wrap the whole response
+           data = [json];
+        }
       }
 
       return {
         viewId: plan.viewId,
         status: "success",
-        data,
+        rows: data,
+        source: "live_api",
         timestamp: new Date().toISOString(),
-        source: "slack",
       };
     } catch (err) {
       return {
         viewId: plan.viewId,
         status: "error",
+        rows: [],
+        source: "live_api",
         error: err instanceof Error ? err.message : "Unknown Slack error",
         timestamp: new Date().toISOString(),
-        source: "slack",
       };
     }
   }

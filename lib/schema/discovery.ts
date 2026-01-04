@@ -1,4 +1,4 @@
-import { DiscoveredSchema } from "./types";
+import { DiscoveredSchema, SchemaField } from "./types";
 import { githubDiscoverer } from "@/lib/integrations/discovery/github";
 import { slackDiscoverer } from "@/lib/integrations/discovery/slack";
 import { linearDiscoverer } from "@/lib/integrations/discovery/linear";
@@ -44,4 +44,41 @@ export async function discoverSchemas(
     console.error(`Schema discovery failed for ${integrationType}`, err);
     throw err;
   }
+}
+
+export function inferSchemaFromData(
+  integrationId: string,
+  resource: string,
+  data: any
+): DiscoveredSchema {
+  // Handle array or single object
+  const sample = Array.isArray(data) ? (data[0] || {}) : data;
+  
+  const fields: SchemaField[] = [];
+  
+  if (typeof sample === "object" && sample !== null) {
+    for (const [key, value] of Object.entries(sample)) {
+      let type: "string" | "number" | "boolean" | "date" | "json" = "string";
+      
+      if (typeof value === "number") type = "number";
+      else if (typeof value === "boolean") type = "boolean";
+      else if (typeof value === "object") type = "json";
+      else if (typeof value === "string") {
+        // Simple date check
+        if (!isNaN(Date.parse(value)) && value.includes("-")) type = "date";
+      }
+
+      fields.push({
+        name: key,
+        type: type,
+        description: `Inferred field ${key}`
+      });
+    }
+  }
+
+  return {
+    integrationId,
+    resource,
+    fields
+  };
 }

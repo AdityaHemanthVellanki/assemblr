@@ -8,6 +8,17 @@ import { getCapability } from "@/lib/capabilities/registry";
 import { ExecutionPlan } from "@/lib/ai/planner";
 
 export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: boolean; error?: string } {
+  // 1. Dynamic / Ad-Hoc Capability Check
+  if (plan.capabilityId.startsWith("ad_hoc_")) {
+    // We treat all ad_hoc_* capabilities as valid dynamically.
+    // The executor is responsible for handling the resource.
+    if (!plan.integrationId) {
+       return { valid: false, error: `Ad-hoc capability ${plan.capabilityId} missing integrationId` };
+    }
+    return { valid: true };
+  }
+
+  // 2. Static Registry Check
   const capability = getCapability(plan.capabilityId);
   if (!capability) {
     return { valid: false, error: `Unknown capability ID: ${plan.capabilityId}` };
@@ -62,7 +73,9 @@ export async function validateSpecAgainstSchema(
     const resources = schemaMap[metric.integrationId];
     if (!resources) {
       if (connectedIds.includes(metric.integrationId)) {
-        errors.push(`Integration "${metric.integrationId}" is connected but has no registered schema.`);
+        // Integration is connected but has no schema yet.
+        // This is valid in execution-first mode. We allow it.
+        // We do NOT push an error.
       } else {
         errors.push(`Metric "${metric.label}" references unknown integration "${metric.integrationId}"`);
       }
@@ -88,7 +101,8 @@ export async function validateSpecAgainstSchema(
       const resources = schemaMap[view.integrationId];
       if (!resources) {
         if (connectedIds.includes(view.integrationId)) {
-          errors.push(`Integration "${view.integrationId}" is connected but has no registered schema.`);
+          // Integration is connected but has no schema yet.
+          // This is valid in execution-first mode. We allow it.
         } else {
           errors.push(`View "${view.id}" references unknown integration "${view.integrationId}"`);
         }

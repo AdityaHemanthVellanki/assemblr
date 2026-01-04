@@ -33,23 +33,40 @@ export class NotionExecutor implements IntegrationExecutor {
         const json = await res.json();
         data = json.results || [];
       } else {
-        throw new Error(`Unsupported Notion resource: ${plan.resource}`);
+         // Fallback: Try generic GET request to https://api.notion.com/v1/{resource}
+         const res = await fetch(`https://api.notion.com/v1/${plan.resource}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Notion-Version": "2022-06-28",
+          },
+        });
+        
+        if (!res.ok) throw new Error(`Notion API error: ${res.statusText}`);
+        const json = await res.json();
+        
+        if (json.results && Array.isArray(json.results)) {
+            data = json.results;
+        } else {
+            data = [json];
+        }
       }
 
       return {
         viewId: plan.viewId,
         status: "success",
-        data,
+        rows: data,
+        source: "live_api",
         timestamp: new Date().toISOString(),
-        source: "notion",
       };
     } catch (err) {
       return {
         viewId: plan.viewId,
         status: "error",
+        rows: [],
+        source: "live_api",
         error: err instanceof Error ? err.message : "Unknown Notion error",
         timestamp: new Date().toISOString(),
-        source: "notion",
       };
     }
   }

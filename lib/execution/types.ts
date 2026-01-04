@@ -8,10 +8,11 @@ export type ExecutionPlan = {
 export type ExecutionResult = {
   viewId: string;
   status: "success" | "error";
-  data?: unknown[];
+  rows: unknown[]; // Strict contract: Always an array
+  columns?: unknown[];
   error?: string;
   timestamp: string;
-  source: string;
+  source: "live_api" | "cached" | "joined"; // Strict source
 };
 
 export type ExecutorInput = {
