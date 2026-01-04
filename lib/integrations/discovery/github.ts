@@ -37,13 +37,24 @@ export const githubDiscoverer: SchemaDiscoverer = {
       },
       {
         integrationId: "github",
-        resource: "repositories",
+        resource: "repos",
         fields: [
           { name: "id", type: "string", nullable: false },
           { name: "name", type: "string", nullable: false },
           { name: "full_name", type: "string", nullable: false },
           { name: "private", type: "boolean", nullable: false },
           { name: "stargazers_count", type: "number", nullable: false },
+        ]
+      },
+      {
+        integrationId: "github",
+        resource: "commits",
+        fields: [
+          { name: "sha", type: "string", nullable: false },
+          { name: "message", type: "string", nullable: false },
+          { name: "author", type: "object", nullable: false },
+          { name: "date", type: "date", nullable: false },
+          { name: "repo_full_name", type: "string", nullable: false },
         ]
       }
     ];

@@ -38,6 +38,41 @@ export class GitHubExecutor implements IntegrationExecutor {
         });
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
         data = await res.json();
+      } else if (plan.resource === "commits") {
+        // 1. Get Username (if not in credentials)
+        let username = credentials.github_username as string;
+        if (!username) {
+          const userRes = await fetch("https://api.github.com/user", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!userRes.ok) throw new Error("Failed to fetch GitHub user");
+          const user = await userRes.json();
+          username = user.login;
+        }
+
+        // 2. Fetch User Events (includes private if authenticated)
+        const res = await fetch(`https://api.github.com/users/${username}/events?per_page=20`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+          },
+        });
+        
+        if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
+        const events = await res.json();
+
+        // 3. Filter PushEvents and Flatten Commits
+        // @ts-ignore
+        const pushEvents = events.filter((e) => e.type === "PushEvent");
+        data = pushEvents.flatMap((e: any) => {
+          return e.payload.commits.map((c: any) => ({
+            sha: c.sha,
+            message: c.message,
+            author: c.author, // { email, name }
+            date: e.created_at, // Use event time as commit time approximation for display
+            repo_full_name: e.repo.name,
+          }));
+        });
       } else {
         throw new Error(`Unsupported GitHub resource: ${plan.resource}`);
       }

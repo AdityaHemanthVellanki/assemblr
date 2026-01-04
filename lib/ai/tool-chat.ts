@@ -11,6 +11,8 @@ import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 import type { Json } from "@/lib/supabase/database.types";
 
 import { getDiscoveredSchemas } from "@/lib/schema/store";
+import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
+import { GitHubExecutor } from "@/lib/integrations/executors/github";
 
 // --- Schema Definitions ---
 
@@ -79,7 +81,7 @@ ${CORE_SPEC_INSTRUCTIONS}
 Conventions:
 - Use readable titles and labels.
 - Do NOT generate metrics or views unless you have confirmed an integration is connected.
-- If no integration is connected, ask the user to connect one first.
+- Use only integrations listed as connected: {{CONNECTED}}. Do not ask to connect any of these.
 - Do NOT fabricate data or assume schema.
 - You must ONLY use fields defined in the 'Available Schemas' section.
 - Prefer simple, effective dashboards.
@@ -233,6 +235,10 @@ export async function processToolChat(input: {
   // 2. Plan Chat Response (Legacy High-Level Intent)
   const plan = await planChatResponse(input.userMessage);
   console.log("[Chat Orchestrator] Plan:", plan);
+  console.log("Chat execution context", {
+    requestedIntegration: "github",
+    isConnected: input.connectedIntegrationIds.includes("github"),
+  });
 
   function buildCtas(integrationIds: string[]) {
     const uniq = Array.from(new Set(integrationIds));
@@ -350,7 +356,7 @@ export async function processToolChat(input: {
     const integrations = buildCtas(missingRequested);
     const names = integrations.map((i) => i.name).join(", ");
     return {
-      explanation: `I need access to ${names} to proceed. Please connect it below.`,
+      explanation: `Access to ${names} is required.`,
       message: { type: "integration_action", integrations },
       spec: input.currentSpec,
       metadata: { type: "integration_action", integrations },
@@ -396,16 +402,41 @@ export async function processToolChat(input: {
   const schemas = await getDiscoveredSchemas(input.orgId);
   const schemaText = schemas.length > 0 
     ? schemas.map(s => `Integration: ${s.integrationId}, Resource: ${s.resource}\nFields: ${s.fields.map(f => f.name).join(", ")}`).join("\n\n")
-    : "No schemas discovered. Ask user to connect integrations.";
+    : "No schemas discovered.";
 
   // Inject Execution Plans into System Prompt
   const plansText = executionPlans.length > 0
     ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(executionPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.\nIf "metricRef" is present, USE IT in the spec.`
     : "No execution plans generated. If the user asked for data, explain why (e.g. missing capabilities).";
 
+  const connectedText = input.connectedIntegrationIds.length > 0
+    ? input.connectedIntegrationIds.join(", ")
+    : "None";
   const finalSystemPrompt = SYSTEM_PROMPT
     .replace("{{SCHEMAS}}", schemaText)
+    .replace("{{CONNECTED}}", connectedText)
     + `\n\n${plansText}`;
+
+  if (input.connectedIntegrationIds.includes("github") && /repo|repositories/i.test(input.userMessage)) {
+    try {
+      const accessToken = await getValidAccessToken(input.orgId, "github");
+      const executor = new GitHubExecutor();
+      const result = await executor.execute({
+        plan: { viewId: "chat_github_repos_count", integrationId: "github", resource: "repos", params: {} },
+        credentials: { access_token: accessToken },
+      });
+      if (result.status === "success") {
+        const count = Array.isArray(result.data) ? result.data.length : 0;
+        const explanation = `You have ${count} repositories.`;
+        return {
+          explanation,
+          message: { type: "text", content: explanation },
+          spec: input.currentSpec,
+          metadata: { source: "github", kind: "repos_count", count },
+        };
+      }
+    } catch {}
+  }
 
   const llm = await generateSpecUpdate({
     currentSpec: input.currentSpec,
