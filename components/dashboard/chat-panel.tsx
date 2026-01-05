@@ -90,7 +90,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   // Integration Mode State
   const [integrationMode, setIntegrationMode] = React.useState<"auto" | "manual">("auto");
   const [selectedIntegrationIds, setSelectedIntegrationIds] = React.useState<string[]>([]);
-  const [integrationStatuses, setIntegrationStatuses] = React.useState<Record<string, IntegrationConnectionStatus>>({});
+  const [integrationStatuses, setIntegrationStatuses] = React.useState<Record<string, IntegrationConnectionStatus> | null>(null);
   const [isModeOpen, setIsModeOpen] = React.useState(false);
   const [isSelectorOpen, setIsSelectorOpen] = React.useState(false);
 
@@ -104,17 +104,12 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         if (mounted && data.integrations && Array.isArray(data.integrations)) {
           const map: Record<string, IntegrationConnectionStatus> = {};
           data.integrations.forEach((i: { id: string; connected: boolean }) => {
-            // Respect existing "connecting" or "error" if we have logic for it?
-            // For now, map backend status.
-            // If backend says connected, it's connected.
-            // If not connected, it's not_connected.
-            // We'll handle "connecting" via local override during action.
             map[i.id] = i.connected ? "connected" : "not_connected";
           });
           setIntegrationStatuses(map);
         }
       } catch {
-        console.error("Failed to load integration statuses");
+        if (mounted) setIntegrationStatuses(null);
       }
     }
 
@@ -136,7 +131,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     const provider = params.get("provider");
     if (error && provider) {
       setIntegrationStatuses((prev) => ({
-        ...prev,
+        ...(prev || {}),
         [provider]: "error",
       }));
     }
@@ -227,7 +222,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
             effectiveMode === "manual"
               ? effectiveSelection.map((id) => ({
                   id,
-                  status: integrationStatuses[id] || "not_connected",
+                  status: (integrationStatuses && integrationStatuses[id]) || "not_connected",
                 }))
               : undefined,
         }),
@@ -409,7 +404,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
             <span className="text-xs text-muted-foreground">Using integrations:</span>
             {selectedIntegrationIds.map((id) => {
               const config = INTEGRATIONS_UI.find((i) => i.id === id);
-              const status = integrationStatuses[id] || "not_connected";
+              const status = integrationStatuses ? integrationStatuses[id] : undefined;
 
               let icon;
               let labelClass = "text-muted-foreground";
@@ -440,8 +435,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                     Retry
                   </button>
                 );
-              } else {
-                // not_connected
+              } else if (status === "not_connected") {
                 icon = <div className="h-2 w-2 rounded-full border border-muted-foreground" />;
                 labelClass = "text-muted-foreground";
                 actionElement = (
@@ -460,6 +454,10 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                     Connect
                   </button>
                 );
+              } else {
+                icon = <div className="h-2 w-2 rounded-full border border-muted-foreground" />;
+                labelClass = "text-muted-foreground";
+                actionElement = null;
               }
 
               return (

@@ -339,10 +339,10 @@ export async function processToolChat(input: {
               totalRows += count;
 
               if (count > 0) {
-                  // Specific Formatting for known resources
+                  // DEFAULT RESULT RENDERER
+                  // 1. Commits Renderer
                   if (plan.resource === "commits") {
                       content += `### Latest commits in ${plan.params?.repo || "repo"}:\n\n`;
-                      // Limit to 5 for chat readability
                       content += result.rows.slice(0, 5).map((row: any) => {
                           const msg = row.message?.split("\n")[0] || "No message";
                           const author = row.author?.name || row.author?.login || "Unknown";
@@ -352,19 +352,24 @@ export async function processToolChat(input: {
                       }).join("\n");
                       if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
                       content += "\n\n";
-                  } else if (plan.resource === "issues") {
+                  } 
+                  // 2. Issues Renderer
+                  else if (plan.resource === "issues") {
                       content += `### Issues:\n\n`;
                       content += result.rows.slice(0, 5).map((row: any) => {
                           return `- **#${row.number} ${row.title}** (${row.state})`;
                       }).join("\n");
                       if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
                       content += "\n\n";
-                  } else {
-                      // Generic Fallback
+                  } 
+                  // 3. Generic Object/JSON Renderer
+                  else {
                        const firstRow = result.rows[0] as any;
+                       // Single scalar count
                        if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
                            content += `**${plan.resource}**: ${firstRow.count}\n\n`;
                        } else {
+                          // JSON Block fallback
                           content += `**${plan.resource}** (${count} items):\n`;
                           content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
                           if (count > 3) content += `*(and ${count - 3} more)*\n`;
@@ -381,8 +386,9 @@ export async function processToolChat(input: {
              content += "_This data is temporary. Ask 'Save this' to add it to your project._";
           }
 
-          // TRUTHFULNESS CHECK:
+          // STRICT TRUTHFULNESS CHECK:
           // If execution succeeded but returned no data, simply state that.
+          // NEVER claim success without visible output.
           const explanation = totalRows > 0 
             ? "Here are the results from your query:" 
             : "I executed the search but found no matching data.";

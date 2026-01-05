@@ -7,10 +7,11 @@ export type ExecutionPlan = {
 
 export type ExecutionResult = {
   viewId: string;
-  status: "success" | "error";
+  status: "success" | "error" | "clarification_needed";
   rows: unknown[]; // Strict contract: Always an array
   columns?: unknown[];
   error?: string;
+  render_hint?: "list" | "table" | "json" | "text";
   timestamp: string;
   source: "live_api" | "cached" | "joined"; // Strict source
 };
