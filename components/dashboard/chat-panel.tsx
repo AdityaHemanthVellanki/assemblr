@@ -34,7 +34,8 @@ type RawMessage = {
 
 type Message =
   | { role: "user" | "assistant"; type: "text"; content: string }
-  | { role: "assistant"; type: "integration_action"; integrations: IntegrationCTA[] };
+  | { role: "assistant"; type: "integration_action"; integrations: IntegrationCTA[] }
+  | { role: "assistant"; type: "data"; result: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } };
 
 interface ChatPanelProps {
   toolId: string;
@@ -237,8 +238,15 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
           ...prev,
           { role: "assistant", type: "integration_action", integrations: data.message.integrations },
         ]);
+      } else if (data?.message?.type === "data" && data.message.result) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", type: "data", result: data.message.result },
+        ]);
       } else {
-        const content = typeof data.explanation === "string" ? data.explanation : "";
+        const content = data?.message?.type === "text" && typeof data.message.content === "string"
+          ? data.message.content
+          : (typeof data.explanation === "string" ? data.explanation : "");
         setMessages((prev) => [...prev, { role: "assistant", type: "text", content }]);
       }
       
@@ -373,6 +381,35 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
             >
               {msg.type === "text" ? (
                 <div>{msg.content}</div>
+              ) : msg.type === "data" ? (
+                <div className="space-y-2">
+                  {msg.result.summary ? (
+                    <div className="text-xs font-medium text-muted-foreground">{msg.result.summary}</div>
+                  ) : null}
+                  {msg.result.result_type === "list" && Array.isArray(msg.result.rows) ? (
+                    <ul className="list-disc pl-4">
+                      {msg.result.rows.slice(0, 10).map((row, idx) => {
+                        const r = row as Record<string, any>;
+                        const line = Object.entries(r)
+                          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+                          .join(", ");
+                        return <li key={idx} className="text-sm">{line}</li>;
+                      })}
+                    </ul>
+                  ) : msg.result.result_type === "json" ? (
+                    <pre className="max-w-[520px] overflow-auto rounded-md border border-border bg-background p-2 text-xs">
+                      {JSON.stringify(
+                        msg.result.object ?? msg.result.rows ?? {},
+                        null,
+                        2,
+                      )}
+                    </pre>
+                  ) : (
+                    <div className="text-sm">
+                      {msg.result.summary || "No results found."}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-2">
                   {msg.integrations.map((cta) => (

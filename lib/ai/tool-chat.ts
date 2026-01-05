@@ -128,7 +128,8 @@ export type IntegrationCTA = {
 
 export type ToolChatMessage =
   | { type: "text"; content: string }
-  | { type: "integration_action"; integrations: IntegrationCTA[] };
+  | { type: "integration_action"; integrations: IntegrationCTA[] }
+  | { type: "data"; result: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } };
 
 export type ToolChatResponse = {
   explanation: string;
@@ -331,71 +332,65 @@ export async function processToolChat(input: {
   // --- BRANCH A: EPHEMERAL MODE ---
   if (!isMaterialize) {
       if (successfulExecutions.length > 0) {
-          let content = "";
           let totalRows = 0;
+          let dataResult: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } = { result_type: "text", summary: "" };
 
           for (const { plan, result } of successfulExecutions) {
               const count = result.rows.length;
               totalRows += count;
 
               if (count > 0) {
-                  // DEFAULT RESULT RENDERER
-                  // 1. Commits Renderer
                   if (plan.resource === "commits") {
-                      content += `### Latest commits in ${plan.params?.repo || "repo"}:\n\n`;
-                      content += result.rows.slice(0, 5).map((row: any) => {
-                          const msg = row.message?.split("\n")[0] || "No message";
-                          const author = row.author?.name || row.author?.login || "Unknown";
-                          const date = row.date ? new Date(row.date).toLocaleString() : "Unknown date";
-                          const sha = row.sha ? row.sha.substring(0, 7) : "???";
-                          return `- **${msg}**\n  - Author: ${author}\n  - Date: ${date}\n  - SHA: \`${sha}\``;
-                      }).join("\n");
-                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
-                      content += "\n\n";
-                  } 
-                  // 2. Issues Renderer
-                  else if (plan.resource === "issues") {
-                      content += `### Issues:\n\n`;
-                      content += result.rows.slice(0, 5).map((row: any) => {
-                          return `- **#${row.number} ${row.title}** (${row.state})`;
-                      }).join("\n");
-                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
-                      content += "\n\n";
-                  } 
-                  // 3. Generic Object/JSON Renderer
-                  else {
-                       const firstRow = result.rows[0] as any;
-                       // Single scalar count
-                       if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
-                           content += `**${plan.resource}**: ${firstRow.count}\n\n`;
-                       } else {
-                          // JSON Block fallback
-                          content += `**${plan.resource}** (${count} items):\n`;
-                          content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
-                          if (count > 3) content += `*(and ${count - 3} more)*\n`;
-                          content += "\n";
+                      dataResult = {
+                        result_type: "list",
+                        rows: result.rows.slice(0, 10).map((row: any) => ({
+                          message: row.message?.split("\n")[0] || "No message",
+                          author: row.author?.name || row.author?.login || "Unknown",
+                          date: row.date || null,
+                          sha: row.sha || null,
+                        })),
+                        summary: `Latest commits in ${plan.params?.repo || "repo"}`
+                      };
+                  } else if (plan.resource === "issues") {
+                      dataResult = {
+                        result_type: "list",
+                        rows: result.rows.slice(0, 10).map((row: any) => ({
+                          number: row.number,
+                          title: row.title,
+                          state: row.state,
+                        })),
+                        summary: "Issues"
+                      };
+                  } else {
+                      const firstRow = result.rows[0] as any;
+                      if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
+                          dataResult = {
+                            result_type: "text",
+                            summary: String(firstRow.count)
+                          };
+                      } else {
+                          dataResult = {
+                            result_type: "json",
+                            rows: result.rows.slice(0, 10),
+                            summary: `${plan.resource} (${count} items)`
+                          };
                       }
                   }
               } else {
-                  content += `**${plan.resource}**: No items found.\n\n`;
+                  dataResult = {
+                    result_type: "text",
+                    summary: `No ${plan.resource} found.`
+                  };
               }
           }
           
-          // Only append the ephemeral footer if we actually showed data
-          if (totalRows > 0) {
-             content += "_This data is temporary. Ask 'Save this' to add it to your project._";
-          }
-
-          // STRICT TRUTHFULNESS CHECK:
-          // If execution succeeded but returned no data, simply state that.
-          // NEVER claim success without visible output.
           const explanation = totalRows > 0 
             ? "Here are the results from your query:" 
             : "I executed the search but found no matching data.";
 
           return {
               explanation,
-              message: { type: "text", content: content || explanation },
+              message: { type: "data", result: dataResult },
               spec: input.currentSpec,
               metadata: { 
                   source: "ephemeral",
