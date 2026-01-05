@@ -94,6 +94,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [integrationStatuses, setIntegrationStatuses] = React.useState<Record<string, IntegrationConnectionStatus> | null>(null);
   const [isModeOpen, setIsModeOpen] = React.useState(false);
   const [isSelectorOpen, setIsSelectorOpen] = React.useState(false);
+  const [requestMode, setRequestMode] = React.useState<"create" | "chat">("create");
 
   React.useEffect(() => {
     let mounted = true;
@@ -168,6 +169,8 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   React.useEffect(() => {
     const storedMode = sessionStorage.getItem("integrationMode");
     if (storedMode === "manual") setIntegrationMode("manual");
+    const storedRequestMode = sessionStorage.getItem("requestMode");
+    if (storedRequestMode === "chat") setRequestMode("chat");
 
     const storedIds = sessionStorage.getItem("selectedIntegrationIds");
     if (storedIds) {
@@ -183,6 +186,9 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   React.useEffect(() => {
     sessionStorage.setItem("integrationMode", integrationMode);
   }, [integrationMode]);
+  React.useEffect(() => {
+    sessionStorage.setItem("requestMode", requestMode);
+  }, [requestMode]);
 
   React.useEffect(() => {
     sessionStorage.setItem("selectedIntegrationIds", JSON.stringify(selectedIntegrationIds));
@@ -218,6 +224,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userMessage,
+          mode: requestMode,
           integrationMode: effectiveMode,
           selectedIntegrations:
             effectiveMode === "manual"
@@ -320,9 +327,29 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   return (
     <div className="flex h-full flex-col border-r bg-muted/10">
       <div className="flex items-center justify-between border-b p-4">
-        <div>
+        <div className="flex items-center gap-3">
           <h2 className="font-semibold">Assemblr AI</h2>
           <p className="text-xs text-muted-foreground">Build your tool with chat</p>
+          <div className="ml-2 flex items-center gap-1 rounded-md border bg-background p-1">
+            <button
+              className={cn(
+                "rounded-sm px-2 py-1 text-xs",
+                requestMode === "create" ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+              )}
+              onClick={() => setRequestMode("create")}
+            >
+              Create
+            </button>
+            <button
+              className={cn(
+                "rounded-sm px-2 py-1 text-xs",
+                requestMode === "chat" ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+              )}
+              onClick={() => setRequestMode("chat")}
+            >
+              Chat
+            </button>
+          </div>
         </div>
         <div className="relative">
           <Button

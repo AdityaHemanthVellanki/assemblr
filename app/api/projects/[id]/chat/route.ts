@@ -10,6 +10,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z.object({
   message: z.string().min(1).max(5000),
+  mode: z.enum(["create", "chat"]).optional().default("create"),
   integrationMode: z.enum(["auto", "manual"]).optional().default("auto"),
   selectedIntegrations: z
     .array(
@@ -44,7 +45,7 @@ export async function POST(
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
-    const { message: userMessage, integrationMode, selectedIntegrations } = parsed.data;
+    const { message: userMessage, mode, integrationMode, selectedIntegrations } = parsed.data;
     const selectedIntegrationIds = selectedIntegrations?.map((i) => i.id);
 
     const supabase = await createSupabaseServerClient();
@@ -102,19 +103,22 @@ export async function POST(
       messages: history,
       userMessage,
       connectedIntegrationIds,
+      mode,
       integrationMode,
       selectedIntegrationIds,
     });
 
     // 5. Update Project Spec
-    const { error: updateError } = await supabase
-      .from("projects")
-      .update({ spec: result.spec })
-      .eq("id", toolId);
-
-    if (updateError) {
-      console.error("Failed to update project spec", updateError);
-      return NextResponse.json({ error: "Failed to save tool updates" }, { status: 500 });
+    if (mode === "create") {
+      const { error: updateError } = await supabase
+        .from("projects")
+        .update({ spec: result.spec })
+        .eq("id", toolId);
+ 
+      if (updateError) {
+        console.error("Failed to update project spec", updateError);
+        return NextResponse.json({ error: "Failed to save tool updates" }, { status: 500 });
+      }
     }
 
     // 6. Insert Assistant Message

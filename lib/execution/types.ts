@@ -3,6 +3,7 @@ export type ExecutionPlan = {
   integrationId: string;
   resource: string; // e.g., "issues", "messages"
   params?: Record<string, unknown>;
+  mode?: "create" | "chat";
 };
 
 export type ExecutionResult = {

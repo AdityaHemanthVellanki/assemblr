@@ -224,6 +224,7 @@ export async function processToolChat(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
+  mode?: "create" | "chat";
   integrationMode: "auto" | "manual";
   selectedIntegrationIds?: string[];
 }): Promise<ToolChatResponse> {
@@ -279,6 +280,32 @@ export async function processToolChat(input: {
     console.warn("Planning step failed", err);
   }
 
+  // 2. Optional early guard for Chat mode: if any planned integration is not connected, return CTA
+  const plannedIntegrationIds = Array.from(new Set(executionPlans.map((p) => p.integrationId)));
+  const missingPlanned = plannedIntegrationIds.filter((id) => !input.connectedIntegrationIds.includes(id));
+  if ((input.mode ?? "create") === "chat" && missingPlanned.length > 0) {
+    const integrations = missingPlanned.map((id) => {
+      let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
+      let logoUrl: string | undefined;
+      try {
+        const ui = getIntegrationUIConfig(id);
+        name = ui.name;
+        logoUrl = ui.logoUrl;
+      } catch {}
+      const params = new URLSearchParams();
+      params.set("provider", id);
+      params.set("source", "chat");
+      const action = `/api/oauth/start?${params.toString()}`;
+      return { id, name, logoUrl, connected: false, label: `Connect ${name}`, action } satisfies IntegrationCTA;
+    });
+    return {
+      explanation: `Access required: ${integrations.map((i) => i.name).join(", ")}`,
+      message: { type: "integration_action", integrations },
+      spec: input.currentSpec,
+      metadata: { type: "integration_action", integrations },
+    };
+  }
+
   // 4. Handle Execution Plans (Execution-First Pipeline)
   const successfulExecutions: Array<{ plan: any; result: ExecutionResult }> = [];
   let executionError: string | undefined;
@@ -305,7 +332,8 @@ export async function processToolChat(input: {
           resource: plan.resource,
           params: plan.params,
           // @ts-ignore - Pass intent for executor logic
-          intent: plan.intent
+          intent: plan.intent,
+          mode: input.mode
         },
         credentials: { access_token: accessToken }
       });
@@ -330,7 +358,8 @@ export async function processToolChat(input: {
   );
 
   // --- BRANCH A: EPHEMERAL MODE ---
-  if (!isMaterialize) {
+  const forceEphemeral = (input.mode ?? "create") === "chat";
+  if (!isMaterialize || forceEphemeral) {
       if (successfulExecutions.length > 0) {
           let totalRows = 0;
           let dataResult: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } = { result_type: "text", summary: "" };
@@ -406,6 +435,14 @@ export async function processToolChat(input: {
           };
       }
       // If no plans and no error, fall through (unlikely, planner usually gives plans or error)
+      // In chat mode, if we reach here, provide a neutral message
+      if (forceEphemeral) {
+        return {
+          explanation: "No executable actions were identified.",
+          message: { type: "text", content: "No executable actions were identified." },
+          spec: input.currentSpec
+        };
+      }
   }
 
   // --- BRANCH B: MATERIALIZE MODE ---
