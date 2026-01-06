@@ -11,7 +11,8 @@ export class GitHubExecutor implements IntegrationExecutor {
         status: "error",
         error: "Missing GitHub access token",
         timestamp: new Date().toISOString(),
-        source: "github",
+        source: "live_api",
+        rows: [],
       };
     }
 

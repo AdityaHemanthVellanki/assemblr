@@ -74,9 +74,9 @@ export async function executeDashboard(
                   results[view.id] = {
                     viewId: view.id,
                     status: "success",
-                    data: latest.result,
+                    rows: latest.result,
                     timestamp: latest.completedAt || new Date().toISOString(),
-                    source: "cache"
+                    source: "cached"
                   };
                   continue; // Skip creating a plan for this view
                 } else {
@@ -112,6 +112,8 @@ export async function executeDashboard(
         resource: table,
         params: (view as any).params || {}, // Pass-through params from spec view
         explanation: "Derived from spec",
+        execution_mode: "materialize",
+        intent: "persistent_view",
       };
 
       const runtimePlan = synthesizeQuery(mockPlannerPlan);
@@ -140,9 +142,9 @@ export async function executeDashboard(
       });
 
       // Silent Schema Inference
-      if (result.status === "success" && result.data) {
+      if (result.status === "success" && result.rows) {
         try {
-           const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.data);
+           const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
            await persistSchema(orgId, plan.integrationId, discovered);
         } catch (schemaErr) {
            console.warn("Failed to infer/persist schema during execution", schemaErr);
@@ -161,7 +163,8 @@ export async function executeDashboard(
         status: "error",
         error: err instanceof Error ? err.message : "Execution failed",
         timestamp: new Date().toISOString(),
-        source: plan.integrationId,
+        source: "live_api",
+        rows: []
       };
     }
   }

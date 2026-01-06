@@ -70,15 +70,15 @@ export async function runMetricExecution(metricId: string, triggeredBy: string =
         }
 
         // 4. Complete
-        await updateExecutionStatus(execution.id, "completed", { result: result.data });
+        await updateExecutionStatus(execution.id, "completed", { result: result.rows });
         
         // 5. Evaluate Alerts (Async, don't block)
         // Pass traceId for lineage
-        evaluateAlerts(metricId, result.data, execution.id, traceId).catch(err => {
+        evaluateAlerts(metricId, result.rows, execution.id, traceId).catch(err => {
           console.error(`Alert evaluation failed for metric ${metricId}`, err);
         });
         
-        return result.data; // Return for trace output
+        return result.rows; // Return for trace output
       } catch (err) {
         console.error(`Execution failed for metric ${metricId}`, err);
         await updateExecutionStatus(execution.id, "failed", { error: err instanceof Error ? err.message : "Unknown error" });

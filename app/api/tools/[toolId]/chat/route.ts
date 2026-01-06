@@ -98,7 +98,6 @@ export async function POST(
       messages: history,
       userMessage,
       connectedIntegrationIds,
-      mode,
       integrationMode,
       selectedIntegrationIds,
     });

@@ -135,6 +135,56 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                 const result = executionResults[view.id];
                 const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
 
+                if (view.type === "heatmap") {
+                  if (!metric) return null;
+                  const dateField = rows.length > 0 ? Object.keys(rows[0] as object).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at") : undefined;
+                  
+                  // Aggregate by day
+                  const dataByDay: Record<string, number> = {};
+                  rows.forEach((row: any) => {
+                    if (!dateField) return;
+                    const date = new Date(row[dateField]);
+                    if (isNaN(date.getTime())) return;
+                    const day = date.toISOString().split("T")[0];
+                    const val = metric.field ? (Number(row[metric.field]) || 0) : 1;
+                    dataByDay[day] = (dataByDay[day] || 0) + val;
+                  });
+
+                  const sortedDays = Object.keys(dataByDay).sort();
+                  const maxVal = Math.max(...Object.values(dataByDay), 1);
+
+                  return (
+                    <Card key={view.id} className="col-span-1">
+                      <CardHeader>
+                        <CardTitle>{metric.label}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {result?.status === "error" ? (
+                           <div className="text-red-500">Error: {result.error}</div>
+                        ) : !dateField ? (
+                           <div className="text-muted-foreground">No date field found for heatmap</div>
+                        ) : (
+                           <div className="flex flex-wrap gap-1">
+                             {sortedDays.map(day => {
+                               const count = dataByDay[day];
+                               const opacity = Math.max(0.1, count / maxVal);
+                               return (
+                                 <div 
+                                   key={day} 
+                                   className="h-3 w-3 rounded-[1px] bg-primary"
+                                   style={{ opacity }}
+                                   title={`${day}: ${count}`}
+                                 />
+                               );
+                             })}
+                             {sortedDays.length === 0 && <div className="text-muted-foreground">No data</div>}
+                           </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  );
+                }
+
                 if (view.type === "table") {
                   return (
                     <Card key={view.id} className="col-span-2">
