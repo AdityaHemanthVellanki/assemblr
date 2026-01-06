@@ -33,8 +33,8 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     integrationId: "github",
     resource: "commits",
     allowedOperations: ["read", "filter"],
-    supportedFields: ["repo", "author", "since", "until"],
-    constraints: { requiredFilters: ["repo"] },
+    supportedFields: ["owner", "repo", "author", "since", "until"],
+    constraints: { requiredFilters: ["owner", "repo"] },
   },
 
   // Linear

@@ -19,6 +19,7 @@ import { SlackExecutor } from "@/lib/integrations/executors/slack";
 import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
 import { IntegrationExecutor, ExecutionResult } from "@/lib/execution/types";
+import { executeDashboard } from "@/lib/execution/engine";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -104,6 +105,33 @@ Conventions:
 - Do NOT fabricate data.
 - Prefer simple, effective dashboards.
 - If you use an existing metric, mention that it might be cached.
+
+STRICT RULES:
+- Metrics define data sources (table, integrationId) and aggregation.
+- Views NEVER include table or integrationId.
+- Non-table views reference metrics ONLY via metricId.
+
+VALID EXAMPLE:
+{
+  "title": "Engineering",
+  "metrics": [
+    { "id": "m1", "label": "Total Repos", "type": "count", "table": "repos", "integrationId": "github" }
+  ],
+  "views": [
+    { "id": "v1", "type": "metric", "metricId": "m1" }
+  ]
+}
+
+INVALID EXAMPLE (do NOT generate):
+{
+  "title": "Engineering",
+  "metrics": [
+    { "id": "m1", "label": "Total Repos", "type": "count", "table": "repos", "integrationId": "github" }
+  ],
+  "views": [
+    { "id": "v1", "type": "metric", "metricId": "m1", "table": "repos", "integrationId": "github" }
+  ]
+}
 `;
 
 const chatResponseSchema = z.object({
@@ -128,8 +156,7 @@ export type IntegrationCTA = {
 
 export type ToolChatMessage =
   | { type: "text"; content: string }
-  | { type: "integration_action"; integrations: IntegrationCTA[] }
-  | { type: "data"; result: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } };
+  | { type: "integration_action"; integrations: IntegrationCTA[] };
 
 export type ToolChatResponse = {
   explanation: string;
@@ -181,6 +208,15 @@ async function generateSpecUpdate(input: {
 
     try {
       const json = JSON.parse(content);
+      if (json && json.spec && json.spec.views && Array.isArray(json.spec.views)) {
+        json.spec.views = json.spec.views.map((v: any) => {
+          if (v && (v.type === "metric" || v.type === "line_chart" || v.type === "bar_chart")) {
+            const { table, integrationId, ...rest } = v;
+            return rest;
+          }
+          return v;
+        });
+      }
       return chatResponseSchema.parse(json);
     } catch (err) {
       console.error("AI returned invalid response", { content, err });
@@ -224,7 +260,6 @@ export async function processToolChat(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
-  mode?: "create" | "chat";
   integrationMode: "auto" | "manual";
   selectedIntegrationIds?: string[];
 }): Promise<ToolChatResponse> {
@@ -280,35 +315,10 @@ export async function processToolChat(input: {
     console.warn("Planning step failed", err);
   }
 
-  // 2. Optional early guard for Chat mode: if any planned integration is not connected, return CTA
-  const plannedIntegrationIds = Array.from(new Set(executionPlans.map((p) => p.integrationId)));
-  const missingPlanned = plannedIntegrationIds.filter((id) => !input.connectedIntegrationIds.includes(id));
-  if ((input.mode ?? "create") === "chat" && missingPlanned.length > 0) {
-    const integrations = missingPlanned.map((id) => {
-      let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
-      let logoUrl: string | undefined;
-      try {
-        const ui = getIntegrationUIConfig(id);
-        name = ui.name;
-        logoUrl = ui.logoUrl;
-      } catch {}
-      const params = new URLSearchParams();
-      params.set("provider", id);
-      params.set("source", "chat");
-      const action = `/api/oauth/start?${params.toString()}`;
-      return { id, name, logoUrl, connected: false, label: `Connect ${name}`, action } satisfies IntegrationCTA;
-    });
-    return {
-      explanation: `Access required: ${integrations.map((i) => i.name).join(", ")}`,
-      message: { type: "integration_action", integrations },
-      spec: input.currentSpec,
-      metadata: { type: "integration_action", integrations },
-    };
-  }
-
   // 4. Handle Execution Plans (Execution-First Pipeline)
   const successfulExecutions: Array<{ plan: any; result: ExecutionResult }> = [];
   let executionError: string | undefined;
+  let lastErrorIntegrationId: string | undefined;
 
   for (const plan of executionPlans) {
     // Check if schema exists for this resource (for inference purposes)
@@ -332,8 +342,7 @@ export async function processToolChat(input: {
           resource: plan.resource,
           params: plan.params,
           // @ts-ignore - Pass intent for executor logic
-          intent: plan.intent,
-          mode: input.mode
+          intent: plan.intent
         },
         credentials: { access_token: accessToken }
       });
@@ -343,10 +352,12 @@ export async function processToolChat(input: {
       } else if (result.status === "error") {
          console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
          executionError = result.error;
+         lastErrorIntegrationId = plan.integrationId;
       }
     } catch (err) {
       console.error("Ad-hoc execution failed", err);
       executionError = err instanceof Error ? err.message : "Unknown error";
+      lastErrorIntegrationId = plan.integrationId;
     }
   }
 
@@ -358,68 +369,67 @@ export async function processToolChat(input: {
   );
 
   // --- BRANCH A: EPHEMERAL MODE ---
-  const forceEphemeral = (input.mode ?? "create") === "chat";
-  if (!isMaterialize || forceEphemeral) {
+  if (!isMaterialize) {
       if (successfulExecutions.length > 0) {
+          let content = "";
           let totalRows = 0;
-          let dataResult: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } = { result_type: "text", summary: "" };
 
           for (const { plan, result } of successfulExecutions) {
               const count = result.rows.length;
               totalRows += count;
 
               if (count > 0) {
+                  // Specific Formatting for known resources
                   if (plan.resource === "commits") {
-                      dataResult = {
-                        result_type: "list",
-                        rows: result.rows.slice(0, 10).map((row: any) => ({
-                          message: row.message?.split("\n")[0] || "No message",
-                          author: row.author?.name || row.author?.login || "Unknown",
-                          date: row.date || null,
-                          sha: row.sha || null,
-                        })),
-                        summary: `Latest commits in ${plan.params?.repo || "repo"}`
-                      };
+                      content += `### Latest commits in ${plan.params?.repo || "repo"}:\n\n`;
+                      // Limit to 5 for chat readability
+                      content += result.rows.slice(0, 5).map((row: any) => {
+                          const msg = row.message?.split("\n")[0] || "No message";
+                          const author = row.author?.name || row.author?.login || "Unknown";
+                          const date = row.date ? new Date(row.date).toLocaleString() : "Unknown date";
+                          const sha = row.sha ? row.sha.substring(0, 7) : "???";
+                          return `- **${msg}**\n  - Author: ${author}\n  - Date: ${date}\n  - SHA: \`${sha}\``;
+                      }).join("\n");
+                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
+                      content += "\n\n";
                   } else if (plan.resource === "issues") {
-                      dataResult = {
-                        result_type: "list",
-                        rows: result.rows.slice(0, 10).map((row: any) => ({
-                          number: row.number,
-                          title: row.title,
-                          state: row.state,
-                        })),
-                        summary: "Issues"
-                      };
+                      content += `### Issues:\n\n`;
+                      content += result.rows.slice(0, 5).map((row: any) => {
+                          return `- **#${row.number} ${row.title}** (${row.state})`;
+                      }).join("\n");
+                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
+                      content += "\n\n";
                   } else {
-                      const firstRow = result.rows[0] as any;
-                      if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
-                          dataResult = {
-                            result_type: "text",
-                            summary: String(firstRow.count)
-                          };
-                      } else {
-                          dataResult = {
-                            result_type: "json",
-                            rows: result.rows.slice(0, 10),
-                            summary: `${plan.resource} (${count} items)`
-                          };
+                      // Generic Fallback
+                       const firstRow = result.rows[0] as any;
+                       if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
+                           content += `**${plan.resource}**: ${firstRow.count}\n\n`;
+                       } else {
+                          content += `**${plan.resource}** (${count} items):\n`;
+                          content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
+                          if (count > 3) content += `*(and ${count - 3} more)*\n`;
+                          content += "\n";
                       }
                   }
               } else {
-                  dataResult = {
-                    result_type: "text",
-                    summary: `No ${plan.resource} found.`
-                  };
+                  content += `**${plan.resource}**: No items found.\n\n`;
               }
           }
           
+          // Only append the ephemeral footer if we actually showed data
+          if (totalRows > 0) {
+             content += "_This data is temporary. Ask 'Save this' to add it to your project._";
+          }
+
+          // TRUTHFULNESS CHECK:
+          // If execution succeeded but returned no data, simply state that.
           const explanation = totalRows > 0 
             ? "Here are the results from your query:" 
             : "I executed the search but found no matching data.";
 
           return {
               explanation,
-              message: { type: "data", result: dataResult },
+              message: { type: "text", content: content || explanation },
               spec: input.currentSpec,
               metadata: { 
                   source: "ephemeral",
@@ -427,7 +437,30 @@ export async function processToolChat(input: {
               }
           };
       } else if (executionError) {
-          // Report error
+          const msg = executionError.toLowerCase();
+          const needsReconnect =
+            msg.includes("integration is not connected") ||
+            msg.includes("failed to decrypt") ||
+            msg.includes("token refresh failed") ||
+            msg.includes("missing credentials");
+          
+          if (needsReconnect && lastErrorIntegrationId) {
+            const integrations = [{
+              id: lastErrorIntegrationId,
+              name: getIntegrationUIConfig(lastErrorIntegrationId).name,
+              logoUrl: getIntegrationUIConfig(lastErrorIntegrationId).logoUrl,
+              connected: input.connectedIntegrationIds.includes(lastErrorIntegrationId),
+              label: `Reconnect ${getIntegrationUIConfig(lastErrorIntegrationId).name}`,
+              action: `/api/oauth/start?${new URLSearchParams({ provider: lastErrorIntegrationId, source: "chat" }).toString()}`
+            } satisfies IntegrationCTA];
+            return {
+              explanation: `Authentication for ${integrations[0].name} is invalid. Please reconnect.`,
+              message: { type: "integration_action", integrations },
+              spec: input.currentSpec,
+              metadata: { type: "integration_action", integrations },
+            };
+          }
+          
           return {
               explanation: `I couldn't fetch the data: ${executionError}`,
               message: { type: "text", content: "Execution failed." },
@@ -435,14 +468,6 @@ export async function processToolChat(input: {
           };
       }
       // If no plans and no error, fall through (unlikely, planner usually gives plans or error)
-      // In chat mode, if we reach here, provide a neutral message
-      if (forceEphemeral) {
-        return {
-          explanation: "No executable actions were identified.",
-          message: { type: "text", content: "No executable actions were identified." },
-          spec: input.currentSpec
-        };
-      }
   }
 
   // --- BRANCH B: MATERIALIZE MODE ---
@@ -651,16 +676,85 @@ export async function processToolChat(input: {
     .replace("{{CONNECTED}}", connectedText)
     + `\n\n${plansText}`;
 
-  const llm = await generateSpecUpdate({
-    currentSpec: input.currentSpec,
-    systemPrompt: finalSystemPrompt,
-    messages: input.messages,
-    userMessage: input.userMessage,
-  });
+  let llm: LlmToolChatResponse;
+  try {
+    llm = await generateSpecUpdate({
+      currentSpec: input.currentSpec,
+      systemPrompt: finalSystemPrompt,
+      messages: input.messages,
+      userMessage: input.userMessage,
+    });
+  } catch {
+    return {
+      explanation: "I attempted to add this, but the spec was invalid. Please retry.",
+      message: { type: "text", content: "I attempted to add this, but the spec was invalid. Please retry." },
+      spec: input.currentSpec,
+      metadata: { persist: false },
+    };
+  }
+  const beforeMetricIds = new Set(input.currentSpec.metrics.map(m => m.id));
+  const afterMetricIds = new Set(llm.spec.metrics.map(m => m.id));
+  const createdMetricIds = Array.from(afterMetricIds).filter(id => !beforeMetricIds.has(id));
+  let specWithViews = { ...llm.spec };
+  const existingViewMetricIds = new Set(specWithViews.views.filter(v => v.type !== "table" && v.metricId).map(v => v.metricId as string));
+  const newViews = createdMetricIds
+    .filter(id => !existingViewMetricIds.has(id))
+    .map(id => {
+      const metric = specWithViews.metrics.find(m => m.id === id)!;
+      const isTime = Boolean((metric as any).groupBy);
+      const type: "metric" | "line_chart" = isTime ? "line_chart" : "metric";
+      return { id: `view_${id}`, type, metricId: id };
+    });
+  if (newViews.length > 0) {
+    specWithViews = { ...specWithViews, views: [...specWithViews.views, ...newViews] };
+  }
+  const wantsContribGraph = executionPlans.some(p => p.integrationId === "github" && (p.resource === "contributions_graph" || p.capabilityId === "ad_hoc_contributions_graph"));
+  if (wantsContribGraph) {
+    const metricId = "github_commits_per_day";
+    const hasMetric = specWithViews.metrics.some(m => m.id === metricId);
+    if (!hasMetric) {
+      specWithViews.metrics = [
+        ...specWithViews.metrics,
+        {
+          id: metricId,
+          label: "Commits per day",
+          type: "count",
+          table: "commits",
+          groupBy: "day",
+          integrationId: "github"
+        }
+      ];
+    }
+    const hasView = specWithViews.views.some(v => v.metricId === metricId);
+    if (!hasView) {
+      specWithViews.views = [
+        ...specWithViews.views,
+        { id: "view_contributions_heatmap", type: "heatmap", metricId }
+      ];
+    }
+  }
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Created metrics:", createdMetricIds);
+    console.log("Created views:", newViews.map(v => v.id));
+  }
+  const results = await executeDashboard(input.orgId, specWithViews);
+  const renderableCount = Object.values(results).filter(r => r.status === "success").length;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Render tree size:", Object.keys(results).length);
+  }
+  if (renderableCount === 0 && createdMetricIds.length > 0) {
+    return {
+      explanation: "I defined the metric, but couldn’t render it yet.",
+      message: { type: "text", content: "I defined the metric, but couldn’t render it yet." },
+      spec: input.currentSpec,
+      metadata: { persist: false },
+    };
+  }
+  const explanation = newViews.length > 0 ? "I’ve added a view for your new metric." : llm.explanation;
   return {
-    explanation: llm.explanation,
-    message: { type: "text", content: llm.explanation },
-    spec: llm.spec,
-    metadata: llm.metadata ?? null,
+    explanation,
+    message: { type: "text", content: explanation },
+    spec: specWithViews,
+    metadata: { ...(llm.metadata ?? {}), persist: true },
   };
 }

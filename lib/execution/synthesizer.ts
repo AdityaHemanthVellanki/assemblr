@@ -29,8 +29,32 @@ export function synthesizeQuery(plan: ExecutionPlan): RuntimeExecutionPlan {
         // So we should sanitize.
       }
       break;
-    
-    // Add more cases as needed for complex query transformations
+    case "github_commits_list":
+      // Normalize repository parameters to { owner, repo }
+      // Accept legacy shapes and convert.
+      if (typeof (runtimePlan.params as any)?.repo === "string") {
+        const full = String((runtimePlan.params as any).repo);
+        const [owner, repo] = full.includes("/") ? full.split("/") : ["", full];
+        runtimePlan.params = { ...runtimePlan.params, owner, repo };
+        delete (runtimePlan.params as any).repo;
+      }
+      if (typeof (runtimePlan.params as any)?.full_name === "string") {
+        const full = String((runtimePlan.params as any).full_name);
+        const [owner, repo] = full.split("/");
+        runtimePlan.params = { ...runtimePlan.params, owner, repo };
+        delete (runtimePlan.params as any).full_name;
+      }
+      if (typeof (runtimePlan.params as any)?.owner_repo === "string") {
+        const full = String((runtimePlan.params as any).owner_repo);
+        const [owner, repo] = full.split("/");
+        runtimePlan.params = { ...runtimePlan.params, owner, repo };
+        delete (runtimePlan.params as any).owner_repo;
+      }
+      if (!(runtimePlan.params as any)?.owner || !(runtimePlan.params as any)?.repo) {
+        // Missing required fields; executor will error, but we prefer explicit normalization failure
+        // Leave as-is; higher-level flow should validate before materialization.
+      }
+      break;
   }
 
   return runtimePlan;

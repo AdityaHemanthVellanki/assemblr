@@ -33,6 +33,15 @@ export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: b
   }
 
   // Validate Params
+  const params = plan.params || {};
+  if (capability.constraints?.requiredFilters && capability.constraints.requiredFilters.length > 0) {
+    for (const key of capability.constraints.requiredFilters) {
+      const val = (params as Record<string, unknown>)[key];
+      if (val === undefined || val === null || (typeof val === "string" && val.trim().length === 0)) {
+        return { valid: false, error: `Missing required parameter "${key}" for capability ${plan.capabilityId}` };
+      }
+    }
+  }
   for (const key of Object.keys(plan.params)) {
     if (!capability.supportedFields.includes(key)) {
       // PERMISSIVE: Warn but do not fail.

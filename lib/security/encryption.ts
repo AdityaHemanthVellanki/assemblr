@@ -17,6 +17,17 @@ if (!KEY_MATERIAL) {
   throw new Error("DATA_ENCRYPTION_KEY is required");
 }
 const ENCRYPTION_KEY = crypto.createHash("sha256").update(KEY_MATERIAL).digest();
+if (process.env.NODE_ENV !== "production") {
+  console.warn("Encryption key loaded. Changing DATA_ENCRYPTION_KEY will invalidate existing tokens.");
+}
+
+export class EncryptionKeyMismatchError extends Error {
+  code = "ENCRYPTION_KEY_MISMATCH";
+  constructor(message?: string) {
+    super(message || "Token decryption failed due to encryption key mismatch");
+    this.name = "EncryptionKeyMismatchError";
+  }
+}
 
 export function encryptJson(value: unknown): EncryptedJson {
   const iv = crypto.randomBytes(12);
@@ -47,10 +58,15 @@ export function decryptJson<T>(enc: EncryptedJson): T {
   const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
   decipher.setAuthTag(tag);
 
-  const plaintext = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]).toString("utf8");
+  try {
+    const plaintext = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString("utf8");
 
-  return JSON.parse(plaintext) as T;
+    return JSON.parse(plaintext) as T;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new EncryptionKeyMismatchError(msg);
+  }
 }

@@ -110,13 +110,14 @@ export async function executeDashboard(
         integrationId,
         capabilityId: `${integrationId}_${table}_list`, // Heuristic for now
         resource: table,
-        params: {}, // Spec doesn't have params yet except metrics filters
+        params: (view as any).params || {}, // Pass-through params from spec view
         explanation: "Derived from spec",
       };
 
       const runtimePlan = synthesizeQuery(mockPlannerPlan);
       // Ensure viewId is carried over
       runtimePlan.viewId = view.id;
+      console.log("Renderer received params:", runtimePlan.params);
       
       plans.push(runtimePlan);
     }

@@ -38,14 +38,14 @@ export class GitHubExecutor implements IntegrationExecutor {
         });
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
         data = await res.json();
-      } else if (plan.resource === "commits") {
-        if (!plan.params?.repo) {
-             throw new Error("Repository not specified. Please tell me which repo to use (e.g. 'owner/repo').");
+  } else if (plan.resource === "commits") {
+        const owner = (plan.params as any)?.owner as string | undefined;
+        const repo = (plan.params as any)?.repo as string | undefined;
+        if (!owner || !repo) {
+             throw new Error("Repository not specified. Provide both owner and repo (e.g. owner: 'foo', repo: 'bar').");
         }
-
-        // Specific repo commits
-        const repo = plan.params.repo; // Expect "owner/repo"
-        const res = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=100`, {
+        const full = `${owner}/${repo}`;
+        const res = await fetch(`https://api.github.com/repos/${full}/commits?per_page=100`, {
            headers: {
                Authorization: `Bearer ${token}`,
                Accept: "application/vnd.github.v3+json",
@@ -54,7 +54,7 @@ export class GitHubExecutor implements IntegrationExecutor {
         
         if (!res.ok) {
             if (res.status === 404) {
-                 throw new Error(`Repository '${repo}' not found. Please check the name and your permissions.`);
+                 throw new Error(`Repository '${full}' not found. Please check the name and your permissions.`);
             }
             throw new Error(`GitHub API error: ${res.statusText}`);
         }
@@ -70,7 +70,7 @@ export class GitHubExecutor implements IntegrationExecutor {
                message: c.commit.message,
                author: c.commit.author,
                date: c.commit.author.date,
-               repo_full_name: repo
+               repo_full_name: full
             })) : [];
         }
       } else if (plan.resource === "user") {

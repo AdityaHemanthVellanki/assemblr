@@ -25,3 +25,8 @@ export type ExecutorInput = {
 export interface IntegrationExecutor {
   execute(input: ExecutorInput): Promise<ExecutionResult>;
 }
+
+export type GitHubRepoRef = {
+  owner: string;
+  repo: string;
+};

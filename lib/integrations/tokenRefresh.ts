@@ -1,6 +1,6 @@
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { decryptJson, encryptJson } from "@/lib/security/encryption";
+import { decryptJson, encryptJson, EncryptionKeyMismatchError } from "@/lib/security/encryption";
 import { OAUTH_PROVIDERS } from "./oauthProviders";
 import { getServerEnv } from "@/lib/env";
 
@@ -56,7 +56,23 @@ export async function getValidAccessToken(
     tokens = decryptJson(enc as never) as TokenSet;
   } catch (e) {
     console.error("Token decryption failed", e);
-    throw new Error("Failed to decrypt tokens");
+    try {
+      const { error: invalidateError } = await supabase
+        .from("integration_connections")
+        .update({
+          encrypted_credentials: null,
+          status: "error",
+          source: "decryption_failure",
+        })
+        .eq("id", connectionId);
+      if (invalidateError) {
+        console.error("Failed to invalidate connection after decryption failure", invalidateError);
+      }
+    } catch {}
+    if (e instanceof EncryptionKeyMismatchError) {
+      throw new Error("Integration is not connected");
+    }
+    throw new Error("Integration is not connected");
   }
 
   // 3. Check Expiry (buffer of 5 minutes)

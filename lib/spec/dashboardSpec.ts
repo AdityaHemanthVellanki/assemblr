@@ -35,10 +35,11 @@ const metricSchema = z
 const viewSchema = z
   .object({
     id: z.string().min(1),
-    type: z.enum(["metric", "line_chart", "bar_chart", "table"]),
+    type: z.enum(["metric", "line_chart", "bar_chart", "table", "heatmap"]),
     metricId: z.string().min(1).optional(),
     table: z.string().min(1).optional(),
     integrationId: z.string().optional(),
+    params: z.record(z.string(), z.any()).optional(),
   })
   .strict();
 
@@ -132,4 +133,3 @@ export type DashboardSpec = z.infer<typeof dashboardSpecSchema>;
 export function parseDashboardSpec(input: unknown): DashboardSpec {
   return dashboardSpecSchema.parse(input);
 }
-

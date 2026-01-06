@@ -109,7 +109,7 @@ export async function POST(
     });
 
     // 5. Update Project Spec
-    if (mode === "create") {
+    if (mode === "create" && (result.metadata as any)?.persist === true) {
       const { error: updateError } = await supabase
         .from("projects")
         .update({ spec: result.spec })
