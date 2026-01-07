@@ -580,44 +580,44 @@ export async function processToolChat(input: {
     const newQueryViews: DashboardSpec["views"] = [];
     
     // Check for Tool Mutations (Pages, Components, Actions)
-     // The planner output structure has changed to support toolMutation.
-     // If we have toolMutation, we merge it into the spec.
-     let updatedSpec = { ...input.currentSpec };
-     let hasToolMutation = false;
- 
-     for (const p of executionPlans) {
-         if (p.toolMutation) {
-             hasToolMutation = true;
-             const m = p.toolMutation;
-             
-             // FORCE Mini-App Kind
-             updatedSpec.kind = "mini_app";
+    // The planner output structure has changed to support toolMutation.
+    // If we have toolMutation, we merge it into the spec.
+    let updatedSpec = { ...input.currentSpec };
+    let hasToolMutation = false;
 
-             if (m.pagesAdded) {
-                 updatedSpec.pages = [...(updatedSpec.pages || []), ...m.pagesAdded];
-             }
-             if (m.componentsAdded) {
-                 // If "componentsAdded" is top-level, we assume they belong to the active page or a default page.
-                 // For robustness, if no page exists, create one.
-                 if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
-                     updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
-                 }
-                 // Add components to the first page if not specified otherwise
-                 // Ideally planner specifies pagesAdded with components inside.
-                 // If componentsAdded is loose, we append to first page.
-                 updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...m.componentsAdded];
-             }
-             if (m.actionsAdded) {
-                 updatedSpec.actions = [...(updatedSpec.actions || []), ...m.actionsAdded];
-             }
-             if (m.stateAdded) {
-                 updatedSpec.state = { ...(updatedSpec.state || {}), ...m.stateAdded };
-             }
-         }
-     }
- 
-     // Fallback: If no tool mutation but we have valid plans (legacy path or query views), we create QueryViews
-     if (!hasToolMutation) {
+    for (const p of executionPlans) {
+        if (p.toolMutation) {
+            hasToolMutation = true;
+            const m = p.toolMutation;
+            
+            // FORCE Mini-App Kind
+            updatedSpec.kind = "mini_app";
+
+            if (m.pagesAdded) {
+                updatedSpec.pages = [...(updatedSpec.pages || []), ...m.pagesAdded];
+            }
+            if (m.componentsAdded) {
+                // If "componentsAdded" is top-level, we assume they belong to the active page or a default page.
+                // For robustness, if no page exists, create one.
+                if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
+                    updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
+                }
+                // Add components to the first page if not specified otherwise
+                // Ideally planner specifies pagesAdded with components inside.
+                // If componentsAdded is loose, we append to first page.
+                updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...m.componentsAdded];
+            }
+            if (m.actionsAdded) {
+                updatedSpec.actions = [...(updatedSpec.actions || []), ...m.actionsAdded];
+            }
+            if (m.stateAdded) {
+                updatedSpec.state = { ...(updatedSpec.state || {}), ...m.stateAdded };
+            }
+        }
+    }
+
+    // Fallback: If no tool mutation but we have valid plans (legacy path or query views), we create QueryViews
+    if (!hasToolMutation) {
          // LEGACY DASHBOARD PATH
          for (const p of validPlans) {
              const id = `query_${p.integrationId}_${p.capabilityId}_${randomUUID().slice(0, 8)}`;
@@ -669,8 +669,9 @@ export async function processToolChat(input: {
              metadata: { persist: true },
          };
      } else {
-         // MINI APP PATH
-         // Validate that we have executable UI
+         // MINI APP PATH - STRICT VALIDATION
+         
+         // 1. Check for Executable UI (Pages + Components)
          const hasPages = updatedSpec.pages && updatedSpec.pages.length > 0;
          const hasComponents = updatedSpec.pages?.some(p => p.components && p.components.length > 0);
          

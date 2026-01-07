@@ -145,9 +145,12 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }:
   );
 }
 
+import { getComponent } from "./component-registry";
+
 function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec }) {
   const [activePageId, setActivePageId] = React.useState<string | null>(null);
   const [toolState, setToolState] = React.useState(spec.state || {});
+  const [isExecuting, setIsExecuting] = React.useState(false);
 
   // Initialize Page
   React.useEffect(() => {
@@ -173,25 +176,25 @@ function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec 
     }
   }, [spec.state]);
 
-  const executeAction = React.useCallback(async (actionId?: string, args?: Record<string, any>) => {
-      if (!actionId) return;
+  const executeAction = React.useCallback(async (actionId: string, args?: Record<string, any>) => {
       const action = spec.actions?.find(a => a.id === actionId);
       if (!action) return;
 
-      console.log("Executing Action:", action.type, action.id, args);
+      console.log("[MiniAppRuntime] Executing Action:", action.type, action.id, args);
+      setIsExecuting(true);
 
-      if (action.type === "state_mutation") {
-          const updates = action.config?.updates || {};
-          const mergedUpdates = { ...updates, ...args };
-          setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
-      }
-      
-      if (action.type === "navigation") {
-          if (action.config?.pageId) setActivePageId(action.config.pageId);
-      }
+      try {
+          if (action.type === "state_mutation") {
+              const updates = action.config?.updates || {};
+              const mergedUpdates = { ...updates, ...args };
+              setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
+          }
+          
+          if (action.type === "navigation") {
+              if (action.config?.pageId) setActivePageId(action.config.pageId);
+          }
 
-      if (action.type === "integration_call") {
-          try {
+          if (action.type === "integration_call") {
               const result = await executeToolAction(toolId, actionId, args || {});
               if (result.status === "success") {
                   // Bind result to state. Convention: actionId.data
@@ -200,12 +203,44 @@ function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec 
                   console.error("Action execution returned error:", result.error);
                   setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: result.error }));
               }
-          } catch (e) {
-              console.error("Action execution failed:", e);
-              setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: e instanceof Error ? e.message : "Unknown error" }));
           }
+      } catch (e) {
+          console.error("Action execution failed:", e);
+          setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: e instanceof Error ? e.message : "Unknown error" }));
+      } finally {
+          setIsExecuting(false);
       }
   }, [spec.actions, toolId]);
+
+  // Event Handler
+  const handleEvent = React.useCallback((eventName: string, args?: any) => {
+      // Find the event definition on the component?
+      // For now, we assume the component calls this with specific args.
+      // But we need to know WHICH component triggered it to look up its events.
+      // Refactor: handleEvent needs (componentId, eventName, args)
+      console.warn("handleEvent called without component context");
+  }, []);
+
+  const handleComponentEvent = React.useCallback((componentId: string, eventName: string, args?: any) => {
+      const activePage = spec.pages?.find(p => p.id === activePageId);
+      const component = activePage?.components.find(c => c.id === componentId);
+      if (!component) return;
+
+      // 1. State Binding Update (Implicit)
+      if (eventName === "onChange" && args?.bindKey) {
+          setToolState((prev: any) => ({ ...prev, [args.bindKey]: args.value }));
+      }
+
+      // 2. Explicit Event Actions
+      if (component.events) {
+          const eventHandlers = component.events.filter(e => e.type === eventName);
+          for (const handler of eventHandlers) {
+              // Resolve args: if handler has args, merge them.
+              const actionArgs = { ...(handler.args || {}), ...(args || {}) };
+              executeAction(handler.actionId, actionArgs);
+          }
+      }
+  }, [activePageId, spec.pages, executeAction]);
 
   const activePage = spec.pages?.find(p => p.id === activePageId);
 
@@ -214,7 +249,13 @@ function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec 
   }
 
   return (
-    <div className="h-full flex flex-col bg-background">
+    <div className="h-full flex flex-col bg-background relative">
+        {isExecuting && (
+            <div className="absolute inset-0 bg-background/50 z-50 flex items-center justify-center">
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+            </div>
+        )}
+        
         {/* App Header */}
         <div className="border-b px-6 py-4 flex items-center justify-between">
             <div>
@@ -240,123 +281,24 @@ function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec 
         <div className="flex-1 overflow-auto p-6">
              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 max-w-6xl mx-auto">
                  {activePage.components.map(comp => {
-                    // Basic Component Rendering
-                     if (comp.type === "button") {
-                          const onClickAction = comp.events?.find(a => a.type === "onClick")?.actionId;
-                          return (
-                              <div key={comp.id} className="col-span-1">
-                                  <button 
-                                      onClick={() => executeAction(onClickAction)}
-                                      className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                                  >
-                                      {comp.label || "Button"}
-                                  </button>
-                              </div>
-                          )
-                      }
-                     if (comp.type === "text") {
-                         // Simple interpolation
-                         let content = String(comp.properties?.content || comp.label || "");
-                         content = content.replace(/{{(.*?)}}/g, (_, key) => {
-                             const val = toolState[key.trim()];
-                             return val !== undefined ? String(val) : "";
-                         });
-                         
+                     try {
+                         const Component = getComponent(comp.type);
                          return (
-                             <div key={comp.id} className="col-span-4 prose dark:prose-invert">
-                                 {content}
-                             </div>
-                         )
-                      }
-                      if (comp.type === "select") {
-                          const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
-                          const options = comp.properties?.options || []; 
-                          return (
-                              <div key={comp.id} className="col-span-1 space-y-2">
-                                  <label className="text-sm font-medium leading-none">{comp.label}</label>
-                                  <select 
-                                      className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                                      value={bindKey ? toolState[bindKey] || "" : undefined}
-                                      onChange={(e) => {
-                                          if (bindKey) setToolState((prev: any) => ({ ...prev, [bindKey]: e.target.value }));
-                                      }}
-                                  >
-                                      <option value="" disabled>Select an option</option>
-                                      {options.map((opt: any) => (
-                                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                      ))}
-                                  </select>
-                              </div>
-                          )
-                      }
-                      if (comp.type === "input") {
-                         const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
-                         return (
-                             <div key={comp.id} className="col-span-1 space-y-2">
-                                 <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                                     {comp.label}
-                                 </label>
-                                 <input 
-                                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                                     placeholder={String(comp.properties?.placeholder || "")}
-                                     value={bindKey ? toolState[bindKey] || "" : undefined}
-                                     onChange={(e) => {
-                                         if (bindKey) setToolState((prev: any) => ({ ...prev, [bindKey]: e.target.value }));
-                                     }}
+                             <div key={comp.id} className={comp.layout?.w ? `col-span-${Math.min(comp.layout.w, 4)}` : "col-span-1"}>
+                                 <Component 
+                                     component={comp} 
+                                     state={toolState} 
+                                     onEvent={(name, args) => handleComponentEvent(comp.id, name, args)}
                                  />
                              </div>
-                         )
-                     }
-                     if (comp.type === "table") {
-                         const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
-                         const data = bindKey ? toolState[bindKey] : [];
-                         const rows = Array.isArray(data) ? data : [];
-                         
+                         );
+                     } catch (e) {
                          return (
-                             <div key={comp.id} className="col-span-4 border rounded-md overflow-hidden">
-                                 <div className="bg-muted/50 px-4 py-2 border-b text-sm font-medium">
-                                     {comp.label || "Table"}
-                                 </div>
-                                 <div className="max-h-[400px] overflow-auto">
-                                     <Table>
-                                         <TableHeader>
-                                             <TableRow>
-                                                 {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
-                                                     <TableHead key={key}>{key}</TableHead>
-                                                 ))}
-                                                 {rows.length === 0 && <TableHead>Data</TableHead>}
-                                             </TableRow>
-                                         </TableHeader>
-                                         <TableBody>
-                                             {rows.slice(0, 20).map((row: any, i: number) => (
-                                                 <TableRow key={i}>
-                                                     {Object.keys(row as object).slice(0, 5).map(key => (
-                                                         <TableCell key={key}>
-                                                             {typeof row[key] === 'object' ? JSON.stringify(row[key]) : String(row[key])}
-                                                         </TableCell>
-                                                     ))}
-                                                 </TableRow>
-                                             ))}
-                                             {rows.length === 0 && (
-                                                 <TableRow>
-                                                     <TableCell className="text-center text-muted-foreground py-8">
-                                                         No data available
-                                                     </TableCell>
-                                                 </TableRow>
-                                             )}
-                                         </TableBody>
-                                     </Table>
-                                 </div>
+                             <div key={comp.id} className="col-span-4 border border-red-200 bg-red-50 p-4 rounded-md text-red-600 text-sm">
+                                 Error rendering {comp.type}: {e instanceof Error ? e.message : String(e)}
                              </div>
-                         )
+                         );
                      }
-                    // Fallback
-                    return (
-                        <div key={comp.id} className="col-span-4 border p-4 rounded-md">
-                            <div className="font-bold mb-2">{comp.type}: {comp.label || comp.id}</div>
-                            <pre className="text-xs overflow-auto max-h-40">{JSON.stringify(comp, null, 2)}</pre>
-                        </div>
-                    );
                  })}
              </div>
         </div>

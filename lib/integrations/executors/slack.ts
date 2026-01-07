@@ -19,31 +19,31 @@ export class SlackExecutor implements IntegrationExecutor {
     try {
       let data: unknown[] = [];
 
-      if (plan.resource === "channels") {
-        const res = await fetch("https://slack.com/api/conversations.list", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const json = await res.json();
-        if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
-        data = json.channels || [];
+      // Universal Capability Executor
+      const resource = plan.resource || "";
+      
+      // Slack usually uses method paths like "conversations.list"
+      // If resource is "messages", maybe we map to "conversations.history"
+      let method = resource.replace(/_/g, ".");
+      if (resource === "messages") method = "conversations.history";
+      if (resource === "channels") method = "conversations.list";
+      
+      const params = new URLSearchParams(plan.params as Record<string, string>);
+
+      const res = await fetch(`https://slack.com/api/${method}?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
+      
+      // Slack responses usually have a key matching the resource name or "members" for users
+      // We'll try to find an array in the response
+      const possibleKeys = Object.keys(json).filter(k => Array.isArray(json[k]));
+      if (possibleKeys.length > 0) {
+         data = json[possibleKeys[0]];
       } else {
-        // Fallback: Try to call the resource as a Slack API method (e.g. "users_list" -> "users.list")
-        const method = plan.resource.replace(/_/g, ".");
-        const res = await fetch(`https://slack.com/api/${method}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const json = await res.json();
-        if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
-        
-        // Slack responses usually have a key matching the resource name or "members" for users
-        // We'll try to find an array in the response
-        const possibleKeys = Object.keys(json).filter(k => Array.isArray(json[k]));
-        if (possibleKeys.length > 0) {
-           data = json[possibleKeys[0]];
-        } else {
-           // If no array found, just wrap the whole response
-           data = [json];
-        }
+         // If no array found, just wrap the whole response
+         data = [json];
       }
 
       return {

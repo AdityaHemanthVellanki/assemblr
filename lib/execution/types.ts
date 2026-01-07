@@ -1,7 +1,8 @@
 export type ExecutionPlan = {
   viewId: string;
   integrationId: string;
-  resource: string; // e.g., "issues", "messages"
+  // Deprecated: resource
+  resource?: string; 
   params?: Record<string, unknown>;
   mode?: "create" | "chat";
 };
@@ -26,7 +27,9 @@ export interface IntegrationExecutor {
   execute(input: ExecutorInput): Promise<ExecutionResult>;
 }
 
-export type GitHubRepoRef = {
-  owner: string;
-  repo: string;
-};
+// Universal Integration Contract
+export interface IntegrationRuntime {
+    id: string;
+    capabilities: Record<string, any>; // Capability definition
+    resolveContext(token: string): Promise<Record<string, any>>;
+}
