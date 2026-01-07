@@ -5,6 +5,8 @@ export type ExecutionTrace = {
   id: string;
   timestamp: string; // ISO Date
   mode: "create" | "modify" | "run";
+  tool_version_id?: string; // Version Scoping
+  trigger_id?: string; // Trigger Reference
   compiled_intent?: CompiledIntent;
   task_graph?: TaskGraph;
   agents_invoked: AgentExecution[];

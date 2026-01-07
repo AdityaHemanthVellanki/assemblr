@@ -18,14 +18,8 @@ import { getJoinDefinition } from "@/lib/joins/store";
 import { executeJoin } from "@/lib/joins/executor";
 import { inferSchemaFromData } from "@/lib/schema/discovery";
 import { persistSchema } from "@/lib/schema/store";
+import { EXECUTORS } from "@/lib/integrations/map";
 
-const EXECUTORS: Record<string, IntegrationExecutor> = {
-  github: new GitHubExecutor(),
-  linear: new LinearExecutor(),
-  slack: new SlackExecutor(),
-  notion: new NotionExecutor(),
-  google: new GoogleExecutor(),
-};
 
 export async function executeDashboard(
   orgId: string,

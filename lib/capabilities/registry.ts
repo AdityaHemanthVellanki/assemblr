@@ -1,112 +1,54 @@
-export type CapabilityOperation = "read" | "aggregate" | "filter" | "group";
 
-export interface Capability {
-  id: string;
-  integrationId: string;
-  resource: string;
-  allowedOperations: CapabilityOperation[];
-  supportedFields: string[]; // Fields that can be selected/filtered
-  constraints?: {
-    maxLimit?: number;
-    requiredFilters?: string[];
+import { Capability, CAPABILITY_REGISTRY, CapabilityOperation } from "./definitions";
+import { assemblrABI } from "@/lib/core/abi";
+import { CapabilityDefinition } from "@/lib/core/abi/types";
+
+export type { Capability, CapabilityOperation };
+export { CAPABILITY_REGISTRY };
+
+// Helper to convert ABI CapabilityDefinition to Legacy Capability
+function toLegacyCapability(def: CapabilityDefinition): Capability {
+  return {
+    id: def.id,
+    integrationId: def.integrationId,
+    // Attempt to parse description or metadata to recover resource/ops
+    // For now, we rely on the fact that core capabilities are registered FROM legacy structure
+    // so we might want to store the original structure in metadata if needed.
+    // Or we assume this is primarily used for the Planner which needs to know fields.
+    resource: "unknown", // Plugins need to expose this better if legacy code needs it
+    allowedOperations: def.mode === "read" ? ["read"] : ["read", "filter"], // Approximation
+    supportedFields: [],
   };
 }
 
-export const CAPABILITY_REGISTRY: Capability[] = [
-  // GitHub
-  {
-    id: "github_issues_list",
-    integrationId: "github",
-    resource: "issues",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["state", "labels", "assignee", "sort", "direction"],
-  },
-  {
-    id: "github_repos_list",
-    integrationId: "github",
-    resource: "repos",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["type", "sort", "direction"],
-  },
-  {
-    id: "github_commits_list",
-    integrationId: "github",
-    resource: "commits",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["repo", "author", "since", "until"],
-    constraints: { requiredFilters: ["repo"] },
-  },
-
-  // Linear
-  {
-    id: "linear_issues_list",
-    integrationId: "linear",
-    resource: "issues",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["first", "includeArchived"],
-  },
-  {
-    id: "linear_teams_list",
-    integrationId: "linear",
-    resource: "teams",
-    allowedOperations: ["read"],
-    supportedFields: [],
-  },
-
-  // Slack
-  {
-    id: "slack_channels_list",
-    integrationId: "slack",
-    resource: "channels",
-    allowedOperations: ["read"],
-    supportedFields: ["types", "exclude_archived"],
-  },
-  {
-    id: "slack_messages_list",
-    integrationId: "slack",
-    resource: "messages",
-    allowedOperations: ["read"],
-    supportedFields: ["channel", "limit"],
-    constraints: { requiredFilters: ["channel"] },
-  },
-
-  // Notion
-  {
-    id: "notion_pages_search",
-    integrationId: "notion",
-    resource: "pages",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["query", "sort"],
-  },
-  {
-    id: "notion_databases_list",
-    integrationId: "notion",
-    resource: "databases",
-    allowedOperations: ["read"],
-    supportedFields: [],
-  },
-
-  // Google
-  {
-    id: "google_drive_list",
-    integrationId: "google",
-    resource: "drive",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["q", "orderBy", "pageSize"],
-  },
-  {
-    id: "google_gmail_list",
-    integrationId: "google",
-    resource: "gmail",
-    allowedOperations: ["read", "filter"],
-    supportedFields: ["q", "maxResults", "includeSpamTrash"],
-  },
-];
-
 export function getCapability(id: string): Capability | undefined {
-  return CAPABILITY_REGISTRY.find((c) => c.id === id);
+  // 1. Try Legacy Static Registry first (Synchronous & Safe)
+  const legacy = CAPABILITY_REGISTRY.find((c) => c.id === id);
+  if (legacy) return legacy;
+
+  // 2. Try ABI Registry
+  const abiCap = assemblrABI.capabilities.get(id);
+  if (abiCap) {
+    return toLegacyCapability(abiCap);
+  }
+
+  return undefined;
 }
 
 export function getCapabilitiesForIntegration(integrationId: string): Capability[] {
-  return CAPABILITY_REGISTRY.filter((c) => c.integrationId === integrationId);
+  const legacy = CAPABILITY_REGISTRY.filter((c) => c.integrationId === integrationId);
+  const abi = assemblrABI.capabilities.list()
+    .filter(c => c.integrationId === integrationId)
+    .filter(c => !legacy.find(l => l.id === c.id)) // Dedupe
+    .map(toLegacyCapability);
+    
+  return [...legacy, ...abi];
+}
+
+export function getAllCapabilities(): Capability[] {
+    const legacy = CAPABILITY_REGISTRY;
+    const abi = assemblrABI.capabilities.list()
+        .filter(c => !legacy.find(l => l.id === c.id))
+        .map(toLegacyCapability);
+    return [...legacy, ...abi];
 }

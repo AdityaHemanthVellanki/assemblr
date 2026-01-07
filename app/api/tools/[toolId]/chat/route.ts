@@ -94,6 +94,7 @@ export async function POST(
 
     const result = await processToolChat({
       orgId: ctx.orgId,
+      toolId,
       currentSpec,
       messages: history,
       userMessage,

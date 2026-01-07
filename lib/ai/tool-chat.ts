@@ -12,12 +12,17 @@ import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { findMetrics } from "@/lib/metrics/store";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ExecutionError } from "@/lib/core/errors";
+import { VersioningService } from "@/lib/versioning/service";
+import { OrgPolicy } from "@/lib/core/governance";
+import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 
 // Runtime Registry
 const RUNTIMES: Record<string, IntegrationRuntime> = {
   github: new GitHubRuntime(),
   // Add others as they are refactored
 };
+
+const versioningService = new VersioningService();
 
 export type ToolChatResponse = {
   explanation: string;
@@ -28,6 +33,7 @@ export type ToolChatResponse = {
 
 export async function processToolChat(input: {
   orgId: string;
+  toolId: string; // Added toolId
   currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
@@ -35,7 +41,9 @@ export async function processToolChat(input: {
   mode: "create" | "chat";
   integrationMode: "auto" | "manual";
   selectedIntegrationIds?: string[];
+  policies?: OrgPolicy[]; // Added policies
 }): Promise<ToolChatResponse> {
+  await ensureCorePluginsLoaded();
   getServerEnv();
 
   // Initialize Tracer
@@ -52,7 +60,8 @@ export async function processToolChat(input: {
       input.connectedIntegrationIds,
       schemas,
       metrics,
-      input.mode
+      input.mode,
+      input.policies || [] // Pass policies
     );
 
     tracer.setIntent(intent);
@@ -173,12 +182,20 @@ export async function processToolChat(input: {
             };
         }
 
+        // VERSIONING: Create Draft instead of just returning spec
+        const userId = "user_placeholder"; // TODO: Pass userId in input
+        
+        await versioningService.createDraft(input.toolId, updatedSpec, userId, intent);
+        
         tracer.finish("success");
         return {
             explanation: tracer.generateExplanation(),
-            message: { type: "text", content: "I've built your mini app." },
-            spec: updatedSpec,
-            metadata: { persist: true, trace: tracer.getTrace() }
+            message: { type: "text", content: "I've created a new draft version of your app." },
+            spec: updatedSpec, // Return for immediate preview
+            metadata: { 
+                persist: false, // Don't overwrite project.spec directly in legacy way
+                trace: tracer.getTrace(),
+            }
         };
     }
 

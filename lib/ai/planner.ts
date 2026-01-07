@@ -7,6 +7,10 @@ import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
 import { Metric } from "@/lib/metrics/store";
 import { CompiledIntent } from "@/lib/core/intent";
+import { PolicyEngine } from "@/lib/governance/engine";
+import { OrgPolicy } from "@/lib/core/governance";
+
+const policyEngine = new PolicyEngine();
 
 const SYSTEM_PROMPT = `
 You are the Assemblr Intent Compiler.
@@ -72,14 +76,27 @@ export async function compileIntent(
   connectedIntegrationIds: string[],
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = [],
-  mode: "create" | "chat" = "create"
+  mode: "create" | "chat" = "create",
+  policies: OrgPolicy[] = [] // Added policies
 ): Promise<CompiledIntent> {
   getServerEnv();
 
-  // Filter registry to only connected integrations
-  const connectedCapabilities = CAPABILITY_REGISTRY.filter((c) =>
-    connectedIntegrationIds.includes(c.integrationId)
-  );
+  // Filter registry to only connected integrations AND Policy Allowed
+  const connectedCapabilities = CAPABILITY_REGISTRY.filter((c) => {
+    // 1. Check Connectivity
+    if (!connectedIntegrationIds.includes(c.integrationId)) return false;
+
+    // 2. Check Governance Policy
+    const policyResult = policyEngine.evaluate(policies, {
+        integrationId: c.integrationId,
+        capabilityId: c.id,
+        actionType: "capability_usage"
+    });
+    
+    // If blocked, we exclude it from the prompt so the planner doesn't even try to use it.
+    // This is "Policy-Aware Planning" - prevention by omission.
+    return policyResult.allowed;
+  });
 
   const capsText = connectedCapabilities
     .map(
