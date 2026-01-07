@@ -31,7 +31,15 @@ const EXECUTORS: Record<string, IntegrationExecutor> = {
 };
 
 // --- Integration Context Resolvers ---
-async function resolveGitHubContext(orgId: string, requestedRepo?: string): Promise<{
+function parseExplicitRepo(message: string): { owner?: string; repo?: string } {
+  const urlMatch = message.match(/github\.com\/([\w-]+)\/([\w.-]+)/i);
+  if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] };
+  const pairMatch = message.match(/\b([\w-]+)\/([\w.-]+)\b/);
+  if (pairMatch) return { owner: pairMatch[1], repo: pairMatch[2] };
+  return {};
+}
+
+async function resolveGitHubContext(orgId: string, message: string, mode: "create" | "chat", requestedRepo?: string): Promise<{
   owner: string;
   repo?: string;
   ambiguity?: { repos: string[] };
@@ -54,16 +62,21 @@ async function resolveGitHubContext(orgId: string, requestedRepo?: string): Prom
   if (!reposRes.ok) {
     throw new Error(`Failed to list repositories: ${reposRes.statusText}`);
   }
-  const repos = (await reposRes.json()) as Array<{ name: string }>;
-  if (requestedRepo && requestedRepo.trim().length > 0) {
-    const match = repos.find((r) => r.name.toLowerCase() === requestedRepo.toLowerCase());
-    if (!match) {
-      return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
-    }
-    return { owner, repo: match.name };
+  const repos = (await reposRes.json()) as Array<{ name: string; full_name: string; stargazers_count?: number; pushed_at?: string; updated_at?: string }>;
+  const explicit = parseExplicitRepo(message);
+  const requested = requestedRepo || explicit.repo;
+  if (requested && requested.trim().length > 0) {
+    const match = repos.find((r) => r.name.toLowerCase() === requested.toLowerCase() || r.full_name.toLowerCase() === `${explicit.owner ?? owner}/${requested.toLowerCase()}`);
+    if (match) return { owner, repo: match.name };
   }
   if (repos.length === 0) return { owner, repo: undefined, ambiguity: { repos: [] } };
   if (repos.length === 1) return { owner, repo: repos[0].name };
+  if (mode === "create") {
+    const byPushed = [...repos].sort((a, b) => new Date(b.pushed_at || 0).getTime() - new Date(a.pushed_at || 0).getTime());
+    const chosen = byPushed[0] || [...repos].sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))[0] || [...repos].sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime())[0];
+    if (chosen) return { owner, repo: chosen.name };
+    return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
+  }
   return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
 }
 
@@ -80,14 +93,21 @@ The "spec" object must strictly follow this schema:
     "type": "count" | "sum",
     "table": string,
     "field"?: string,
-    "groupBy"?: "day"
+    "groupBy"?: "day",
+    "integrationId": string
   }>,
   "views": Array<{
     "id": string,
     "type": "metric" | "line_chart" | "bar_chart" | "table",
     "metricId"?: string,
     "table"?: string,
-    "integrationId"?: string
+    "integrationId"?: string,
+    "query"?: {
+      "filters"?: Record<string, any>,
+      "sort"?: { "field": string, "direction": "asc" | "desc" },
+      "limit"?: number,
+      "groupBy"?: string[]
+    }
   }>
 }
 
@@ -100,10 +120,9 @@ Metric rules:
 
 View rules:
 - metric, line_chart, bar_chart: require metricId.
-- table: requires table. No metricId.
-- integrationId: MUST match the integration ID for the table.
+- table: requires table AND integrationId. No metricId.
+- query: Optional. Use for filtering, sorting, or limiting table views.
 - Every metric.id and view.id must be unique.
-- Non-table views must reference existing metricIds.
 `;
 
 const SYSTEM_PROMPT = `
@@ -146,8 +165,8 @@ Conventions:
 
 STRICT RULES:
 - Metrics define data sources (table, integrationId) and aggregation.
-- Views NEVER include table or integrationId.
-- Non-table views reference metrics ONLY via metricId.
+- Table Views MUST include table and integrationId.
+- Chart Views reference metrics ONLY via metricId.
 
 VALID EXAMPLE:
 {
@@ -156,7 +175,14 @@ VALID EXAMPLE:
     { "id": "m1", "label": "Total Repos", "type": "count", "table": "repos", "integrationId": "github" }
   ],
   "views": [
-    { "id": "v1", "type": "metric", "metricId": "m1" }
+    { "id": "v1", "type": "metric", "metricId": "m1" },
+    { 
+      "id": "v2", 
+      "type": "table", 
+      "table": "commits", 
+      "integrationId": "github",
+      "query": { "limit": 5, "sort": { "field": "date", "direction": "desc" } }
+    }
   ]
 }
 
@@ -275,29 +301,13 @@ import { findMetrics } from "@/lib/metrics/store";
 
 import { ExecutionPlan } from "@/lib/ai/planner";
 
-function resolveCapabilities(plan: ExecutionPlan): ExecutionPlan {
-  // If it's an ad-hoc capability, ensure we have a valid resource
-  if (plan.capabilityId.startsWith("ad_hoc_")) {
-    // If resource is missing or undefined, try to infer from ID
-    if (!plan.resource || plan.resource === "undefined") {
-      const parts = plan.capabilityId.split("_");
-      // e.g. ad_hoc_commits -> commits
-      // e.g. ad_hoc_github_repos -> github_repos (might be wrong)
-      // Usually ad_hoc_{resource}
-      if (parts.length >= 3) {
-         plan.resource = parts.slice(2).join("_");
-      }
-    }
-  }
-  return plan;
-}
-
 export async function processToolChat(input: {
   orgId: string;
   currentSpec: DashboardSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
+  mode: "create" | "chat";
   integrationMode: "auto" | "manual";
   selectedIntegrationIds?: string[];
 }): Promise<ToolChatResponse> {
@@ -318,12 +328,21 @@ export async function processToolChat(input: {
       input.messages,
       input.connectedIntegrationIds, 
       schemasForPlanning,
-      existingMetrics
+      existingMetrics,
+      input.mode
     );
 
     // CRITICAL: If the planner gives an explanation without plans (e.g. asking for clarification), return immediately.
     // This prevents falling through to schema-dependent logic.
     if ((!planResult.plans || planResult.plans.length === 0) && (planResult.explanation || planResult.error)) {
+        if (input.mode === "create") {
+          return {
+            explanation: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific.",
+            message: { type: "text", content: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific." },
+            spec: input.currentSpec,
+            metadata: { persist: false },
+          };
+        }
         return {
             explanation: planResult.explanation || planResult.error || "I could not understand the request.",
             message: { type: "text", content: planResult.explanation || planResult.error || "Please clarify." },
@@ -339,7 +358,7 @@ export async function processToolChat(input: {
     }
     
     if (planResult.plans) {
-       executionPlans = planResult.plans.map(resolveCapabilities);
+       executionPlans = planResult.plans;
        
        // GitHub Context Rewrite: inject owner implicitly; resolve repo ambiguity
        if (input.connectedIntegrationIds.includes("github")) {
@@ -347,11 +366,11 @@ export async function processToolChat(input: {
            if (p.integrationId === "github" && p.resource === "commits") {
              const requestedRepo = (p.params as any)?.repo as string | undefined;
              try {
-               const ctx = await resolveGitHubContext(input.orgId, requestedRepo);
+               const ctx = await resolveGitHubContext(input.orgId, input.userMessage, input.mode, requestedRepo);
                p.params = { ...(p.params || {}), owner: ctx.owner };
                if (ctx.repo) {
                  (p.params as any).repo = ctx.repo;
-               } else if (ctx.ambiguity && ctx.ambiguity.repos.length > 1 && !requestedRepo) {
+               } else if (ctx.ambiguity && ctx.ambiguity.repos.length > 1 && !requestedRepo && input.mode === "chat") {
                  const list = ctx.ambiguity.repos.slice(0, 10).join(", ");
                  return {
                    explanation: "Which repository should I use? You have multiple repositories.",
@@ -388,6 +407,7 @@ export async function processToolChat(input: {
     console.warn("Planning step failed", err);
   }
 
+  const isCreateMode = input.mode === "create";
   // 4. Handle Execution Plans (Execution-First Pipeline)
   const successfulExecutions: Array<{ plan: any; result: ExecutionResult }> = [];
   let executionError: string | undefined;
@@ -427,17 +447,21 @@ export async function processToolChat(input: {
          executionError = result.error;
          lastErrorIntegrationId = plan.integrationId;
       } else if (result.status === "clarification_needed") {
-         // Handle repo ambiguity explicitly for GitHub commits
          if (plan.integrationId === "github" && plan.resource === "commits") {
            const options = Array.isArray(result.rows)
-             ? (result.rows as Array<any>).map(r => r.repo).filter(Boolean)
+             ? (result.rows as Array<any>).map((r: any) => r.repo).filter(Boolean)
              : [];
            const list = options.slice(0, 10).join(", ");
-           return {
-             explanation: "Which repository should I use? You have multiple repositories.",
-             message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${options.length > 10 ? " ..." : ""}` },
-             spec: input.currentSpec,
-           };
+           if (!isCreateMode) {
+             return {
+               explanation: "Which repository should I use? You have multiple repositories.",
+               message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${options.length > 10 ? " ..." : ""}` },
+               spec: input.currentSpec,
+             };
+           } else {
+             executionError = "Ambiguous repository selection in Create mode";
+             lastErrorIntegrationId = plan.integrationId;
+           }
          }
       }
     } catch (err) {
@@ -447,15 +471,8 @@ export async function processToolChat(input: {
     }
   }
 
-  // Determine Overall Execution Mode
-  // If ANY plan is "materialize" or "tool", we treat the whole request as materialized.
-  // Otherwise, default to "ephemeral".
-  const isMaterialize = successfulExecutions.some(
-    e => e.plan.execution_mode === "materialize" || e.plan.execution_mode === "tool" || e.plan.intent === "persistent_view"
-  );
-
   // --- BRANCH A: EPHEMERAL MODE ---
-  if (!isMaterialize) {
+  if (!isCreateMode) {
       if (successfulExecutions.length > 0) {
           let content = "";
           let totalRows = 0;
@@ -556,25 +573,11 @@ export async function processToolChat(input: {
       // If no plans and no error, fall through (unlikely, planner usually gives plans or error)
   }
 
-  // --- BRANCH B: MATERIALIZE MODE ---
+  // --- BRANCH B: CREATE MODE ---
   // If we are here, we are persisting schemas and updating the spec.
   
-  // 1. Infer & Persist Schemas
-  for (const { plan, result } of successfulExecutions) {
-      const schemaExists = schemasForPlanning.some(
-          s => s.integrationId === plan.integrationId && s.resource === plan.resource
-      );
-      
-      if (!schemaExists && result.rows.length > 0) {
-          try {
-            const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
-            await persistSchema(input.orgId, plan.integrationId, discovered);
-            schemasForPlanning.push(discovered); // Update local context for spec generator
-          } catch (e) {
-             console.warn("Schema inference failed", e);
-          }
-      }
-  }
+  // 1. Infer & Persist Schemas (REMOVED: Schemas are Finite)
+  // We no longer infer schemas from execution. Schemas must be discovered via OAuth/Connect.
 
   // 2. Plan Chat Response (Legacy High-Level Intent)
   const plan = await planChatResponse(input.userMessage);
@@ -794,35 +797,82 @@ export async function processToolChat(input: {
   if (newViews.length > 0) {
     specWithViews = { ...specWithViews, views: [...specWithViews.views, ...newViews] };
   }
-  const wantsContribGraph = executionPlans.some(p => p.integrationId === "github" && (p.resource === "contributions_graph" || p.capabilityId === "ad_hoc_contributions_graph"));
-  if (wantsContribGraph) {
-    const metricId = "github_commits_per_day";
-    const hasMetric = specWithViews.metrics.some(m => m.id === metricId);
-    if (!hasMetric) {
-      specWithViews.metrics = [
-        ...specWithViews.metrics,
-        {
-          id: metricId,
-          label: "Commits per day",
-          type: "count",
-          table: "commits",
-          groupBy: "day",
-          integrationId: "github"
-        }
-      ];
-    }
-    const hasView = specWithViews.views.some(v => v.metricId === metricId);
-    if (!hasView) {
-      specWithViews.views = [
-        ...specWithViews.views,
-        { id: "view_contributions_heatmap", type: "heatmap", metricId }
-      ];
-    }
-  }
+
   if (process.env.NODE_ENV !== "production") {
     console.log("Created metrics:", createdMetricIds);
     console.log("Created views:", newViews.map(v => v.id));
   }
+  // Create Mode Materializer: ensure at least one view exists
+  function materializeCreateMode(spec: DashboardSpec, plans: any[]): DashboardSpec {
+    let next = { ...spec };
+    if (next.views.length > 0) return next;
+    const autoViews: DashboardSpec["views"] = [];
+    for (const metric of next.metrics) {
+      const isTime = Boolean((metric as any).groupBy === "day");
+      if (isTime) {
+        autoViews.push({ id: `view_${metric.id}`, type: "line_chart", metricId: metric.id });
+      } else if (metric.type === "count") {
+        autoViews.push({ id: `view_${metric.id}`, type: "metric", metricId: metric.id });
+      } else if (metric.type === "sum" && metric.table && metric.integrationId) {
+        autoViews.push({ id: `view_${metric.id}`, type: "table", table: metric.table, integrationId: metric.integrationId });
+      }
+    }
+    if (autoViews.length === 0 && plans.length > 0) {
+      const p = plans[0];
+      if (p && p.resource && p.integrationId) {
+        autoViews.push({ id: `view_${p.integrationId}_${p.resource}`, type: "table", table: p.resource, integrationId: p.integrationId });
+      }
+    }
+    if (autoViews.length > 0) {
+      next = { ...next, views: [...next.views, ...autoViews] };
+    }
+    return next;
+  }
+  function validateCreateModeSpec(spec: DashboardSpec, results: Record<string, ExecutionResult>): { valid: boolean; error?: string } {
+    function hasPlaceholder(s?: string) {
+      if (!s) return false;
+      const t = s.toLowerCase();
+      return ["choose", "select", "clarify", "ambiguous", "pick", "specify", "tbd", "???"].some(k => t.includes(k));
+    }
+    if (hasPlaceholder(spec.title) || hasPlaceholder(spec.description)) {
+      return { valid: false, error: "Placeholders detected" };
+    }
+    for (const m of spec.metrics) {
+      if (!m.id || !m.label || !m.type) {
+        return { valid: false, error: "Invalid metric" };
+      }
+      if (m.type === "sum" && !m.field) {
+        return { valid: false, error: "Missing sum field" };
+      }
+      if (!m.table || !m.integrationId) {
+        return { valid: false, error: "Metric missing source" };
+      }
+      if (hasPlaceholder(m.label)) {
+        return { valid: false, error: "Placeholders detected" };
+      }
+    }
+    for (const v of spec.views) {
+      if (v.type === "table") {
+        if (!v.table || !v.integrationId) {
+          return { valid: false, error: "Table view missing source" };
+        }
+      } else {
+        if (!v.metricId) {
+          return { valid: false, error: "View missing metricId" };
+        }
+        const metric = spec.metrics.find(m => m.id === v.metricId);
+        if (!metric) {
+          return { valid: false, error: "View references missing metric" };
+        }
+      }
+    }
+    const statuses = Object.values(results).map(r => r.status);
+    if (statuses.some(s => s === "error" || s === "clarification_needed")) {
+      return { valid: false, error: "Execution invalid" };
+    }
+    return { valid: true };
+  }
+  specWithViews = materializeCreateMode(specWithViews, executionPlans);
   const results = await executeDashboard(input.orgId, specWithViews);
   const renderableCount = Object.values(results).filter(r => r.status === "success").length;
   if (process.env.NODE_ENV !== "production") {
@@ -836,7 +886,27 @@ export async function processToolChat(input: {
       metadata: { persist: false },
     };
   }
-  const explanation = newViews.length > 0 ? "I’ve added a view for your new metric." : llm.explanation;
+  const validation = validateCreateModeSpec(specWithViews, results);
+  if (!validation.valid) {
+    return {
+      explanation: "I couldn’t persist these changes because validation failed.",
+      message: { type: "text", content: "I couldn’t persist these changes because validation failed." },
+      spec: input.currentSpec,
+      metadata: { persist: false, error: validation.error },
+    };
+  }
+  // HARD FAILURE IF NO VIEW IS CREATED (after materialization)
+  const beforeViewIds = new Set(input.currentSpec.views.map(v => v.id));
+  const createdViewIds = specWithViews.views.map(v => v.id).filter(id => !beforeViewIds.has(id));
+  if (createdViewIds.length === 0) {
+    return {
+      explanation: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific.",
+      message: { type: "text", content: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific." },
+      spec: input.currentSpec,
+      metadata: { persist: false },
+    };
+  }
+  const explanation = "Added validated, renderable views to your dashboard.";
   return {
     explanation,
     message: { type: "text", content: explanation },

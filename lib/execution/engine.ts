@@ -121,11 +121,23 @@ export async function executeDashboard(
       // If the spec was persisted, it should be valid.
       // But we are reconstructing the plan here.
       
+      // Synthesize params from query structure
+      const viewAny = view as any;
+      const flatParams = { ...(viewAny.params || {}) };
+      if (viewAny.query) {
+         if (viewAny.query.filters) Object.assign(flatParams, viewAny.query.filters);
+         if (viewAny.query.sort) {
+            flatParams.sort = viewAny.query.sort.field;
+            flatParams.direction = viewAny.query.sort.direction;
+         }
+         if (viewAny.query.limit) flatParams.limit = viewAny.query.limit;
+      }
+
       const derivedPlan: PlannerExecutionPlan = {
         integrationId,
         capabilityId: candidateCapabilityId,
         resource: table,
-        params: (view as any).params || {}, // Pass-through params from spec view
+        params: flatParams,
         explanation: "Derived from spec",
         execution_mode: "materialize",
         intent: "persistent_view",
@@ -155,17 +167,6 @@ export async function executeDashboard(
         plan,
         credentials: { access_token: accessToken },
       });
-
-      // Silent Schema Inference
-      if (result.status === "success" && result.rows) {
-        try {
-           const discovered = inferSchemaFromData(plan.integrationId, plan.resource, result.rows);
-           await persistSchema(orgId, plan.integrationId, discovered);
-        } catch (schemaErr) {
-           console.error("Critical: Failed to persist schema during execution. Aborting.", schemaErr);
-           throw schemaErr; // Fail execution if schema cannot be persisted (Strict Mode)
-        }
-      }
 
       results[plan.viewId] = result;
     } catch (err) {

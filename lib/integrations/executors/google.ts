@@ -11,7 +11,8 @@ export class GoogleExecutor implements IntegrationExecutor {
         status: "error",
         error: "Missing Google access token",
         timestamp: new Date().toISOString(),
-        source: "google",
+        source: "live_api",
+        rows: [],
       };
     }
 

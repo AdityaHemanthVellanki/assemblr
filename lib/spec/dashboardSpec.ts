@@ -40,6 +40,15 @@ const viewSchema = z
     table: z.string().min(1).optional(),
     integrationId: z.string().optional(),
     params: z.record(z.string(), z.any()).optional(),
+    query: z.object({
+        filters: z.record(z.string(), z.any()).optional(),
+        sort: z.object({
+            field: z.string(),
+            direction: z.enum(["asc", "desc"])
+        }).optional(),
+        limit: z.number().optional(),
+        groupBy: z.array(z.string()).optional()
+    }).optional(),
   })
   .strict();
 

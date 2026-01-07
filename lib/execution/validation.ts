@@ -8,17 +8,7 @@ import { getCapability } from "@/lib/capabilities/registry";
 import { ExecutionPlan } from "@/lib/ai/planner";
 
 export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: boolean; error?: string } {
-  // 1. Dynamic / Ad-Hoc Capability Check
-  if (plan.capabilityId.startsWith("ad_hoc_")) {
-    // We treat all ad_hoc_* capabilities as valid dynamically.
-    // The executor is responsible for handling the resource.
-    if (!plan.integrationId) {
-       return { valid: false, error: `Ad-hoc capability ${plan.capabilityId} missing integrationId` };
-    }
-    return { valid: true };
-  }
-
-  // 2. Static Registry Check
+  // 1. Static Registry Check
   const capability = getCapability(plan.capabilityId);
   if (!capability) {
     return { valid: false, error: `Unknown capability ID: ${plan.capabilityId}` };

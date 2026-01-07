@@ -11,7 +11,8 @@ export class NotionExecutor implements IntegrationExecutor {
         status: "error",
         error: "Missing Notion access token",
         timestamp: new Date().toISOString(),
-        source: "notion",
+        source: "live_api",
+        rows: [],
       };
     }
 

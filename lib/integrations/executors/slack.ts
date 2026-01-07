@@ -11,7 +11,8 @@ export class SlackExecutor implements IntegrationExecutor {
         status: "error",
         error: "Missing Slack access token",
         timestamp: new Date().toISOString(),
-        source: "slack",
+        source: "live_api",
+        rows: [],
       };
     }
 

@@ -11,7 +11,8 @@ export class LinearExecutor implements IntegrationExecutor {
         status: "error",
         error: "Missing Linear access token",
         timestamp: new Date().toISOString(),
-        source: "linear",
+        source: "live_api",
+        rows: [],
       };
     }
 

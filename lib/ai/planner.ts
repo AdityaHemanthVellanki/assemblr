@@ -92,10 +92,10 @@ AVAILABLE SCHEMAS:
 
 Instructions:
 1. Analyze the user's request.
-2. Determine the EXECUTION MODE ("execution_mode"):
-   - "ephemeral": For informational queries where the user does NOT ask to save/persist.
-   - "materialize": ONLY if the user EXPLICITLY asks to "save", "track", "add to dashboard".
-   - "tool": For complex workflows.
+2.95→2. Determine the EXECUTION MODE ("execution_mode"):
+96→   - If MODE is "create": MUST be "materialize".
+97→   - If MODE is "chat": MUST be "ephemeral".
+98→   - "tool": Only for complex multi-step workflows.
 
 3. Construct the Plan:
    - Select the EXACT capability ID from the list.
@@ -134,7 +134,8 @@ export async function planExecution(
   history: Array<{ role: "user" | "assistant"; content: string }>,
   connectedIntegrationIds: string[],
   schemas: DiscoveredSchema[],
-  availableMetrics: Metric[] = []
+  availableMetrics: Metric[] = [],
+  mode: "create" | "chat" = "create"
 ): Promise<{ plans: ExecutionPlan[]; error?: string; explanation?: string }> {
   getServerEnv();
 
@@ -165,10 +166,10 @@ export async function planExecution(
     )
     .join("\n\n");
 
-  const prompt = SYSTEM_PROMPT
+  const prompt = (SYSTEM_PROMPT
     .replace("{{METRICS}}", metricsText)
     .replace("{{CAPABILITIES}}", capsText)
-    .replace("{{SCHEMAS}}", schemasText);
+    .replace("{{SCHEMAS}}", schemasText)) + `\n\nMODE: ${mode.toUpperCase()}\n\nRules:\n- If MODE=CREATE: You MUST generate plans that will result in dashboard mutations (metrics/views). Do NOT return chat-only plans.\n- If MODE=CHAT: You MUST NOT generate any spec mutations. Plans should be execution-only and informational.`;
 
   try {
     // Convert history to OpenAI format, limiting context if needed

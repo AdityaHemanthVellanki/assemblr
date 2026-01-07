@@ -58,11 +58,12 @@ export function inferSchemaFromData(
   
   if (typeof sample === "object" && sample !== null) {
     for (const [key, value] of Object.entries(sample)) {
-      let type: "string" | "number" | "boolean" | "date" | "json" = "string";
+      let type: "string" | "number" | "boolean" | "date" | "object" | "array" = "string";
       
       if (typeof value === "number") type = "number";
       else if (typeof value === "boolean") type = "boolean";
-      else if (typeof value === "object") type = "json";
+      else if (Array.isArray(value)) type = "array";
+      else if (typeof value === "object" && value !== null) type = "object";
       else if (typeof value === "string") {
         // Simple date check
         if (!isNaN(Date.parse(value)) && value.includes("-")) type = "date";
@@ -71,6 +72,7 @@ export function inferSchemaFromData(
       fields.push({
         name: key,
         type: type,
+        nullable: true,
         description: `Inferred field ${key}`
       });
     }
