@@ -55,6 +55,14 @@ export type ExecutionPlan = {
     rightField: string;
     joinType: "inner" | "left" | "right";
   };
+
+  // Tool Mutation (Mini-App Mode)
+  toolMutation?: {
+    pagesAdded?: any[]; // using any for now to avoid circular deps, validated at runtime
+    componentsAdded?: any[];
+    actionsAdded?: any[];
+    stateAdded?: Record<string, any>;
+  };
 };
 
 // Error Types

@@ -73,7 +73,7 @@ export function ProjectWorkspace({
       </div>
       <div className="flex-1 border-l">
         {spec ? (
-          <ToolRenderer spec={spec} executionResults={results} isLoading={isExecuting} />
+          <ToolRenderer toolId={project.id} spec={spec} executionResults={results} isLoading={isExecuting} />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
             <h3 className="text-lg font-semibold">Welcome to Assemblr</h3>

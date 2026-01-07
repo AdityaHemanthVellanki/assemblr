@@ -18,8 +18,10 @@ export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: b
     return { valid: false, error: `Capability ${plan.capabilityId} does not belong to integration ${plan.integrationId}` };
   }
 
-  if (capability.resource !== plan.resource) {
-    return { valid: false, error: `Capability ${plan.capabilityId} does not support resource ${plan.resource}` };
+  // NOTE: resource is no longer validated against plan.resource because plan.resource is derived from capability
+  // However, if the plan DOES specify a resource (e.g. from legacy code), we can check consistency.
+  if (plan.resource && capability.resource !== plan.resource) {
+      console.warn(`[Validation Warning] Plan resource ${plan.resource} does not match capability resource ${capability.resource}. Using capability resource.`);
   }
 
   // Validate Params

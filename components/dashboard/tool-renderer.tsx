@@ -25,13 +25,16 @@ import {
 import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
 import type { ExecutionResult } from "@/lib/execution/types";
 
+import { executeToolAction } from "@/app/actions/execute-action";
+
 interface ToolRendererProps {
+  toolId: string;
   spec: DashboardSpec;
   executionResults?: Record<string, ExecutionResult>;
   isLoading?: boolean;
 }
 
-export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRendererProps) {
+export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }: ToolRendererProps) {
   // Support for Multi-Page Tools
   const [activePageId, setActivePageId] = React.useState<string | null>(null);
   const [toolState, setToolState] = React.useState(spec.state || {});
@@ -93,24 +96,149 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
     );
   }
 
-  // Legacy View Support
-  const hasLegacyViews = spec.views?.length > 0 && (!spec.pages || spec.pages.length === 0);
-  const activePage = spec.pages?.find(p => p.id === activePageId);
+  // STRICT SEPARATION: Mini App vs Dashboard
+  if (spec.kind === "mini_app") {
+      return <MiniAppRuntime toolId={toolId} spec={spec} />;
+  }
 
+  // Dashboard Mode (Legacy)
+  const hasLegacyViews = spec.views?.length > 0;
+  
   // A tool has "real data" only if we have at least one successful execution result
   // AND views/components are defined.
   const hasRealData =
-    (hasLegacyViews || (activePage?.components && activePage.components.length > 0)) &&
+    hasLegacyViews &&
     Object.values(executionResults).some((r) => r.status === "success" && Array.isArray(r.rows) && r.rows.length > 0);
   
-  // Render Content
-  const renderContent = () => {
-     if (hasLegacyViews) {
-         return renderLegacyViews(spec, executionResults);
-     }
-     if (activePage) {
-         return (
-             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+  return (
+    <div className="h-full overflow-auto bg-muted/5 p-6">
+      <div className="mb-8 space-y-1">
+        <h1 className="text-2xl font-bold tracking-tight">{spec.title}</h1>
+        {spec.description && (
+          <p className="text-muted-foreground">{spec.description}</p>
+        )}
+      </div>
+
+      {isLoading ? (
+        <div className="flex h-[400px] flex-col items-center justify-center gap-4 rounded-lg border border-dashed p-8 text-center text-muted-foreground">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p>Executing queries...</p>
+        </div>
+      ) : !hasRealData ? (
+        <div className="flex h-[400px] flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground">
+          <p className="mb-2 text-lg font-medium">No data yet</p>
+          <p className="text-sm">
+            Connect integrations and define queries to see real data.
+          </p>
+          {spec.views?.length > 0 && (
+             <div className="mt-4 max-w-md text-xs text-red-500">
+               {Object.values(executionResults).map(r => r.error).filter(Boolean).map((err, i) => (
+                 <div key={i}>Error: {err}</div>
+               ))}
+             </div>
+          )}
+        </div>
+      ) : (
+        renderLegacyViews(spec, executionResults)
+      )}
+    </div>
+  );
+}
+
+function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec }) {
+  const [activePageId, setActivePageId] = React.useState<string | null>(null);
+  const [toolState, setToolState] = React.useState(spec.state || {});
+
+  // Initialize Page
+  React.useEffect(() => {
+    if (spec.pages?.length > 0 && !activePageId) {
+      setActivePageId(spec.pages[0].id);
+    }
+  }, [spec, activePageId]);
+
+  // Update state when spec changes
+  React.useEffect(() => {
+    if (spec.state) {
+      setToolState(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [k, v] of Object.entries(spec.state)) {
+          if (!(k in next)) {
+            next[k] = v;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [spec.state]);
+
+  const executeAction = React.useCallback(async (actionId?: string, args?: Record<string, any>) => {
+      if (!actionId) return;
+      const action = spec.actions?.find(a => a.id === actionId);
+      if (!action) return;
+
+      console.log("Executing Action:", action.type, action.id, args);
+
+      if (action.type === "state_mutation") {
+          const updates = action.config?.updates || {};
+          const mergedUpdates = { ...updates, ...args };
+          setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
+      }
+      
+      if (action.type === "navigation") {
+          if (action.config?.pageId) setActivePageId(action.config.pageId);
+      }
+
+      if (action.type === "integration_call") {
+          try {
+              const result = await executeToolAction(toolId, actionId, args || {});
+              if (result.status === "success") {
+                  // Bind result to state. Convention: actionId.data
+                  setToolState((prev: any) => ({ ...prev, [`${actionId}.data`]: result.rows }));
+              } else {
+                  console.error("Action execution returned error:", result.error);
+                  setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: result.error }));
+              }
+          } catch (e) {
+              console.error("Action execution failed:", e);
+              setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: e instanceof Error ? e.message : "Unknown error" }));
+          }
+      }
+  }, [spec.actions, toolId]);
+
+  const activePage = spec.pages?.find(p => p.id === activePageId);
+
+  if (!activePage) {
+      return <div className="p-6">No pages defined</div>;
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-background">
+        {/* App Header */}
+        <div className="border-b px-6 py-4 flex items-center justify-between">
+            <div>
+                <h1 className="text-xl font-semibold">{spec.title}</h1>
+                {spec.description && <p className="text-sm text-muted-foreground">{spec.description}</p>}
+            </div>
+            {spec.pages?.length > 1 && (
+                <div className="flex gap-2">
+                    {spec.pages.map(page => (
+                        <button 
+                            key={page.id}
+                            onClick={() => setActivePageId(page.id)}
+                            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${activePageId === page.id ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'}`}
+                        >
+                            {page.name}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+
+        {/* App Content */}
+        <div className="flex-1 overflow-auto p-6">
+             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 max-w-6xl mx-auto">
                  {activePage.components.map(comp => {
                     // Basic Component Rendering
                      if (comp.type === "button") {
@@ -129,7 +257,10 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                      if (comp.type === "text") {
                          // Simple interpolation
                          let content = String(comp.properties?.content || comp.label || "");
-                         content = content.replace(/{{(.*?)}}/g, (_, key) => toolState[key.trim()] || "");
+                         content = content.replace(/{{(.*?)}}/g, (_, key) => {
+                             const val = toolState[key.trim()];
+                             return val !== undefined ? String(val) : "";
+                         });
                          
                          return (
                              <div key={comp.id} className="col-span-4 prose dark:prose-invert">
@@ -139,7 +270,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                       }
                       if (comp.type === "select") {
                           const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
-                          const options = comp.properties?.options || []; // [{ label, value }]
+                          const options = comp.properties?.options || []; 
                           return (
                               <div key={comp.id} className="col-span-1 space-y-2">
                                   <label className="text-sm font-medium leading-none">{comp.label}</label>
@@ -176,6 +307,49 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                              </div>
                          )
                      }
+                     if (comp.type === "table") {
+                         const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
+                         const data = bindKey ? toolState[bindKey] : [];
+                         const rows = Array.isArray(data) ? data : [];
+                         
+                         return (
+                             <div key={comp.id} className="col-span-4 border rounded-md overflow-hidden">
+                                 <div className="bg-muted/50 px-4 py-2 border-b text-sm font-medium">
+                                     {comp.label || "Table"}
+                                 </div>
+                                 <div className="max-h-[400px] overflow-auto">
+                                     <Table>
+                                         <TableHeader>
+                                             <TableRow>
+                                                 {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
+                                                     <TableHead key={key}>{key}</TableHead>
+                                                 ))}
+                                                 {rows.length === 0 && <TableHead>Data</TableHead>}
+                                             </TableRow>
+                                         </TableHeader>
+                                         <TableBody>
+                                             {rows.slice(0, 20).map((row: any, i: number) => (
+                                                 <TableRow key={i}>
+                                                     {Object.keys(row as object).slice(0, 5).map(key => (
+                                                         <TableCell key={key}>
+                                                             {typeof row[key] === 'object' ? JSON.stringify(row[key]) : String(row[key])}
+                                                         </TableCell>
+                                                     ))}
+                                                 </TableRow>
+                                             ))}
+                                             {rows.length === 0 && (
+                                                 <TableRow>
+                                                     <TableCell className="text-center text-muted-foreground py-8">
+                                                         No data available
+                                                     </TableCell>
+                                                 </TableRow>
+                                             )}
+                                         </TableBody>
+                                     </Table>
+                                 </div>
+                             </div>
+                         )
+                     }
                     // Fallback
                     return (
                         <div key={comp.id} className="col-span-4 border p-4 rounded-md">
@@ -185,55 +359,7 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                     );
                  })}
              </div>
-         );
-     }
-     return <div>No pages defined</div>;
-  };
-
-  return (
-    <div className="h-full overflow-auto bg-muted/5 p-6">
-      <div className="mb-8 space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">{spec.title}</h1>
-        {spec.description && (
-          <p className="text-muted-foreground">{spec.description}</p>
-        )}
-        {spec.pages?.length > 1 && (
-            <div className="flex gap-2 mt-4">
-                {spec.pages.map(page => (
-                    <button 
-                        key={page.id}
-                        onClick={() => setActivePageId(page.id)}
-                        className={`px-3 py-1 text-sm rounded-md ${activePageId === page.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
-                    >
-                        {page.name}
-                    </button>
-                ))}
-            </div>
-        )}
-      </div>
-
-      {isLoading ? (
-        <div className="flex h-[400px] flex-col items-center justify-center gap-4 rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p>Executing queries...</p>
         </div>
-      ) : !hasRealData && !activePage ? (
-        <div className="flex h-[400px] flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-          <p className="mb-2 text-lg font-medium">No data yet</p>
-          <p className="text-sm">
-            Connect integrations and define queries to see real data.
-          </p>
-          {(spec.views?.length > 0 || spec.pages?.length > 0) && (
-             <div className="mt-4 max-w-md text-xs text-red-500">
-               {Object.values(executionResults).map(r => r.error).filter(Boolean).map((err, i) => (
-                 <div key={i}>Error: {err}</div>
-               ))}
-             </div>
-          )}
-        </div>
-      ) : (
-        renderContent()
-      )}
     </div>
   );
 }

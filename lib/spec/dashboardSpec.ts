@@ -118,6 +118,7 @@ export const pageSchema = z.object({
 
 export const toolSpecSchema = z
   .object({
+    kind: z.enum(["dashboard", "mini_app"]).default("dashboard"),
     title: z.string().min(1),
     description: z.string().min(1).optional(),
     // Legacy support (optional now)

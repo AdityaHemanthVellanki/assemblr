@@ -13,6 +13,7 @@ import { checkAndConsumeBudget } from "@/lib/security/cost-store";
 // Minimal spec wrapper to reuse executeDashboard
 function wrapMetricInSpec(metric: Metric): DashboardSpec {
   return {
+    kind: "dashboard",
     title: "Execution Wrapper",
     metrics: [{
       id: metric.id,
