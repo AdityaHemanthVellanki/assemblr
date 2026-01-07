@@ -37,6 +37,7 @@ INSTRUCTIONS:
    - Follow strict Mini App architecture:
      - Pages contain Components.
      - Components trigger Actions via Events.
+     - componentsAdded MUST include "pageId" to specify which page they belong to.
      - Actions call Capabilities (integration_call) or Mutate State.
    - NEVER guess resources. Use capability IDs.
 4. **Tasks (for Chat/Analyze)**:

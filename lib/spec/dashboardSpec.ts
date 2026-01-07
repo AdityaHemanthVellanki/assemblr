@@ -87,7 +87,12 @@ export const actionSchema = z.object({
 export const componentSchema = z.object({
   id: z.string(),
   type: z.enum([
-    "table", "metric", "chart", "text", "form", "input", "select", "button", "json", "code", "status", "container", "modal"
+    // Legacy / Low-level
+    "table", "metric", "chart", "text", "form", "input", "select", "button", "json", "code", "status", "container", "modal",
+    // Mini-App Primitives (PascalCase)
+    "Button", "Text", "Container", "TextInput", "Select", "Dropdown", "Table", "LineChart", "BarChart", "Status", "Form",
+    // Stubs
+    "Checkbox", "DatePicker", "Grid", "Tabs", "Markdown"
   ]),
   label: z.string().optional(),
   properties: z.record(z.string(), z.any()).default({}), // placeholder, defaultValue, options, content

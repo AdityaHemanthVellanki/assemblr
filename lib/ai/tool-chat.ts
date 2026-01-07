@@ -6,8 +6,6 @@ import { getServerEnv } from "@/lib/env";
 import { dashboardSpecSchema, type DashboardSpec } from "@/lib/spec/dashboardSpec";
 import { compileIntent } from "./planner";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
-import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
-import { IntegrationRuntime } from "@/lib/core/runtime";
 import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { findMetrics } from "@/lib/metrics/store";
 import { ExecutionTracer } from "@/lib/observability/tracer";
@@ -15,12 +13,8 @@ import { ExecutionError } from "@/lib/core/errors";
 import { VersioningService } from "@/lib/versioning/service";
 import { OrgPolicy } from "@/lib/core/governance";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
-
-// Runtime Registry
-const RUNTIMES: Record<string, IntegrationRuntime> = {
-  github: new GitHubRuntime(),
-  // Add others as they are refactored
-};
+import { materializeSpec } from "@/lib/spec/materializer";
+import { RUNTIMES } from "@/lib/integrations/map";
 
 const versioningService = new VersioningService();
 
@@ -135,7 +129,7 @@ export async function processToolChat(input: {
             };
         }
 
-        const mutation = intent.tool_mutation;
+const mutation = intent.tool_mutation;
         if (!mutation) {
             tracer.finish("failure", "No tool mutation generated");
             return {
@@ -146,28 +140,31 @@ export async function processToolChat(input: {
             };
         }
 
-        // Apply Mutation to Spec
-        let updatedSpec = { ...input.currentSpec };
-        updatedSpec.kind = "mini_app"; // Enforce Kind
-
-        if (mutation.pagesAdded) {
-            updatedSpec.pages = [...(updatedSpec.pages || []), ...mutation.pagesAdded];
-            mutation.pagesAdded.forEach(p => tracer.logUIMutation({ componentId: p.id, changeType: "added", details: p }));
-        }
-        // If components added without page, add to first page
-        if (mutation.componentsAdded && mutation.componentsAdded.length > 0) {
-            if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
-                updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
+        // Apply Mutation to Spec via Materializer
+        let updatedSpec: DashboardSpec;
+        try {
+            updatedSpec = materializeSpec(input.currentSpec, mutation);
+            updatedSpec.kind = "mini_app"; // Enforce Kind
+            
+            // Log Mutations for Tracing
+            if (mutation.pagesAdded) {
+                mutation.pagesAdded.forEach(p => tracer.logUIMutation({ componentId: p.id || "unknown", changeType: "added", details: p }));
             }
-            updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...mutation.componentsAdded];
-            mutation.componentsAdded.forEach(c => tracer.logUIMutation({ componentId: c.id, changeType: "added", details: c }));
-        }
-        if (mutation.actionsAdded) {
-            updatedSpec.actions = [...(updatedSpec.actions || []), ...mutation.actionsAdded];
-        }
-        if (mutation.stateAdded) {
-            updatedSpec.state = { ...(updatedSpec.state || {}), ...mutation.stateAdded };
-            Object.keys(mutation.stateAdded).forEach(k => tracer.logStateMutation({ key: k, oldValue: undefined, newValue: mutation.stateAdded![k] }));
+            if (mutation.componentsAdded) {
+                mutation.componentsAdded.forEach(c => tracer.logUIMutation({ componentId: c.id || "unknown", changeType: "added", details: c }));
+            }
+            if (mutation.stateAdded) {
+                Object.keys(mutation.stateAdded).forEach(k => tracer.logStateMutation({ key: k, oldValue: undefined, newValue: mutation.stateAdded![k] }));
+            }
+        } catch (e) {
+            console.error("Spec Materialization Failed:", e);
+            tracer.finish("failure", `Spec Materialization Failed: ${e instanceof Error ? e.message : String(e)}`);
+             return {
+                explanation: "I encountered an error while assembling the interface. Please try again.",
+                message: { type: "text", content: "I encountered an error while assembling the interface." },
+                spec: input.currentSpec,
+                metadata: { trace: tracer.getTrace() }
+            };
         }
 
         // Verify Contract

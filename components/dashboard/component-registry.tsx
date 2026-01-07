@@ -6,6 +6,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 // Types
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
@@ -45,7 +56,7 @@ const TextComponent = ({ component, state }: ComponentProps) => {
   );
 };
 
-const InputComponent = ({ component, state, onEvent }: ComponentProps) => {
+const TextInputComponent = ({ component, state, onEvent }: ComponentProps) => {
   const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
   const value = bindKey ? state[bindKey] || "" : "";
 
@@ -90,11 +101,12 @@ const SelectComponent = ({ component, state, onEvent }: ComponentProps) => {
 
 const TableComponent = ({ component, state }: ComponentProps) => {
   const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
-  const data = bindKey ? state[bindKey] : [];
+  // Support direct data property or state binding
+  const data = bindKey ? state[bindKey] : (component.properties?.data || []);
   const rows = Array.isArray(data) ? data : [];
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader className="py-3">
         <CardTitle className="text-sm font-medium">{component.label || "Table"}</CardTitle>
       </CardHeader>
@@ -146,25 +158,189 @@ const ContainerComponent = ({ component, renderChildren }: ComponentProps) => {
   );
 };
 
+const StatusComponent = ({ component, state }: ComponentProps) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const value = bindKey ? state[bindKey] : (component.properties?.value || "Unknown");
+  
+  let variant: "default" | "secondary" | "destructive" | "outline" = "default";
+  const statusStr = String(value).toLowerCase();
+  
+  if (statusStr === "success" || statusStr === "completed" || statusStr === "active") variant = "default"; // green-ish in some themes, or we rely on class
+  else if (statusStr === "error" || statusStr === "failed") variant = "destructive";
+  else if (statusStr === "pending" || statusStr === "running") variant = "secondary";
+  else variant = "outline";
+
+  return (
+    <div className="flex items-center gap-2">
+      {component.label && <span className="text-sm font-medium">{component.label}:</span>}
+      <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
+          variant === 'default' ? 'border-transparent bg-primary text-primary-foreground hover:bg-primary/80' :
+          variant === 'secondary' ? 'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80' :
+          variant === 'destructive' ? 'border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80' :
+          'text-foreground'
+      }`}>
+        {String(value)}
+      </span>
+    </div>
+  );
+};
+
+// Chart Helper
+const resolveChartData = (component: any, state: any) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const data = bindKey ? state[bindKey] : (component.properties?.data || []);
+  return Array.isArray(data) ? data : [];
+};
+
+const LineChartComponent = ({ component, state }: ComponentProps) => {
+  const data = resolveChartData(component, state);
+  const xKey = component.properties?.xAxis || "date";
+  const yKey = component.properties?.yAxis || "value";
+  const label = component.label || "Line Chart";
+
+  return (
+    <Card className="h-full min-h-[300px]">
+      <CardHeader>
+        <CardTitle>{label}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="h-[250px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis 
+                dataKey={xKey} 
+                stroke="#888888" 
+                fontSize={12} 
+                tickLine={false} 
+                axisLine={false}
+              />
+              <YAxis 
+                stroke="#888888" 
+                fontSize={12} 
+                tickLine={false} 
+                axisLine={false} 
+              />
+              <Tooltip />
+              <Line 
+                type="monotone" 
+                dataKey={yKey} 
+                stroke="currentColor" 
+                strokeWidth={2} 
+                className="stroke-primary" 
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+const BarChartComponent = ({ component, state }: ComponentProps) => {
+  const data = resolveChartData(component, state);
+  const xKey = component.properties?.xAxis || "date";
+  const yKey = component.properties?.yAxis || "value";
+  const label = component.label || "Bar Chart";
+
+  return (
+    <Card className="h-full min-h-[300px]">
+      <CardHeader>
+        <CardTitle>{label}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="h-[250px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis 
+                dataKey={xKey} 
+                stroke="#888888" 
+                fontSize={12} 
+                tickLine={false} 
+                axisLine={false}
+              />
+              <YAxis 
+                stroke="#888888" 
+                fontSize={12} 
+                tickLine={false} 
+                axisLine={false} 
+              />
+              <Tooltip />
+              <Bar 
+                dataKey={yKey} 
+                fill="currentColor" 
+                radius={[4, 4, 0, 0]} 
+                className="fill-primary" 
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 // 2. Registry Definition
 export const COMPONENT_REGISTRY: Record<string, React.FC<ComponentProps>> = {
+  // Primitives
+  Button: ButtonComponent,
+  Text: TextComponent,
+  Container: ContainerComponent,
+  
+  // Inputs
+  TextInput: TextInputComponent,
+  Select: SelectComponent,
+  Dropdown: SelectComponent, // Alias
+  
+  // Outputs
+  Table: TableComponent,
+  LineChart: LineChartComponent,
+  BarChart: BarChartComponent,
+  Status: StatusComponent,
+  
+  // Layout / Other
+  Form: ContainerComponent, // Alias for now
+  
+  // Legacy / Lowercase Aliases
   button: ButtonComponent,
   text: TextComponent,
-  input: InputComponent,
+  input: TextInputComponent,
+  textinput: TextInputComponent,
   select: SelectComponent,
+  dropdown: SelectComponent,
   table: TableComponent,
   container: ContainerComponent,
-  form: ContainerComponent, // Map form to container for now
-  modal: ContainerComponent, // Map modal to container for now
-  status: TextComponent, // Map status to text for now
-  // Fallback for older types mapping to new components
+  form: ContainerComponent,
+  modal: ContainerComponent,
+  status: StatusComponent,
+  linechart: LineChartComponent,
+  barchart: BarChartComponent,
+  
+  // Dashboard Fallbacks
   metric: TextComponent, 
-  chart: TextComponent, // Placeholder
+  chart: LineChartComponent, 
+
+  // Stubs for other required types
+  Checkbox: TextInputComponent, // Placeholder
+  DatePicker: TextInputComponent, // Placeholder
+  Grid: ContainerComponent, // Alias
+  Tabs: ContainerComponent, // Placeholder
+  Markdown: TextComponent, // Alias
 };
 
 export function getComponent(type: string) {
-  const Comp = COMPONENT_REGISTRY[type.toLowerCase()];
+  // Try exact match first, then lowercase
+  const Comp = COMPONENT_REGISTRY[type] || COMPONENT_REGISTRY[type.toLowerCase()];
+  
   if (!Comp) {
+    // If we have a chart type that isn't registered, fallback to line chart if it looks like a chart
+    if (type.toLowerCase().includes("chart")) {
+        return LineChartComponent;
+    }
+    
+    console.error(`Component type "${type}" is not registered in COMPONENT_REGISTRY`);
     throw new Error(`Component type "${type}" is not registered in COMPONENT_REGISTRY`);
   }
   return Comp;
