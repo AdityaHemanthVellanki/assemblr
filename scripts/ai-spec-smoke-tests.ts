@@ -5,9 +5,9 @@ import {
 } from "@/lib/ai/generateDashboardSpec";
 
 async function run() {
-  const fakeLlm: LlmGenerate = async () => {
+  const mockLlmForTests: LlmGenerate = async () => {
     // Return a minimal valid spec for schema validation testing only.
-    // No mock data or demo scenarios.
+    // This mock is ONLY for testing the spec generator, not for runtime execution.
     return JSON.stringify({
       title: "Test Spec",
       metrics: [],
@@ -17,7 +17,7 @@ async function run() {
 
   const spec1 = await generateDashboardSpec(
     { prompt: "test prompt" },
-    { llm: fakeLlm },
+    { llm: mockLlmForTests },
   );
   console.log(
     "ok: prompt test 1",

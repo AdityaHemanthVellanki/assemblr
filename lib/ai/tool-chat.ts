@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
@@ -28,6 +29,43 @@ const EXECUTORS: Record<string, IntegrationExecutor> = {
   notion: new NotionExecutor(),
   google: new GoogleExecutor(),
 };
+
+// --- Integration Context Resolvers ---
+async function resolveGitHubContext(orgId: string, requestedRepo?: string): Promise<{
+  owner: string;
+  repo?: string;
+  ambiguity?: { repos: string[] };
+}> {
+  const token = await getValidAccessToken(orgId, "github");
+  // 1) Owner via /user
+  const userRes = await fetch("https://api.github.com/user", {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
+  });
+  if (!userRes.ok) {
+    throw new Error(`Failed to resolve GitHub user: ${userRes.statusText}`);
+  }
+  const user = await userRes.json();
+  const owner = (user?.login as string) || "";
+  if (!owner) throw new Error("Failed to resolve GitHub owner from token");
+  // 2) Repos via /user/repos
+  const reposRes = await fetch("https://api.github.com/user/repos?per_page=100", {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
+  });
+  if (!reposRes.ok) {
+    throw new Error(`Failed to list repositories: ${reposRes.statusText}`);
+  }
+  const repos = (await reposRes.json()) as Array<{ name: string }>;
+  if (requestedRepo && requestedRepo.trim().length > 0) {
+    const match = repos.find((r) => r.name.toLowerCase() === requestedRepo.toLowerCase());
+    if (!match) {
+      return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
+    }
+    return { owner, repo: match.name };
+  }
+  if (repos.length === 0) return { owner, repo: undefined, ambiguity: { repos: [] } };
+  if (repos.length === 1) return { owner, repo: repos[0].name };
+  return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
+}
 
 // --- Schema Definitions ---
 
@@ -303,6 +341,41 @@ export async function processToolChat(input: {
     if (planResult.plans) {
        executionPlans = planResult.plans.map(resolveCapabilities);
        
+       // GitHub Context Rewrite: inject owner implicitly; resolve repo ambiguity
+       if (input.connectedIntegrationIds.includes("github")) {
+         for (const p of executionPlans) {
+           if (p.integrationId === "github" && p.resource === "commits") {
+             const requestedRepo = (p.params as any)?.repo as string | undefined;
+             try {
+               const ctx = await resolveGitHubContext(input.orgId, requestedRepo);
+               p.params = { ...(p.params || {}), owner: ctx.owner };
+               if (ctx.repo) {
+                 (p.params as any).repo = ctx.repo;
+               } else if (ctx.ambiguity && ctx.ambiguity.repos.length > 1 && !requestedRepo) {
+                 const list = ctx.ambiguity.repos.slice(0, 10).join(", ");
+                 return {
+                   explanation: "Which repository should I use? You have multiple repositories.",
+                   message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${ctx.ambiguity.repos.length > 10 ? " ..." : ""}` },
+                   spec: input.currentSpec,
+                 };
+               } else if (ctx.ambiguity && ctx.ambiguity.repos.length === 0) {
+                 return {
+                   explanation: "No repositories found in your GitHub account.",
+                   message: { type: "text", content: "No repositories found in your GitHub account." },
+                   spec: input.currentSpec,
+                 };
+               }
+             } catch (e) {
+               return {
+                 explanation: "Failed to resolve GitHub context.",
+                 message: { type: "text", content: "Authentication or context resolution failed for GitHub." },
+                 spec: input.currentSpec,
+               };
+             }
+           }
+         }
+       }
+       
        // Validate Plans
        for (const p of executionPlans) {
          const val = validatePlanAgainstCapabilities(p);
@@ -337,7 +410,7 @@ export async function processToolChat(input: {
       const accessToken = await getValidAccessToken(input.orgId, plan.integrationId);
       const result = await executor.execute({
         plan: {
-          viewId: "temp_exec_" + Date.now(),
+          viewId: randomUUID(),
           integrationId: plan.integrationId,
           resource: plan.resource,
           params: plan.params,
@@ -353,6 +426,19 @@ export async function processToolChat(input: {
          console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
          executionError = result.error;
          lastErrorIntegrationId = plan.integrationId;
+      } else if (result.status === "clarification_needed") {
+         // Handle repo ambiguity explicitly for GitHub commits
+         if (plan.integrationId === "github" && plan.resource === "commits") {
+           const options = Array.isArray(result.rows)
+             ? (result.rows as Array<any>).map(r => r.repo).filter(Boolean)
+             : [];
+           const list = options.slice(0, 10).join(", ");
+           return {
+             explanation: "Which repository should I use? You have multiple repositories.",
+             message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${options.length > 10 ? " ..." : ""}` },
+             spec: input.currentSpec,
+           };
+         }
       }
     } catch (err) {
       console.error("Ad-hoc execution failed", err);
@@ -418,7 +504,7 @@ export async function processToolChat(input: {
           
           // Only append the ephemeral footer if we actually showed data
           if (totalRows > 0) {
-             content += "_This data is temporary. Ask 'Save this' to add it to your project._";
+             // Data is shown. User can choose to save it via subsequent command.
           }
 
           // TRUTHFULNESS CHECK:

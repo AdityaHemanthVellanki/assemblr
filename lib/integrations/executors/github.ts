@@ -39,13 +39,58 @@ export class GitHubExecutor implements IntegrationExecutor {
         });
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
         data = await res.json();
-  } else if (plan.resource === "commits") {
-        const owner = (plan.params as any)?.owner as string | undefined;
-        const repo = (plan.params as any)?.repo as string | undefined;
-        if (!owner || !repo) {
-             throw new Error("Repository not specified. Provide both owner and repo (e.g. owner: 'foo', repo: 'bar').");
+      } else if (plan.resource === "commits") {
+        const requestedRepo = (plan.params as any)?.repo as string | undefined;
+        // Resolve repo and owner implicitly from the authenticated context
+        const reposRes = await fetch("https://api.github.com/user/repos?per_page=100", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+          },
+        });
+        if (!reposRes.ok) {
+          throw new Error(`GitHub API error: ${reposRes.statusText}`);
         }
-        const full = `${owner}/${repo}`;
+        const repos = (await reposRes.json()) as Array<{ full_name: string; name: string }>;
+        let full: string | undefined;
+        if (requestedRepo && requestedRepo.trim().length > 0) {
+          const match = repos.find((r) => r.name.toLowerCase() === requestedRepo.toLowerCase());
+          if (!match) {
+            return {
+              viewId: plan.viewId,
+              status: "error",
+              error: `I couldn’t find the repository '${requestedRepo}' in your GitHub account.`,
+              timestamp: new Date().toISOString(),
+              source: "live_api",
+              rows: [],
+            };
+          }
+          full = match.full_name; // owner/repo
+        } else {
+          if (!Array.isArray(repos) || repos.length === 0) {
+            return {
+              viewId: plan.viewId,
+              status: "error",
+              error: "No repositories found in your GitHub account.",
+              timestamp: new Date().toISOString(),
+              source: "live_api",
+              rows: [],
+            };
+          }
+          if (repos.length === 1) {
+            full = repos[0].full_name;
+          } else {
+            return {
+              viewId: plan.viewId,
+              status: "clarification_needed",
+              error: "Which repository should I use? You have multiple repositories.",
+              timestamp: new Date().toISOString(),
+              source: "live_api",
+              rows: repos.map((r) => ({ repo: r.name, full_name: r.full_name })),
+            };
+          }
+        }
+        // At this point, we have full = "owner/repo"
         const res = await fetch(`https://api.github.com/repos/${full}/commits?per_page=100`, {
            headers: {
                Authorization: `Bearer ${token}`,

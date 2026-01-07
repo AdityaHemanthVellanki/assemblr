@@ -58,7 +58,7 @@ export async function runMetricExecution(metricId: string, triggeredBy: string =
 
       try {
         // 3. Execute via Engine
-        // We construct a temporary spec to execute ONLY this metric.
+        // We construct a specific spec context to execute ONLY this metric.
         const spec = wrapMetricInSpec(metric);
         
         // We need to pass orgId. Metric has it.

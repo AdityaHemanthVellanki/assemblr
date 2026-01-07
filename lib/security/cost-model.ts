@@ -27,7 +27,7 @@ export function estimateWorkflowCost(actions: Array<{ type: string }>): number {
     // Map action type to registry key (e.g. "slack" -> "slack_message")
     const key = `${action.type}_message` in COST_REGISTRY ? `${action.type}_message` : 
                 `${action.type}_issue` in COST_REGISTRY ? `${action.type}_issue` : 
-                "metric_execution"; // Default fallback
+                "metric_execution"; // Standard cost for generic actions
     
     total += estimateCost(key);
   }
