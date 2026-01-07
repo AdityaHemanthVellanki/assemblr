@@ -35,11 +35,18 @@ const metricSchema = z
 const viewSchema = z
   .object({
     id: z.string().min(1),
-    type: z.enum(["metric", "line_chart", "bar_chart", "table", "heatmap"]),
+    type: z.enum(["metric", "line_chart", "bar_chart", "table", "heatmap", "query"]),
     metricId: z.string().min(1).optional(),
     table: z.string().min(1).optional(),
     integrationId: z.string().optional(),
     params: z.record(z.string(), z.any()).optional(),
+    capability: z.string().optional(),
+    presentation: z
+      .object({
+        kind: z.enum(["list", "card", "timeline"]),
+        fields: z.array(z.string()).optional(),
+      })
+      .optional(),
     query: z.object({
         filters: z.record(z.string(), z.any()).optional(),
         sort: z.object({
@@ -118,7 +125,7 @@ export const dashboardSpecSchema = z
         });
       }
 
-      if (!view.metricId) {
+      if (view.type !== "query" && !view.metricId) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["views"],
@@ -127,12 +134,67 @@ export const dashboardSpecSchema = z
         continue;
       }
 
-      if (!metricIds.has(view.metricId)) {
+      if (view.type !== "query" && view.metricId && !metricIds.has(view.metricId)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["views"],
           message: `View "${view.id}" references missing metricId "${view.metricId}"`,
         });
+      }
+
+      // Query View strict validation
+      if (view.type === "query") {
+        if (!view.integrationId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" requires "integrationId"`,
+          });
+        }
+        if (!view.capability) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" requires "capability"`,
+          });
+        }
+        if (!view.params || typeof view.params !== "object") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" requires "params"`,
+          });
+        }
+        if (!view.presentation || !view.presentation.kind) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" requires "presentation.kind"`,
+          });
+        }
+        if ((view as any).metricId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" must not include "metricId"`,
+          });
+        }
+        if ((view as any).table) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `Query view "${view.id}" must not include "table"`,
+          });
+        }
+        // Disallow query-only keys on non-query views
+      } else {
+        if ((view as any).capability || (view as any).presentation) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["views"],
+            message: `View "${view.id}" must not include "capability" or "presentation" unless type is "query"`,
+          });
+        }
       }
     }
   });

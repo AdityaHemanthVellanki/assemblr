@@ -11,8 +11,7 @@ import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
 import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 import type { Json } from "@/lib/supabase/database.types";
 
-import { getDiscoveredSchemas, persistSchema } from "@/lib/schema/store";
-import { inferSchemaFromData } from "@/lib/schema/discovery";
+import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { GitHubExecutor } from "@/lib/integrations/executors/github";
 import { LinearExecutor } from "@/lib/integrations/executors/linear";
@@ -299,7 +298,7 @@ import { validatePlanAgainstCapabilities } from "@/lib/execution/validation";
 
 import { findMetrics } from "@/lib/metrics/store";
 
-import { ExecutionPlan } from "@/lib/ai/planner";
+// (removed unused ExecutionPlan import)
 
 export async function processToolChat(input: {
   orgId: string;
@@ -413,61 +412,50 @@ export async function processToolChat(input: {
   let executionError: string | undefined;
   let lastErrorIntegrationId: string | undefined;
 
-  for (const plan of executionPlans) {
-    // Check if schema exists for this resource (for inference purposes)
-    const schemaExists = schemasForPlanning.some(
-      s => s.integrationId === plan.integrationId && s.resource === plan.resource
-    );
-    
-    // EXECUTE EVERYTHING. We need data to create views or answer questions.
-    try {
-      const executor = EXECUTORS[plan.integrationId];
-      if (!executor) {
-        console.warn(`No executor for ${plan.integrationId}`);
-        continue;
-      }
-
-      const accessToken = await getValidAccessToken(input.orgId, plan.integrationId);
-      const result = await executor.execute({
-        plan: {
-          viewId: randomUUID(),
-          integrationId: plan.integrationId,
-          resource: plan.resource,
-          params: plan.params,
-          // @ts-ignore - Pass intent for executor logic
-          intent: plan.intent
-        },
-        credentials: { access_token: accessToken }
-      });
-
-      if (result.status === "success" && Array.isArray(result.rows)) {
-         successfulExecutions.push({ plan, result });
-      } else if (result.status === "error") {
-         console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
-         executionError = result.error;
-         lastErrorIntegrationId = plan.integrationId;
-      } else if (result.status === "clarification_needed") {
-         if (plan.integrationId === "github" && plan.resource === "commits") {
-           const options = Array.isArray(result.rows)
-             ? (result.rows as Array<any>).map((r: any) => r.repo).filter(Boolean)
-             : [];
-           const list = options.slice(0, 10).join(", ");
-           if (!isCreateMode) {
+  if (!isCreateMode) {
+    for (const plan of executionPlans) {
+      try {
+        const executor = EXECUTORS[plan.integrationId];
+        if (!executor) {
+          console.warn(`No executor for ${plan.integrationId}`);
+          continue;
+        }
+        const accessToken = await getValidAccessToken(input.orgId, plan.integrationId);
+        const result = await executor.execute({
+          plan: {
+            viewId: randomUUID(),
+            integrationId: plan.integrationId,
+            resource: plan.resource,
+            params: plan.params,
+            // @ts-ignore - Pass intent for executor logic
+            intent: plan.intent
+          },
+          credentials: { access_token: accessToken }
+        });
+        if (result.status === "success" && Array.isArray(result.rows)) {
+           successfulExecutions.push({ plan, result });
+        } else if (result.status === "error") {
+           console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
+           executionError = result.error;
+           lastErrorIntegrationId = plan.integrationId;
+        } else if (result.status === "clarification_needed") {
+           if (plan.integrationId === "github" && plan.resource === "commits") {
+             const options = Array.isArray(result.rows)
+               ? (result.rows as Array<any>).map((r: any) => r.repo).filter(Boolean)
+               : [];
+             const list = options.slice(0, 10).join(", ");
              return {
                explanation: "Which repository should I use? You have multiple repositories.",
                message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${options.length > 10 ? " ..." : ""}` },
                spec: input.currentSpec,
              };
-           } else {
-             executionError = "Ambiguous repository selection in Create mode";
-             lastErrorIntegrationId = plan.integrationId;
            }
-         }
+        }
+      } catch (err) {
+        console.error("Ephemeral execution failed", err);
+        executionError = err instanceof Error ? err.message : "Unknown error";
+        lastErrorIntegrationId = plan.integrationId;
       }
-    } catch (err) {
-      console.error("Ad-hoc execution failed", err);
-      executionError = err instanceof Error ? err.message : "Unknown error";
-      lastErrorIntegrationId = plan.integrationId;
     }
   }
 
@@ -574,14 +562,65 @@ export async function processToolChat(input: {
   }
 
   // --- BRANCH B: CREATE MODE ---
-  // If we are here, we are persisting schemas and updating the spec.
-  
-  // 1. Infer & Persist Schemas (REMOVED: Schemas are Finite)
-  // We no longer infer schemas from execution. Schemas must be discovered via OAuth/Connect.
+  // Strict Create Mode: Do NOT execute runtime queries unless a view exists.
+  // Instead, construct persistent QueryViews directly from validated plans.
+  if (isCreateMode) {
+    const validPlans = executionPlans.filter((p) => {
+      const val = validatePlanAgainstCapabilities(p);
+      return val.valid;
+    });
+    const beforeViewIds = new Set(input.currentSpec.views.map((v) => v.id));
+    const newQueryViews: DashboardSpec["views"] = [];
+    for (const p of validPlans) {
+      const id = `query_${p.integrationId}_${p.resource}_${randomUUID().slice(0, 8)}`;
+      newQueryViews.push({
+        id,
+        type: "query",
+        integrationId: p.integrationId,
+        // @ts-ignore intentional: new view field
+        capability: p.capabilityId,
+        // @ts-ignore intentional: new view field
+        params: { ...(p.params || {}) },
+        // @ts-ignore intentional: new view field
+        presentation: { kind: "list" },
+      } as any);
+    }
+    const specWithQueryViews: DashboardSpec = {
+      ...input.currentSpec,
+      views: [...input.currentSpec.views, ...newQueryViews],
+    };
+    const createdViewIds = specWithQueryViews.views
+      .map((v) => v.id)
+      .filter((id) => !beforeViewIds.has(id));
+    const logs = {
+      planner_output: executionPlans,
+      created_views: createdViewIds,
+      spec_diff: {
+        before_views_count: input.currentSpec.views.length,
+        after_views_count: specWithQueryViews.views.length,
+      },
+    };
+    console.log("[CreateMode] StructuredLogs:", JSON.stringify(logs));
+    if (createdViewIds.length === 0) {
+      return {
+        explanation: "I couldn’t add a view based on your request.",
+        message: { type: "text", content: "I couldn’t add a view based on your request." },
+        spec: input.currentSpec,
+        metadata: { persist: false },
+      };
+    }
+    const explanation = "Added new query views to your dashboard.";
+    return {
+      explanation,
+      message: { type: "text", content: explanation },
+      spec: specWithQueryViews,
+      metadata: { persist: true },
+    };
+  }
 
-  // 2. Plan Chat Response (Legacy High-Level Intent)
+  // Chat Mode: High-level intent planning for integration CTAs and capability coverage
   const plan = await planChatResponse(input.userMessage);
-  console.log("[Chat Orchestrator] Plan:", plan);
+  console.log("[Chat Mode] Plan:", plan);
   console.log("Chat execution context", {
     requestedIntegration: "github",
     isConnected: input.connectedIntegrationIds.includes("github"),
@@ -589,7 +628,7 @@ export async function processToolChat(input: {
 
   function buildCtas(integrationIds: string[]) {
     const uniq = Array.from(new Set(integrationIds));
-    return uniq.map((id) => {
+    return uniq.map((id: string) => {
       let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
       let logoUrl: string | undefined;
       try {
@@ -650,7 +689,7 @@ export async function processToolChat(input: {
       };
     }
 
-    const requestedButNotSelected = plan.requested_integration_ids.filter((id) => !selected.includes(id));
+    const requestedButNotSelected = plan.requested_integration_ids.filter((id: string) => !selected.includes(id));
 
     if (requestedButNotSelected.length > 0) {
       // Return error asking to add them
@@ -666,12 +705,12 @@ export async function processToolChat(input: {
       // Let's rely on the client to show the right UI based on selection state?
       // No, the backend drives the chat.
       
-      const ctas = requestedButNotSelected.map(id => {
+      const ctas = requestedButNotSelected.map((id: string) => {
          const name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
          return {
-             id,
-             name,
-             connected: input.connectedIntegrationIds.includes(id),
+           id,
+           name,
+           connected: input.connectedIntegrationIds.includes(id),
              label: `Add ${name}`,
              action: "ui:select_integration" // Special action for client
          } satisfies IntegrationCTA;
@@ -701,7 +740,7 @@ export async function processToolChat(input: {
   );
   if (missingRequested.length > 0) {
     const integrations = buildCtas(missingRequested);
-    const names = integrations.map((i) => i.name).join(", ");
+      const names = integrations.map((i: IntegrationCTA) => i.name).join(", ");
     return {
       explanation: `Access to ${names} is required.`,
       message: { type: "integration_action", integrations },

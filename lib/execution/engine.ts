@@ -10,6 +10,7 @@ import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
 import { validateSpecAgainstSchema } from "./validation";
 import { synthesizeQuery } from "./synthesizer";
+import { getCapability } from "@/lib/capabilities/registry";
 import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
 import { resolveMetricDependency } from "./graph";
 import { getLatestExecution, runMetricExecution } from "./scheduler";
@@ -49,6 +50,31 @@ export async function executeDashboard(
     // or infer from metric
     let integrationId = view.integrationId;
     let table = view.table;
+
+    // Query View: direct capability execution, no schema coupling
+    if ((view as any).type === "query") {
+      const v: any = view;
+      const cap = getCapability(v.capability);
+      if (!cap) {
+        results[view.id] = {
+          viewId: view.id,
+          status: "error",
+          error: `Unsupported capability: ${v.capability}`,
+          timestamp: new Date().toISOString(),
+          source: "live_api",
+          rows: []
+        };
+        continue;
+      }
+      const runtimePlan = {
+        viewId: view.id,
+        integrationId: cap.integrationId,
+        resource: cap.resource,
+        params: { ...(v.params || {}) },
+      } as any;
+      plans.push(runtimePlan);
+      continue;
+    }
 
     if (view.metricId) {
       const metric = spec.metrics.find((m) => m.id === view.metricId);

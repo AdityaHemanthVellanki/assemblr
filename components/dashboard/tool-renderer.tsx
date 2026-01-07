@@ -135,6 +135,91 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                 const result = executionResults[view.id];
                 const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
 
+                if (view.type === "query") {
+                  const kind = (view as any).presentation?.kind as "list" | "card" | "timeline" | undefined;
+                  return (
+                    <Card key={view.id} className="col-span-2">
+                      <CardHeader>
+                        <CardTitle>
+                          Query: {(view as any).capability}
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {result?.status === "error" ? (
+                          <div className="text-red-500">Error: {result.error}</div>
+                        ) : rows.length === 0 ? (
+                          <div className="text-muted-foreground">No data</div>
+                        ) : kind === "card" ? (
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            {rows.slice(0, 8).map((row, i) => (
+                              <div key={i} className="rounded-md border p-3">
+                                {Object.entries(row as Record<string, unknown>).slice(0, 5).map(([k, v]) => (
+                                  <div key={k} className="text-sm">
+                                    <span className="font-medium">{k}:</span>{" "}
+                                    <span className="text-muted-foreground">
+                                      {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        ) : kind === "timeline" ? (
+                          <div className="space-y-3">
+                            {rows
+                              .slice(0, 20)
+                              .sort((a: any, b: any) => {
+                                const ak = Object.keys(a).find(k => String(k).toLowerCase().includes("date") || String(k).toLowerCase().includes("time")) as string | undefined;
+                                const bk = Object.keys(b).find(k => String(k).toLowerCase().includes("date") || String(k).toLowerCase().includes("time")) as string | undefined;
+                                const ad = ak ? new Date((a as any)[ak]).getTime() : 0;
+                                const bd = bk ? new Date((b as any)[bk]).getTime() : 0;
+                                return bd - ad;
+                              })
+                              .map((row, i) => (
+                                <div key={i} className="relative pl-6">
+                                  <div className="absolute left-0 top-2 h-2 w-2 rounded-full bg-primary" />
+                                  <div className="rounded-md border p-3">
+                                    {Object.entries(row as Record<string, unknown>).slice(0, 5).map(([k, v]) => (
+                                      <div key={k} className="text-sm">
+                                        <span className="font-medium">{k}:</span>{" "}
+                                        <span className="text-muted-foreground">
+                                          {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        ) : (
+                          <div className="max-h-[400px] overflow-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
+                                    <TableHead key={key}>{key}</TableHead>
+                                  ))}
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {rows.slice(0, 20).map((row, i) => (
+                                  <TableRow key={i}>
+                                     {Object.keys(row as object).slice(0, 5).map(key => (
+                                       <TableCell key={key}>
+                                         {typeof (row as any)[key] === 'object' ? JSON.stringify((row as any)[key]) : String((row as any)[key])}
+                                       </TableCell>
+                                     ))}
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  );
+                }
+
                 if (view.type === "heatmap") {
                   if (!metric) return null;
                   const dateField = rows.length > 0 ? Object.keys(rows[0] as object).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at") : undefined;
