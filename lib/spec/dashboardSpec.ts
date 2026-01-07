@@ -59,28 +59,45 @@ const viewSchema = z
   })
   .strict();
 
+export const eventSchema = z.object({
+  type: z.enum(["onClick", "onChange", "onSubmit", "onLoad", "onRefresh"]),
+  actionId: z.string(),
+  args: z.record(z.string(), z.any()).optional(),
+});
+
+export const conditionSchema = z.object({
+  field: z.string(), // e.g. "state.loading"
+  operator: z.enum(["eq", "neq", "gt", "lt", "contains"]),
+  value: z.any(),
+});
+
 export const actionSchema = z.object({
   id: z.string(),
-  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data"]),
-  config: z.record(z.string(), z.any()),
-  trigger: z.enum(["manual", "on_load", "interval"]).optional(),
+  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data", "workflow"]),
+  config: z.object({
+    integrationId: z.string().optional(),
+    capability: z.string().optional(),
+    params: z.record(z.string(), z.any()).optional(), // Can use {{state.var}}
+    updates: z.record(z.string(), z.any()).optional(), // For state_mutation
+    pageId: z.string().optional(), // For navigation
+    steps: z.array(z.string()).optional(), // For workflow (action IDs)
+  }),
+  inputs: z.record(z.string(), z.string()).optional(), // Map args to internal params
 });
 
 export const componentSchema = z.object({
   id: z.string(),
   type: z.enum([
-    "table", "metric", "chart", "text", "form", "input", "button", "json", "code", "status", "container"
+    "table", "metric", "chart", "text", "form", "input", "select", "button", "json", "code", "status", "container", "modal"
   ]),
   label: z.string().optional(),
-  properties: z.record(z.string(), z.any()).default({}),
+  properties: z.record(z.string(), z.any()).default({}), // placeholder, defaultValue, options, content
   dataSource: z.object({
     type: z.enum(["static", "query", "state", "expression"]),
     value: z.any(),
   }).optional(),
-  actions: z.array(z.object({
-    trigger: z.string(), // e.g. "onClick", "onSubmit"
-    actionId: z.string(),
-  })).optional(),
+  events: z.array(eventSchema).optional(),
+  renderIf: conditionSchema.optional(),
   layout: z.object({
     x: z.number().optional(),
     y: z.number().optional(),
@@ -94,10 +111,12 @@ export const pageSchema = z.object({
   name: z.string(),
   path: z.string().optional(),
   components: z.array(componentSchema).default([]),
+  state: z.record(z.string(), z.any()).default({}), // Page-level state
+  events: z.array(eventSchema).optional(), // Page load events
   layoutMode: z.enum(["grid", "stack", "canvas"]).default("grid"),
 });
 
-export const dashboardSpecSchema = z
+export const toolSpecSchema = z
   .object({
     title: z.string().min(1),
     description: z.string().min(1).optional(),
@@ -107,147 +126,19 @@ export const dashboardSpecSchema = z
     // New Tool Architecture
     pages: z.array(pageSchema).default([]),
     actions: z.array(actionSchema).default([]),
-    state: z.record(z.string(), z.any()).default({}),
+    state: z.record(z.string(), z.any()).default({}), // Global state
     theme: z.object({
         mode: z.enum(["light", "dark", "system"]).optional(),
         primaryColor: z.string().optional()
     }).optional()
   })
-  .strict()
-  .superRefine((spec, ctx) => {
-    const metricIds = new Set<string>();
-    for (const metric of spec.metrics) {
-      if (metricIds.has(metric.id)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["metrics"],
-          message: `Duplicate metric id: ${metric.id}`,
-        });
-      }
-      metricIds.add(metric.id);
+  .strict();
 
-      if (metric.type === "sum" && !metric.field) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["metrics"],
-          message: `Metric "${metric.id}" is type "sum" and requires "field"`,
-        });
-      }
-    }
+export const dashboardSpecSchema = toolSpecSchema;
 
-    const viewIds = new Set<string>();
-    for (const view of spec.views) {
-      if (viewIds.has(view.id)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["views"],
-          message: `Duplicate view id: ${view.id}`,
-        });
-      }
-      viewIds.add(view.id);
+export type ToolSpec = z.infer<typeof toolSpecSchema>;
+export type DashboardSpec = ToolSpec; // Alias for backward compat
 
-      if (view.type === "table") {
-        if (!view.table) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `View "${view.id}" is type "table" and requires "table"`,
-          });
-        }
-        if (view.metricId) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `View "${view.id}" is type "table" and must not include "metricId"`,
-          });
-        }
-        continue;
-      }
-
-      if (view.table) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["views"],
-          message: `View "${view.id}" is type "${view.type}" and must not include "table"`,
-        });
-      }
-
-      if (view.type !== "query" && !view.metricId) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["views"],
-          message: `View "${view.id}" is type "${view.type}" and requires "metricId"`,
-        });
-        continue;
-      }
-
-      if (view.type !== "query" && view.metricId && !metricIds.has(view.metricId)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["views"],
-          message: `View "${view.id}" references missing metricId "${view.metricId}"`,
-        });
-      }
-
-      // Query View strict validation
-      if (view.type === "query") {
-        if (!view.integrationId) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" requires "integrationId"`,
-          });
-        }
-        if (!view.capability) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" requires "capability"`,
-          });
-        }
-        if (!view.params || typeof view.params !== "object") {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" requires "params"`,
-          });
-        }
-        if (!view.presentation || !view.presentation.kind) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" requires "presentation.kind"`,
-          });
-        }
-        if ((view as any).metricId) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" must not include "metricId"`,
-          });
-        }
-        if ((view as any).table) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `Query view "${view.id}" must not include "table"`,
-          });
-        }
-        // Disallow query-only keys on non-query views
-      } else {
-        if ((view as any).capability || (view as any).presentation) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["views"],
-            message: `View "${view.id}" must not include "capability" or "presentation" unless type is "query"`,
-          });
-        }
-      }
-    }
-  });
-
-export type DashboardSpec = z.infer<typeof dashboardSpecSchema>;
-
-export function parseDashboardSpec(input: unknown): DashboardSpec {
-  return dashboardSpecSchema.parse(input);
+export function parseDashboardSpec(input: unknown): ToolSpec {
+  return toolSpecSchema.parse(input);
 }

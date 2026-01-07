@@ -36,19 +36,47 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
   const [activePageId, setActivePageId] = React.useState<string | null>(null);
   const [toolState, setToolState] = React.useState(spec.state || {});
 
-  const executeAction = React.useCallback((actionId?: string) => {
+  // Update state when spec changes (only if keys are missing)
+  React.useEffect(() => {
+    if (spec.state) {
+      setToolState(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [k, v] of Object.entries(spec.state)) {
+          if (!(k in next)) {
+            next[k] = v;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [spec.state]);
+
+  const executeAction = React.useCallback(async (actionId?: string, args?: Record<string, any>) => {
       if (!actionId) return;
       const action = spec.actions?.find(a => a.id === actionId);
       if (!action) return;
 
+      console.log("Executing Action:", action.type, action.id, args);
+
       if (action.type === "state_mutation") {
           const updates = action.config?.updates || {};
-          setToolState((prev: any) => ({ ...prev, ...updates }));
+          // Merge args into updates if needed
+          const mergedUpdates = { ...updates, ...args };
+          setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
       }
+      
       if (action.type === "navigation") {
           if (action.config?.pageId) setActivePageId(action.config.pageId);
       }
-      // TODO: Implement integration_call
+
+      if (action.type === "integration_call") {
+          // TODO: This needs to call the engine. 
+          // For now, we simulate by updating state if the action expects output
+          // In a real implementation, this would trigger a useQuery re-fetch or mutation
+          console.warn("Integration calls require engine connectivity");
+      }
   }, [spec.actions]);
 
   React.useEffect(() => {
@@ -86,18 +114,18 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                  {activePage.components.map(comp => {
                     // Basic Component Rendering
                      if (comp.type === "button") {
-                         const onClickAction = comp.actions?.find(a => a.trigger === "onClick")?.actionId;
-                         return (
-                             <div key={comp.id} className="col-span-1">
-                                 <button 
-                                     onClick={() => executeAction(onClickAction)}
-                                     className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                                 >
-                                     {comp.label || "Button"}
-                                 </button>
-                             </div>
-                         )
-                     }
+                          const onClickAction = comp.events?.find(a => a.type === "onClick")?.actionId;
+                          return (
+                              <div key={comp.id} className="col-span-1">
+                                  <button 
+                                      onClick={() => executeAction(onClickAction)}
+                                      className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                                  >
+                                      {comp.label || "Button"}
+                                  </button>
+                              </div>
+                          )
+                      }
                      if (comp.type === "text") {
                          // Simple interpolation
                          let content = String(comp.properties?.content || comp.label || "");
@@ -108,8 +136,29 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
                                  {content}
                              </div>
                          )
-                     }
-                     if (comp.type === "input") {
+                      }
+                      if (comp.type === "select") {
+                          const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
+                          const options = comp.properties?.options || []; // [{ label, value }]
+                          return (
+                              <div key={comp.id} className="col-span-1 space-y-2">
+                                  <label className="text-sm font-medium leading-none">{comp.label}</label>
+                                  <select 
+                                      className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                                      value={bindKey ? toolState[bindKey] || "" : undefined}
+                                      onChange={(e) => {
+                                          if (bindKey) setToolState((prev: any) => ({ ...prev, [bindKey]: e.target.value }));
+                                      }}
+                                  >
+                                      <option value="" disabled>Select an option</option>
+                                      {options.map((opt: any) => (
+                                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                      ))}
+                                  </select>
+                              </div>
+                          )
+                      }
+                      if (comp.type === "input") {
                          const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
                          return (
                              <div key={comp.id} className="col-span-1 space-y-2">
