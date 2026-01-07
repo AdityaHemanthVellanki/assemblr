@@ -5,10 +5,13 @@ import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 import { getCapability } from "@/lib/capabilities/registry";
-import { ExecutionPlan } from "@/lib/ai/planner";
+import { ExecutionPlan } from "@/lib/execution/types";
 
 export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: boolean; error?: string } {
   // 1. Static Registry Check
+  if (!plan.capabilityId) {
+     return { valid: false, error: "Plan missing capabilityId" };
+  }
   const capability = getCapability(plan.capabilityId);
   if (!capability) {
     return { valid: false, error: `Unknown capability ID: ${plan.capabilityId}` };
@@ -34,7 +37,7 @@ export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: b
       }
     }
   }
-  for (const key of Object.keys(plan.params)) {
+  for (const key of Object.keys(params)) {
     if (!capability.supportedFields.includes(key)) {
       // PERMISSIVE: Warn but do not fail.
       // The executor should ignore unsupported params.

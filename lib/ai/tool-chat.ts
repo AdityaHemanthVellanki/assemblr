@@ -2,303 +2,27 @@ import "server-only";
 
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { dashboardSpecSchema, type DashboardSpec } from "@/lib/spec/dashboardSpec";
-import { planChatResponse } from "./chat-planner";
-import { resolveIntegrations } from "@/lib/integrations/resolveIntegrations";
-import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
-import { getIntegrationUIConfig } from "@/lib/integrations/registry";
-import type { Json } from "@/lib/supabase/database.types";
-
-import { getDiscoveredSchemas } from "@/lib/schema/store";
+import { compileIntent } from "./planner";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
-import { GitHubExecutor } from "@/lib/integrations/executors/github";
-import { LinearExecutor } from "@/lib/integrations/executors/linear";
-import { SlackExecutor } from "@/lib/integrations/executors/slack";
-import { NotionExecutor } from "@/lib/integrations/executors/notion";
-import { GoogleExecutor } from "@/lib/integrations/executors/google";
-import { IntegrationExecutor, ExecutionResult } from "@/lib/execution/types";
-import { executeDashboard } from "@/lib/execution/engine";
+import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
+import { IntegrationRuntime } from "@/lib/core/runtime";
+import { getDiscoveredSchemas } from "@/lib/schema/store";
+import { findMetrics } from "@/lib/metrics/store";
 
-const EXECUTORS: Record<string, IntegrationExecutor> = {
-  github: new GitHubExecutor(),
-  linear: new LinearExecutor(),
-  slack: new SlackExecutor(),
-  notion: new NotionExecutor(),
-  google: new GoogleExecutor(),
+// Runtime Registry
+const RUNTIMES: Record<string, IntegrationRuntime> = {
+  github: new GitHubRuntime(),
+  // Add others as they are refactored
 };
-
-// --- Integration Context Resolvers ---
-function parseExplicitRepo(message: string): { owner?: string; repo?: string } {
-  const urlMatch = message.match(/github\.com\/([\w-]+)\/([\w.-]+)/i);
-  if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] };
-  const pairMatch = message.match(/\b([\w-]+)\/([\w.-]+)\b/);
-  if (pairMatch) return { owner: pairMatch[1], repo: pairMatch[2] };
-  return {};
-}
-
-async function resolveGitHubContext(orgId: string, message: string, mode: "create" | "chat", requestedRepo?: string): Promise<{
-  owner: string;
-  repo?: string;
-  ambiguity?: { repos: string[] };
-}> {
-  const token = await getValidAccessToken(orgId, "github");
-  // 1) Owner via /user
-  const userRes = await fetch("https://api.github.com/user", {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
-  });
-  if (!userRes.ok) {
-    throw new Error(`Failed to resolve GitHub user: ${userRes.statusText}`);
-  }
-  const user = await userRes.json();
-  const owner = (user?.login as string) || "";
-  if (!owner) throw new Error("Failed to resolve GitHub owner from token");
-  // 2) Repos via /user/repos
-  const reposRes = await fetch("https://api.github.com/user/repos?per_page=100", {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" },
-  });
-  if (!reposRes.ok) {
-    throw new Error(`Failed to list repositories: ${reposRes.statusText}`);
-  }
-  const repos = (await reposRes.json()) as Array<{ name: string; full_name: string; stargazers_count?: number; pushed_at?: string; updated_at?: string }>;
-  const explicit = parseExplicitRepo(message);
-  const requested = requestedRepo || explicit.repo;
-  if (requested && requested.trim().length > 0) {
-    const match = repos.find((r) => r.name.toLowerCase() === requested.toLowerCase() || r.full_name.toLowerCase() === `${explicit.owner ?? owner}/${requested.toLowerCase()}`);
-    if (match) return { owner, repo: match.name };
-  }
-  if (repos.length === 0) return { owner, repo: undefined, ambiguity: { repos: [] } };
-  if (repos.length === 1) return { owner, repo: repos[0].name };
-  if (mode === "create") {
-    const byPushed = [...repos].sort((a, b) => new Date(b.pushed_at || 0).getTime() - new Date(a.pushed_at || 0).getTime());
-    const chosen = byPushed[0] || [...repos].sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))[0] || [...repos].sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime())[0];
-    if (chosen) return { owner, repo: chosen.name };
-    return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
-  }
-  return { owner, repo: undefined, ambiguity: { repos: repos.map((r) => r.name) } };
-}
-
-// --- Schema Definitions ---
-
-const CORE_SPEC_INSTRUCTIONS = `
-The "spec" object must strictly follow this schema:
-{
-  "title": string,
-  "description"?: string,
-  "metrics": Array<{
-    "id": string,
-    "label": string,
-    "type": "count" | "sum",
-    "table": string,
-    "field"?: string,
-    "groupBy"?: "day",
-    "integrationId": string
-  }>,
-  "views": Array<{
-    "id": string,
-    "type": "metric" | "line_chart" | "bar_chart" | "table",
-    "metricId"?: string,
-    "table"?: string,
-    "integrationId"?: string,
-    "query"?: {
-      "filters"?: Record<string, any>,
-      "sort"?: { "field": string, "direction": "asc" | "desc" },
-      "limit"?: number,
-      "groupBy"?: string[]
-    }
-  }>
-}
-
-Metric rules:
-- count: counts rows. No field.
-- sum: sums field. Field required.
-- groupBy: "day" or omitted.
-- table: MUST be one of the resources listed in "Available Schemas".
-- integrationId: MUST be the integration ID providing the table.
-
-View rules:
-- metric, line_chart, bar_chart: require metricId.
-- table: requires table AND integrationId. No metricId.
-- query: Optional. Use for filtering, sorting, or limiting table views.
-- Every metric.id and view.id must be unique.
-`;
-
-const SYSTEM_PROMPT = `
-You are Assemblr AI, an expert product engineer building internal tools.
-Your goal is to help the user build and modify a dashboard tool.
-
-CRITICAL:
-- If the user asks a question (e.g., "Show me latest commits"), just answer it using the provided data.
-- Do NOT mention dashboards, tables, schemas, fields, or "connecting schemas" in your explanation unless the user EXPLICITLY asked to modify the dashboard (e.g., "Save this", "Create a chart").
-- If you are just showing data, keep it simple. "Here are the commits..."
-
-If the user asks to connect an integration, do not explain how. The system will show connection controls.
-
-You will receive:
-1. The current tool specification (if any).
-2. A history of the conversation.
-3. The user's latest message.
-
-You must output a JSON object with the following structure:
-{
-  "explanation": string,
-  "spec": object
-}
-
-"explanation": A brief, helpful message to the user describing the changes you made, or answering their question.
-"spec": The FULL, valid, updated dashboard specification. If no changes are needed, return the current spec exactly.
-
-AVAILABLE SCHEMAS:
-{{SCHEMAS}}
-
-${CORE_SPEC_INSTRUCTIONS}
-
-Conventions:
-- Use readable titles and labels.
-- Do NOT generate metrics or views unless you have confirmed an integration is connected.
-- Use only integrations listed as connected: {{CONNECTED}}. Do not ask to connect any of these.
-- Do NOT fabricate data.
-- Prefer simple, effective dashboards.
-- If you use an existing metric, mention that it might be cached.
-
-STRICT RULES:
-- Metrics define data sources (table, integrationId) and aggregation.
-- Table Views MUST include table and integrationId.
-- Chart Views reference metrics ONLY via metricId.
-
-VALID EXAMPLE:
-{
-  "title": "Engineering",
-  "metrics": [
-    { "id": "m1", "label": "Total Repos", "type": "count", "table": "repos", "integrationId": "github" }
-  ],
-  "views": [
-    { "id": "v1", "type": "metric", "metricId": "m1" },
-    { 
-      "id": "v2", 
-      "type": "table", 
-      "table": "commits", 
-      "integrationId": "github",
-      "query": { "limit": 5, "sort": { "field": "date", "direction": "desc" } }
-    }
-  ]
-}
-
-INVALID EXAMPLE (do NOT generate):
-{
-  "title": "Engineering",
-  "metrics": [
-    { "id": "m1", "label": "Total Repos", "type": "count", "table": "repos", "integrationId": "github" }
-  ],
-  "views": [
-    { "id": "v1", "type": "metric", "metricId": "m1", "table": "repos", "integrationId": "github" }
-  ]
-}
-`;
-
-const chatResponseSchema = z.object({
-  explanation: z.string(),
-  spec: dashboardSpecSchema,
-  metadata: z.object({
-    missing_integration_id: z.string().optional(),
-    action: z.enum(["connect_integration"]).optional(),
-  }).optional(),
-});
-
-type LlmToolChatResponse = z.infer<typeof chatResponseSchema>;
-
-export type IntegrationCTA = {
-  id: string;
-  name: string;
-  logoUrl?: string;
-  connected: boolean;
-  label: string;
-  action: string;
-};
-
-export type ToolChatMessage =
-  | { type: "text"; content: string }
-  | { type: "integration_action"; integrations: IntegrationCTA[] };
 
 export type ToolChatResponse = {
   explanation: string;
-  message: ToolChatMessage;
+  message: { type: "text"; content: string };
   spec: DashboardSpec;
-  metadata?: Json | null;
+  metadata?: any;
 };
-
-// --- Helper: Spec Generation ---
-
-async function generateSpecUpdate(input: {
-  currentSpec: DashboardSpec;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
-  userMessage: string;
-  systemPrompt?: string;
-}): Promise<LlmToolChatResponse> {
-  const systemMessage = {
-    role: "system" as const,
-    content: (input.systemPrompt ?? SYSTEM_PROMPT) + `\n\nCurrent Spec: ${JSON.stringify(input.currentSpec)}`,
-  };
-
-  const history = input.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
-
-  const lastMessage = {
-    role: "user" as const,
-    content: input.userMessage,
-  };
-
-  try {
-    const response = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
-      messages: [systemMessage, ...history, lastMessage],
-      temperature: 0.2,
-      max_tokens: 1200,
-      response_format: { type: "json_object" },
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("AI returned empty content");
-
-    // Strict JSON validation
-    if (!content.trim().startsWith("{")) {
-       console.error("AI returned non-JSON response (parsed)", { content });
-       throw new Error("AI returned non-JSON response");
-    }
-
-    try {
-      const json = JSON.parse(content);
-      if (json && json.spec && json.spec.views && Array.isArray(json.spec.views)) {
-        json.spec.views = json.spec.views.map((v: any) => {
-          if (v && (v.type === "metric" || v.type === "line_chart" || v.type === "bar_chart")) {
-            const { table, integrationId, ...rest } = v;
-            return rest;
-          }
-          return v;
-        });
-      }
-      return chatResponseSchema.parse(json);
-    } catch (err) {
-      console.error("AI returned invalid response", { content, err });
-      throw err;
-    }
-  } catch (err) {
-    console.error("Azure OpenAI error", err);
-    throw err;
-  }
-}
-
-// --- Main Orchestrator ---
-
-import { planExecution } from "./planner";
-import { validatePlanAgainstCapabilities } from "@/lib/execution/validation";
-
-import { findMetrics } from "@/lib/metrics/store";
-
-// (removed unused ExecutionPlan import)
 
 export async function processToolChat(input: {
   orgId: string;
@@ -312,725 +36,152 @@ export async function processToolChat(input: {
 }): Promise<ToolChatResponse> {
   getServerEnv();
 
-  // 0. Fetch Discovered Schemas and Existing Metrics
-  const schemasForPlanning = await getDiscoveredSchemas(input.orgId);
-  const existingMetrics = await findMetrics(input.orgId);
+  // 1. Compile Intent
+  const schemas = await getDiscoveredSchemas(input.orgId);
+  const metrics = await findMetrics(input.orgId);
+  
+  const intent = await compileIntent(
+    input.userMessage,
+    input.messages,
+    input.connectedIntegrationIds,
+    schemas,
+    metrics,
+    input.mode
+  );
 
-  // 1. Run Capability Planner
-  // We only run this if the user seems to be requesting data/modification
-  // For now, run it for every message to be safe, or check intent.
-  // The planner itself will decide if it can map intent.
-  let executionPlans: any[] = [];
-  try {
-    const planResult = await planExecution(
-      input.userMessage, 
-      input.messages,
-      input.connectedIntegrationIds, 
-      schemasForPlanning,
-      existingMetrics,
-      input.mode
-    );
+  console.log("[Orchestrator] Compiled Intent:", JSON.stringify(intent, null, 2));
 
-    // CRITICAL: If the planner gives an explanation without plans (e.g. asking for clarification), return immediately.
-    // This prevents falling through to schema-dependent logic.
-    if ((!planResult.plans || planResult.plans.length === 0) && (planResult.explanation || planResult.error)) {
-        if (input.mode === "create") {
-          return {
-            explanation: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific.",
-            message: { type: "text", content: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific." },
-            spec: input.currentSpec,
-            metadata: { persist: false },
-          };
-        }
-        return {
-            explanation: planResult.explanation || planResult.error || "I could not understand the request.",
-            message: { type: "text", content: planResult.explanation || planResult.error || "Please clarify." },
-            spec: input.currentSpec
-        };
-    }
-
-    if (planResult.error) {
-       console.warn("Planning error:", planResult.error);
-       // If there are plans, we might proceed? No, usually error means failure.
-       // But if we handled the explanation above, this might be a system error?
-       // Let's assume if plans exist, we ignore error or log it.
-    }
-    
-    if (planResult.plans) {
-       executionPlans = planResult.plans;
-       
-       // GitHub Context Rewrite: inject owner implicitly; resolve repo ambiguity
-       if (input.connectedIntegrationIds.includes("github")) {
-         for (const p of executionPlans) {
-           if (p.integrationId === "github" && p.resource === "commits") {
-             const requestedRepo = (p.params as any)?.repo as string | undefined;
-             try {
-               const ctx = await resolveGitHubContext(input.orgId, input.userMessage, input.mode, requestedRepo);
-               p.params = { ...(p.params || {}), owner: ctx.owner };
-               if (ctx.repo) {
-                 (p.params as any).repo = ctx.repo;
-               } else if (ctx.ambiguity && ctx.ambiguity.repos.length > 1 && !requestedRepo && input.mode === "chat") {
-                 const list = ctx.ambiguity.repos.slice(0, 10).join(", ");
-                 return {
-                   explanation: "Which repository should I use? You have multiple repositories.",
-                   message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${ctx.ambiguity.repos.length > 10 ? " ..." : ""}` },
-                   spec: input.currentSpec,
-                 };
-               } else if (ctx.ambiguity && ctx.ambiguity.repos.length === 0) {
-                 return {
-                   explanation: "No repositories found in your GitHub account.",
-                   message: { type: "text", content: "No repositories found in your GitHub account." },
-                   spec: input.currentSpec,
-                 };
-               }
-             } catch (e) {
-               return {
-                 explanation: "Failed to resolve GitHub context.",
-                 message: { type: "text", content: "Authentication or context resolution failed for GitHub." },
-                 spec: input.currentSpec,
-               };
-             }
-           }
-         }
-       }
-       
-       // Validate Plans
-       for (const p of executionPlans) {
-         const val = validatePlanAgainstCapabilities(p);
-         if (!val.valid) {
-           console.warn(`Plan validation failed: ${val.error}`);
-         }
-       }
-    }
-  } catch (err) {
-    console.warn("Planning step failed", err);
-  }
-
-  const isCreateMode = input.mode === "create";
-  // 4. Handle Execution Plans (Execution-First Pipeline)
-  const successfulExecutions: Array<{ plan: any; result: ExecutionResult }> = [];
+  // 2. Dispatch & Execute
+  let executionResults: any[] = [];
   let executionError: string | undefined;
-  let lastErrorIntegrationId: string | undefined;
 
-  if (!isCreateMode) {
-    for (const plan of executionPlans) {
-      try {
-        const executor = EXECUTORS[plan.integrationId];
-        if (!executor) {
-          console.warn(`No executor for ${plan.integrationId}`);
+  if (intent.intent_type === "chat" || intent.intent_type === "analyze") {
+    if (intent.tasks && intent.tasks.length > 0) {
+      for (const task of intent.tasks) {
+        // Resolve Runtime
+        // We need to know which integration owns this capability.
+        // For now, we iterate runtimes to find it, or use a registry map.
+        // Optimization: Capability ID usually prefixed, e.g. "github_commits_list"
+        const integrationId = task.capabilityId.split("_")[0]; 
+        const runtime = RUNTIMES[integrationId];
+        
+        if (!runtime) {
+          console.warn(`No runtime for integration: ${integrationId}`);
           continue;
         }
-        const accessToken = await getValidAccessToken(input.orgId, plan.integrationId);
-        const result = await executor.execute({
-          plan: {
-            viewId: randomUUID(),
-            integrationId: plan.integrationId,
-            resource: plan.resource,
-            params: plan.params,
-            // @ts-ignore - Pass intent for executor logic
-            intent: plan.intent
-          },
-          credentials: { access_token: accessToken }
-        });
-        if (result.status === "success" && Array.isArray(result.rows)) {
-           successfulExecutions.push({ plan, result });
-        } else if (result.status === "error") {
-           console.warn(`Execution failed for plan ${plan.capabilityId}: ${result.error}`);
-           executionError = result.error;
-           lastErrorIntegrationId = plan.integrationId;
-        } else if (result.status === "clarification_needed") {
-           if (plan.integrationId === "github" && plan.resource === "commits") {
-             const options = Array.isArray(result.rows)
-               ? (result.rows as Array<any>).map((r: any) => r.repo).filter(Boolean)
-               : [];
-             const list = options.slice(0, 10).join(", ");
-             return {
-               explanation: "Which repository should I use? You have multiple repositories.",
-               message: { type: "text", content: `Which repository should I use? You have multiple repositories.\nOptions: ${list}${options.length > 10 ? " ..." : ""}` },
-               spec: input.currentSpec,
-             };
-           }
+
+        try {
+          const token = await getValidAccessToken(input.orgId, integrationId);
+          // Context Resolution
+          const context = await runtime.resolveContext(token);
+          const capability = runtime.capabilities[task.capabilityId];
+          
+          if (!capability) {
+             throw new Error(`Capability ${task.capabilityId} not found in runtime ${integrationId}`);
+          }
+
+          // Execute
+          const result = await capability.execute(task.params, context);
+          executionResults.push({ task, result });
+        } catch (e) {
+          console.error(`Task ${task.id} failed:`, e);
+          executionError = e instanceof Error ? e.message : "Unknown execution error";
         }
-      } catch (err) {
-        console.error("Ephemeral execution failed", err);
-        executionError = err instanceof Error ? err.message : "Unknown error";
-        lastErrorIntegrationId = plan.integrationId;
       }
     }
   }
 
-  // --- BRANCH A: EPHEMERAL MODE ---
-  if (!isCreateMode) {
-      if (successfulExecutions.length > 0) {
-          let content = "";
-          let totalRows = 0;
-
-          for (const { plan, result } of successfulExecutions) {
-              const count = result.rows.length;
-              totalRows += count;
-
-              if (count > 0) {
-                  // Specific Formatting for known resources
-                  if (plan.resource === "commits") {
-                      content += `### Latest commits in ${plan.params?.repo || "repo"}:\n\n`;
-                      // Limit to 5 for chat readability
-                      content += result.rows.slice(0, 5).map((row: any) => {
-                          const msg = row.message?.split("\n")[0] || "No message";
-                          const author = row.author?.name || row.author?.login || "Unknown";
-                          const date = row.date ? new Date(row.date).toLocaleString() : "Unknown date";
-                          const sha = row.sha ? row.sha.substring(0, 7) : "???";
-                          return `- **${msg}**\n  - Author: ${author}\n  - Date: ${date}\n  - SHA: \`${sha}\``;
-                      }).join("\n");
-                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
-                      content += "\n\n";
-                  } else if (plan.resource === "issues") {
-                      content += `### Issues:\n\n`;
-                      content += result.rows.slice(0, 5).map((row: any) => {
-                          return `- **#${row.number} ${row.title}** (${row.state})`;
-                      }).join("\n");
-                      if (count > 5) content += `\n\n*(and ${count - 5} more)*`;
-                      content += "\n\n";
-                  } else {
-                      // Generic Fallback
-                       const firstRow = result.rows[0] as any;
-                       if (firstRow?.count !== undefined && Object.keys(firstRow).length === 1) {
-                           content += `**${plan.resource}**: ${firstRow.count}\n\n`;
-                       } else {
-                          content += `**${plan.resource}** (${count} items):\n`;
-                          content += "```json\n" + JSON.stringify(result.rows.slice(0, 3), null, 2) + "\n```\n";
-                          if (count > 3) content += `*(and ${count - 3} more)*\n`;
-                          content += "\n";
-                      }
-                  }
-              } else {
-                  content += `**${plan.resource}**: No items found.\n\n`;
-              }
-          }
-          
-          // Only append the ephemeral footer if we actually showed data
-          if (totalRows > 0) {
-             // Data is shown. User can choose to save it via subsequent command.
-          }
-
-          // TRUTHFULNESS CHECK:
-          // If execution succeeded but returned no data, simply state that.
-          const explanation = totalRows > 0 
-            ? "Here are the results from your query:" 
-            : "I executed the search but found no matching data.";
-
+  // 3. Output Generation
+  
+  // Branch A: Create Mode (Mini App Materialization)
+  if (input.mode === "create") {
+      if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
           return {
-              explanation,
-              message: { type: "text", content: content || explanation },
-              spec: input.currentSpec,
-              metadata: { 
-                  source: "ephemeral",
-                  data: successfulExecutions.map(e => ({ resource: e.plan.resource, rows: e.result.rows })) as Json
-              }
-          };
-      } else if (executionError) {
-          const msg = executionError.toLowerCase();
-          const needsReconnect =
-            msg.includes("integration is not connected") ||
-            msg.includes("failed to decrypt") ||
-            msg.includes("token refresh failed") ||
-            msg.includes("missing credentials");
-          
-          if (needsReconnect && lastErrorIntegrationId) {
-            const integrations = [{
-              id: lastErrorIntegrationId,
-              name: getIntegrationUIConfig(lastErrorIntegrationId).name,
-              logoUrl: getIntegrationUIConfig(lastErrorIntegrationId).logoUrl,
-              connected: input.connectedIntegrationIds.includes(lastErrorIntegrationId),
-              label: `Reconnect ${getIntegrationUIConfig(lastErrorIntegrationId).name}`,
-              action: `/api/oauth/start?${new URLSearchParams({ provider: lastErrorIntegrationId, source: "chat" }).toString()}`
-            } satisfies IntegrationCTA];
-            return {
-              explanation: `Authentication for ${integrations[0].name} is invalid. Please reconnect.`,
-              message: { type: "integration_action", integrations },
-              spec: input.currentSpec,
-              metadata: { type: "integration_action", integrations },
-            };
-          }
-          
-          return {
-              explanation: `I couldn't fetch the data: ${executionError}`,
-              message: { type: "text", content: "Execution failed." },
+              explanation: "I couldn't determine how to build a tool from your request. Please clarify.",
+              message: { type: "text", content: "I couldn't determine how to build a tool from your request. Please clarify." },
               spec: input.currentSpec
           };
       }
-      // If no plans and no error, fall through (unlikely, planner usually gives plans or error)
-  }
 
-  // --- BRANCH B: CREATE MODE ---
-  // Strict Create Mode: Do NOT execute runtime queries unless a view exists.
-  // Instead, construct persistent QueryViews directly from validated plans.
-  if (isCreateMode) {
-    const validPlans = executionPlans.filter((p) => {
-      // NOTE: We do NOT block creation if validation fails.
-      // We log the warning, but we try to persist the intent.
-      // The renderer will show the error.
-      const val = validatePlanAgainstCapabilities(p);
-      if (!val.valid) {
-          console.warn(`[CreateMode] Plan validation warning: ${val.error}. Persisting anyway to allow UI debugging.`);
+      const mutation = intent.tool_mutation;
+      if (!mutation) {
+          return {
+              explanation: "I understood your request but couldn't generate a valid tool specification.",
+              message: { type: "text", content: "I understood your request but couldn't generate a valid tool specification." },
+              spec: input.currentSpec
+          };
       }
-      return true; 
-    });
 
-    const beforeViewIds = new Set(input.currentSpec.views.map((v) => v.id));
-    const newQueryViews: DashboardSpec["views"] = [];
-    
-    // Check for Tool Mutations (Pages, Components, Actions)
-    // The planner output structure has changed to support toolMutation.
-    // If we have toolMutation, we merge it into the spec.
-    let updatedSpec = { ...input.currentSpec };
-    let hasToolMutation = false;
+      // Apply Mutation to Spec
+      let updatedSpec = { ...input.currentSpec };
+      updatedSpec.kind = "mini_app"; // Enforce Kind
 
-    for (const p of executionPlans) {
-        if (p.toolMutation) {
-            hasToolMutation = true;
-            const m = p.toolMutation;
-            
-            // FORCE Mini-App Kind
-            updatedSpec.kind = "mini_app";
+      if (mutation.pagesAdded) {
+          updatedSpec.pages = [...(updatedSpec.pages || []), ...mutation.pagesAdded];
+      }
+      // If components added without page, add to first page
+      if (mutation.componentsAdded && mutation.componentsAdded.length > 0) {
+          if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
+              updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
+          }
+          updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...mutation.componentsAdded];
+      }
+      if (mutation.actionsAdded) {
+          updatedSpec.actions = [...(updatedSpec.actions || []), ...mutation.actionsAdded];
+      }
+      if (mutation.stateAdded) {
+          updatedSpec.state = { ...(updatedSpec.state || {}), ...mutation.stateAdded };
+      }
 
-            if (m.pagesAdded) {
-                updatedSpec.pages = [...(updatedSpec.pages || []), ...m.pagesAdded];
-            }
-            if (m.componentsAdded) {
-                // If "componentsAdded" is top-level, we assume they belong to the active page or a default page.
-                // For robustness, if no page exists, create one.
-                if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
-                    updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
-                }
-                // Add components to the first page if not specified otherwise
-                // Ideally planner specifies pagesAdded with components inside.
-                // If componentsAdded is loose, we append to first page.
-                updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...m.componentsAdded];
-            }
-            if (m.actionsAdded) {
-                updatedSpec.actions = [...(updatedSpec.actions || []), ...m.actionsAdded];
-            }
-            if (m.stateAdded) {
-                updatedSpec.state = { ...(updatedSpec.state || {}), ...m.stateAdded };
-            }
-        }
-    }
-
-    // Fallback: If no tool mutation but we have valid plans (legacy path or query views), we create QueryViews
-    if (!hasToolMutation) {
-         // LEGACY DASHBOARD PATH
-         for (const p of validPlans) {
-             const id = `query_${p.integrationId}_${p.capabilityId}_${randomUUID().slice(0, 8)}`;
-             newQueryViews.push({
-                 id,
-                 type: "query",
-                 integrationId: p.integrationId,
-                 // @ts-ignore intentional: new view field
-                 capability: p.capabilityId,
-                 // @ts-ignore intentional: new view field
-                 params: { ...(p.params || {}) },
-                 // @ts-ignore intentional: new view field
-                 presentation: { kind: "list" },
-             } as any);
-         }
-         updatedSpec = {
-             ...updatedSpec,
-             views: [...updatedSpec.views, ...newQueryViews],
-         };
-         
-         // Continue with legacy validation and execution
-         let specWithViews = materializeCreateMode(updatedSpec, executionPlans);
-         const results = await executeDashboard(input.orgId, specWithViews);
-         const validation = validateCreateModeSpec(specWithViews, results);
-         
-         if (!validation.valid) {
-             return {
-                 explanation: "I couldn’t persist these changes because validation failed.",
-                 message: { type: "text", content: "I couldn’t persist these changes because validation failed." },
-                 spec: input.currentSpec,
-                 metadata: { persist: false, error: validation.error },
-             };
-         }
-         
-         const createdViewIds = specWithViews.views.map(v => v.id).filter(id => !beforeViewIds.has(id));
-         if (createdViewIds.length === 0) {
-            return {
-                explanation: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific.",
-                message: { type: "text", content: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific." },
-                spec: input.currentSpec,
-                metadata: { persist: false },
-            };
-         }
-         
-         return {
-             explanation: "Added validated, renderable views to your dashboard.",
-             message: { type: "text", content: "Added validated, renderable views to your dashboard." },
-             spec: specWithViews,
-             metadata: { persist: true },
-         };
-     } else {
-         // MINI APP PATH - STRICT VALIDATION
-         
-         // 1. Check for Executable UI (Pages + Components)
-         const hasPages = updatedSpec.pages && updatedSpec.pages.length > 0;
-         const hasComponents = updatedSpec.pages?.some(p => p.components && p.components.length > 0);
-         
-         if (!hasPages || !hasComponents) {
-             // Throw retryable error as per requirements
-             // Since we are inside the function, we can return a specific error response or throw.
-             // The prompt says: "throw new RetryablePlannerError".
-             // We don't have that class defined, but we can return the failure response.
-             console.error("[CreateMode] MiniApp generation failed: No executable UI produced.");
-             return {
-                 explanation: "I tried to build the app, but I couldn't generate a valid user interface. Please try again.",
-                 message: { type: "text", content: "I tried to build the app, but I couldn't generate a valid user interface. Please try again." },
-                 spec: input.currentSpec,
-                 metadata: { persist: false, error: "Create Mode request did not generate executable UI" },
-             };
-         }
-
-         const explanation = "Updated your tool specification with new app capabilities.";
-         return {
-             explanation,
-             message: { type: "text", content: explanation },
-             spec: updatedSpec,
-             metadata: { persist: true },
-         };
-     }
-  }
-
-  // Chat Mode: High-level intent planning for integration CTAs and capability coverage
-  const plan = await planChatResponse(input.userMessage);
-  console.log("[Chat Mode] Plan:", plan);
-  console.log("Chat execution context", {
-    requestedIntegration: "github",
-    isConnected: input.connectedIntegrationIds.includes("github"),
-  });
-
-  function buildCtas(integrationIds: string[]) {
-    const uniq = Array.from(new Set(integrationIds));
-    return uniq.map((id: string) => {
-      let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
-      let logoUrl: string | undefined;
-      try {
-        const ui = getIntegrationUIConfig(id);
-        name = ui.name;
-        logoUrl = ui.logoUrl;
-      } catch {}
-      const connected = input.connectedIntegrationIds.includes(id);
-      
-      // If manual mode, and not selected, we prompt to Add
-      // If manual mode, and selected but not connected, we prompt to Connect
-      // If auto mode, and not connected, we prompt to Connect
-
-      // Default behavior (Auto-like):
-      const label = connected ? `Reconnect ${name}` : `Connect ${name}`;
-      const params = new URLSearchParams();
-      params.set("provider", id);
-      params.set("source", "chat");
-      const action = `/api/oauth/start?${params.toString()}`;
-      return { id, name, logoUrl, connected, label, action } satisfies IntegrationCTA;
-    });
-  }
-
-  // Handle Manual Mode Restrictions
-  if (input.integrationMode === "manual") {
-    const selected = input.selectedIntegrationIds || [];
-
-    // 1. Strict Rule: All selected integrations MUST be connected.
-    // If any selected integration is not connected, block execution immediately.
-    const disconnectedSelected = selected.filter((id) => !input.connectedIntegrationIds.includes(id));
-    
-    if (disconnectedSelected.length > 0) {
-      const ctas = disconnectedSelected.map((id) => {
-        let name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
-        try {
-           const ui = getIntegrationUIConfig(id);
-           name = ui.name;
-        } catch {}
-
-        const params = new URLSearchParams();
-        params.set("provider", id);
-        params.set("source", "chat");
-        return {
-          id,
-          name,
-          connected: false,
-          label: `Connect ${name}`,
-          action: `/api/oauth/start?${params.toString()}`,
-        } satisfies IntegrationCTA;
-      });
-
-      const names = ctas.map((c) => c.name).join(", ");
-      return {
-        explanation: `${names} is not connected.`,
-        message: { type: "integration_action", integrations: ctas },
-        spec: input.currentSpec,
-        metadata: { type: "integration_action", integrations: ctas },
-      };
-    }
-
-    const requestedButNotSelected = plan.requested_integration_ids.filter((id: string) => !selected.includes(id));
-
-    if (requestedButNotSelected.length > 0) {
-      // Return error asking to add them
-      // We can use the 'integration_action' type but with a special label?
-      // Or just text + client side handling?
-      // Requirement: "Show error with option to add it. [ Add GitHub ]"
-      
-      // We'll return an integration action where the action is effectively "select it"
-      // But for now, let's just return the standard connect CTA but maybe the client handles "Add" vs "Connect"?
-      // Actually, if it's not selected, the client needs to know to select it.
-      // The current system returns "action" url.
-      
-      // Let's rely on the client to show the right UI based on selection state?
-      // No, the backend drives the chat.
-      
-      const ctas = requestedButNotSelected.map((id: string) => {
-         const name = INTEGRATIONS.find((i) => i.id === id)?.name ?? id;
-         return {
-           id,
-           name,
-           connected: input.connectedIntegrationIds.includes(id),
-             label: `Add ${name}`,
-             action: "ui:select_integration" // Special action for client
-         } satisfies IntegrationCTA;
-      });
+      // Verify Contract
+      const hasUI = updatedSpec.pages?.some(p => p.components.length > 0);
+      if (!hasUI) {
+          return {
+              explanation: "I failed to generate a visible user interface. Please try again.",
+              message: { type: "text", content: "I failed to generate a visible user interface. Please try again." },
+              spec: input.currentSpec
+          };
+      }
 
       return {
-        explanation: `This action requires ${ctas.map(c => c.name).join(", ")}. Please add them to your selection.`,
-        message: { type: "integration_action", integrations: ctas },
-        spec: input.currentSpec,
-        metadata: { type: "integration_action", integrations: ctas },
+          explanation: "I've built your mini app.",
+          message: { type: "text", content: "I've built your mini app." },
+          spec: updatedSpec,
+          metadata: { persist: true }
       };
-    }
   }
 
-  if (plan.intent === "integration_request" && plan.requested_integration_ids.length > 0) {
-    const integrations = buildCtas(plan.requested_integration_ids);
-    return {
-      explanation: "",
-      message: { type: "integration_action", integrations },
-      spec: input.currentSpec,
-      metadata: { type: "integration_action", integrations },
-    };
-  }
-
-  const missingRequested = plan.requested_integration_ids.filter(
-    (id) => !input.connectedIntegrationIds.includes(id),
-  );
-  if (missingRequested.length > 0) {
-    const integrations = buildCtas(missingRequested);
-      const names = integrations.map((i: IntegrationCTA) => i.name).join(", ");
-    return {
-      explanation: `Access to ${names} is required.`,
-      message: { type: "integration_action", integrations },
-      spec: input.currentSpec,
-      metadata: { type: "integration_action", integrations },
-    };
-  }
-
-  // 3. Check Capabilities (if no specific integration requested)
-  if (plan.requested_integration_ids.length === 0 && plan.required_capabilities.length > 0) {
-    // Check if we have coverage
-    const resolution = resolveIntegrations({
-      capabilities: plan.required_capabilities as Capability[],
-      connectedIntegrations: input.connectedIntegrationIds,
-    });
-
-    if (resolution.missingCapabilities.length > 0) {
-      // We are missing capabilities. We need to suggest an integration.
-      // Simple heuristic: Find the highest priority integration that covers the first missing capability.
-      const missingCap = resolution.missingCapabilities[0];
-      const candidate = INTEGRATIONS
-        .filter(i => i.capabilities.includes(missingCap))
-        .sort((a, b) => b.priority - a.priority)[0];
-      
-      if (candidate) {
-        const integrations = buildCtas([candidate.id]);
-        return {
-          explanation: "",
-          message: { type: "integration_action", integrations },
-          spec: input.currentSpec,
-          metadata: { type: "integration_action", integrations },
-        };
+  // Branch B: Chat Mode (Text Response)
+  if (executionResults.length > 0) {
+      let content = "Here is what I found:\n\n";
+      for (const res of executionResults) {
+          const data = res.result;
+          if (Array.isArray(data)) {
+              content += `**${res.task.capabilityId}** (${data.length} items):\n`;
+              content += "```json\n" + JSON.stringify(data.slice(0, 3), null, 2) + "\n```\n";
+          } else {
+              content += `**${res.task.capabilityId}**:\n`;
+              content += "```json\n" + JSON.stringify(data, null, 2) + "\n```\n";
+          }
       }
-      
-      // If no candidate found (rare), generic error
       return {
-        explanation: `I need a data source that supports ${missingCap.replace("_", " ")}.`,
-        message: { type: "text", content: `I need a data source that supports ${missingCap.replace("_", " ") }.`, },
-        spec: input.currentSpec,
+          explanation: "Here are the results.",
+          message: { type: "text", content },
+          spec: input.currentSpec
       };
-    }
   }
 
-  // 4. Proceed to Spec Generation
-  const schemas = await getDiscoveredSchemas(input.orgId);
-  const schemaText = schemas.length > 0 
-    ? schemas.map(s => `Integration: ${s.integrationId}, Resource: ${s.resource}\nFields: ${s.fields.map(f => f.name).join(", ")}`).join("\n\n")
-    : "No schemas discovered.";
-
-  // Inject Execution Plans into System Prompt
-  const validPlans = successfulExecutions.map(e => e.plan);
-  const plansText = validPlans.length > 0
-    ? `VALIDATED EXECUTION PLANS:\n${JSON.stringify(validPlans, null, 2)}\n\nUse these plans to generate the spec. Each plan corresponds to a view or metric.\nIf "metricRef" is present, USE IT in the spec.`
-    : `No successful execution plans. Execution Error: ${executionError || "None"}. If the user asked for data, explain the error. Do NOT create new metrics or views.`;
-
-  const connectedText = input.connectedIntegrationIds.length > 0
-    ? input.connectedIntegrationIds.join(", ")
-    : "None";
-  const finalSystemPrompt = SYSTEM_PROMPT
-    .replace("{{SCHEMAS}}", schemaText)
-    .replace("{{CONNECTED}}", connectedText)
-    + `\n\n${plansText}`;
-
-  let llm: LlmToolChatResponse;
-  try {
-    llm = await generateSpecUpdate({
-      currentSpec: input.currentSpec,
-      systemPrompt: finalSystemPrompt,
-      messages: input.messages,
-      userMessage: input.userMessage,
-    });
-  } catch {
-    return {
-      explanation: "I attempted to add this, but the spec was invalid. Please retry.",
-      message: { type: "text", content: "I attempted to add this, but the spec was invalid. Please retry." },
-      spec: input.currentSpec,
-      metadata: { persist: false },
-    };
-  }
-  const beforeMetricIds = new Set(input.currentSpec.metrics.map(m => m.id));
-  const afterMetricIds = new Set(llm.spec.metrics.map(m => m.id));
-  const createdMetricIds = Array.from(afterMetricIds).filter(id => !beforeMetricIds.has(id));
-  let specWithViews = { ...llm.spec };
-  const existingViewMetricIds = new Set(specWithViews.views.filter(v => v.type !== "table" && v.metricId).map(v => v.metricId as string));
-  const newViews = createdMetricIds
-    .filter(id => !existingViewMetricIds.has(id))
-    .map(id => {
-      const metric = specWithViews.metrics.find(m => m.id === id)!;
-      const isTime = Boolean((metric as any).groupBy);
-      const type: "metric" | "line_chart" = isTime ? "line_chart" : "metric";
-      return { id: `view_${id}`, type, metricId: id };
-    });
-  if (newViews.length > 0) {
-    specWithViews = { ...specWithViews, views: [...specWithViews.views, ...newViews] };
+  if (executionError) {
+      return {
+          explanation: `I encountered an error: ${executionError}`,
+          message: { type: "text", content: `Error: ${executionError}` },
+          spec: input.currentSpec
+      };
   }
 
-  if (process.env.NODE_ENV !== "production") {
-    console.log("Created metrics:", createdMetricIds);
-    console.log("Created views:", newViews.map(v => v.id));
-  }
-  // Create Mode Materializer: ensure at least one view exists
-  function materializeCreateMode(spec: DashboardSpec, plans: any[]): DashboardSpec {
-    let next = { ...spec };
-    if (next.views.length > 0) return next;
-    const autoViews: DashboardSpec["views"] = [];
-    for (const metric of next.metrics) {
-      const isTime = Boolean((metric as any).groupBy === "day");
-      if (isTime) {
-        autoViews.push({ id: `view_${metric.id}`, type: "line_chart", metricId: metric.id });
-      } else if (metric.type === "count") {
-        autoViews.push({ id: `view_${metric.id}`, type: "metric", metricId: metric.id });
-      } else if (metric.type === "sum" && metric.table && metric.integrationId) {
-        autoViews.push({ id: `view_${metric.id}`, type: "table", table: metric.table, integrationId: metric.integrationId });
-      }
-    }
-    if (autoViews.length === 0 && plans.length > 0) {
-      const p = plans[0];
-      if (p && p.resource && p.integrationId) {
-        autoViews.push({ id: `view_${p.integrationId}_${p.resource}`, type: "table", table: p.resource, integrationId: p.integrationId });
-      }
-    }
-    if (autoViews.length > 0) {
-      next = { ...next, views: [...next.views, ...autoViews] };
-    }
-    return next;
-  }
-  function validateCreateModeSpec(spec: DashboardSpec, results: Record<string, ExecutionResult>): { valid: boolean; error?: string } {
-    function hasPlaceholder(s?: string) {
-      if (!s) return false;
-      const t = s.toLowerCase();
-      return ["choose", "select", "clarify", "ambiguous", "pick", "specify", "tbd", "???"].some(k => t.includes(k));
-    }
-    if (hasPlaceholder(spec.title) || hasPlaceholder(spec.description)) {
-      return { valid: false, error: "Placeholders detected" };
-    }
-    for (const m of spec.metrics) {
-      if (!m.id || !m.label || !m.type) {
-        return { valid: false, error: "Invalid metric" };
-      }
-      if (m.type === "sum" && !m.field) {
-        return { valid: false, error: "Missing sum field" };
-      }
-      if (!m.table || !m.integrationId) {
-        return { valid: false, error: "Metric missing source" };
-      }
-      if (hasPlaceholder(m.label)) {
-        return { valid: false, error: "Placeholders detected" };
-      }
-    }
-    for (const v of spec.views) {
-      if (v.type === "table") {
-        if (!v.table || !v.integrationId) {
-          return { valid: false, error: "Table view missing source" };
-        }
-      } else {
-        if (!v.metricId) {
-          return { valid: false, error: "View missing metricId" };
-        }
-        const metric = spec.metrics.find(m => m.id === v.metricId);
-        if (!metric) {
-          return { valid: false, error: "View references missing metric" };
-        }
-      }
-    }
-    const statuses = Object.values(results).map(r => r.status);
-    if (statuses.some(s => s === "error" || s === "clarification_needed")) {
-      return { valid: false, error: "Execution invalid" };
-    }
-    return { valid: true };
-  }
-  specWithViews = materializeCreateMode(specWithViews, executionPlans);
-  const results = await executeDashboard(input.orgId, specWithViews);
-  const renderableCount = Object.values(results).filter(r => r.status === "success").length;
-  if (process.env.NODE_ENV !== "production") {
-    console.log("Render tree size:", Object.keys(results).length);
-  }
-  if (renderableCount === 0 && createdMetricIds.length > 0) {
-    return {
-      explanation: "I defined the metric, but couldn’t render it yet.",
-      message: { type: "text", content: "I defined the metric, but couldn’t render it yet." },
-      spec: input.currentSpec,
-      metadata: { persist: false },
-    };
-  }
-  const validation = validateCreateModeSpec(specWithViews, results);
-  if (!validation.valid) {
-    return {
-      explanation: "I couldn’t persist these changes because validation failed.",
-      message: { type: "text", content: "I couldn’t persist these changes because validation failed." },
-      spec: input.currentSpec,
-      metadata: { persist: false, error: validation.error },
-    };
-  }
-  // HARD FAILURE IF NO VIEW IS CREATED (after materialization)
-  const beforeViewIds = new Set(input.currentSpec.views.map(v => v.id));
-  const createdViewIds = specWithViews.views.map(v => v.id).filter(id => !beforeViewIds.has(id));
-  if (createdViewIds.length === 0) {
-    return {
-      explanation: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific.",
-      message: { type: "text", content: "I understood your request, but I couldn’t determine a way to visualize it yet. Please rephrase or be more specific." },
-      spec: input.currentSpec,
-      metadata: { persist: false },
-    };
-  }
-  const explanation = "Added validated, renderable views to your dashboard.";
   return {
-    explanation,
-    message: { type: "text", content: explanation },
-    spec: specWithViews,
-    metadata: { ...(llm.metadata ?? {}), persist: true },
+      explanation: "I understood your request but didn't find any actions to take.",
+      message: { type: "text", content: "I understood your request but didn't find any actions to take." },
+      spec: input.currentSpec
   };
 }

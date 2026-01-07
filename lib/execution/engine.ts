@@ -11,7 +11,7 @@ import { GoogleExecutor } from "@/lib/integrations/executors/google";
 import { validateSpecAgainstSchema } from "./validation";
 import { synthesizeQuery } from "./synthesizer";
 import { getCapability } from "@/lib/capabilities/registry";
-import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/ai/planner";
+import { ExecutionPlan as PlannerExecutionPlan } from "@/lib/execution/types";
 import { resolveMetricDependency } from "./graph";
 import { getLatestExecution, runMetricExecution } from "./scheduler";
 import { getJoinDefinition } from "@/lib/joins/store";
@@ -160,13 +160,11 @@ export async function executeDashboard(
       }
 
       const derivedPlan: PlannerExecutionPlan = {
+        viewId: view.id,
         integrationId,
         capabilityId: candidateCapabilityId,
         resource: table,
         params: flatParams,
-        explanation: "Derived from spec",
-        execution_mode: "materialize",
-        intent: "persistent_view",
       };
 
       const runtimePlan = synthesizeQuery(derivedPlan);

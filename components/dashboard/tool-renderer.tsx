@@ -183,26 +183,40 @@ function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec 
       console.log("[MiniAppRuntime] Executing Action:", action.type, action.id, args);
       setIsExecuting(true);
 
-      try {
-          if (action.type === "state_mutation") {
-              const updates = action.config?.updates || {};
+      const runStep = async (type: string, config: any) => {
+          if (type === "state_mutation") {
+              const updates = config?.updates || {};
               const mergedUpdates = { ...updates, ...args };
               setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
           }
           
-          if (action.type === "navigation") {
-              if (action.config?.pageId) setActivePageId(action.config.pageId);
+          if (type === "navigation") {
+              if (config?.pageId) setActivePageId(config.pageId);
           }
 
-          if (action.type === "integration_call") {
-              const result = await executeToolAction(toolId, actionId, args || {});
+          if (type === "integration_call") {
+              // We use the actionId as the capability execution ID for now
+              // In strict mode, config should have capabilityId and params
+              const result = await executeToolAction(toolId, actionId, { ...config, ...args });
               if (result.status === "success") {
-                  // Bind result to state. Convention: actionId.data
                   setToolState((prev: any) => ({ ...prev, [`${actionId}.data`]: result.rows }));
               } else {
                   console.error("Action execution returned error:", result.error);
                   setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: result.error }));
+                  throw new Error(result.error); // Stop chain
               }
+          }
+      };
+
+      try {
+          // Multi-step support
+          if (action.steps && action.steps.length > 0) {
+              for (const step of action.steps) {
+                  await runStep(step.type, step.config);
+              }
+          } else {
+              // Legacy single-step fallback
+              await runStep(action.type, action.config);
           }
       } catch (e) {
           console.error("Action execution failed:", e);

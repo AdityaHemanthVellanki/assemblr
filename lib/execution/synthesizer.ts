@@ -1,7 +1,6 @@
-import { ExecutionPlan } from "@/lib/ai/planner";
-import { ExecutionPlan as RuntimeExecutionPlan } from "@/lib/execution/types";
+import { ExecutionPlan } from "@/lib/execution/types";
 
-export function synthesizeQuery(plan: ExecutionPlan): RuntimeExecutionPlan {
+export function synthesizeQuery(plan: ExecutionPlan): ExecutionPlan {
   // This function maps the high-level Planner ExecutionPlan to the low-level Runtime ExecutionPlan
   // used by the engine/executors.
   
@@ -11,7 +10,7 @@ export function synthesizeQuery(plan: ExecutionPlan): RuntimeExecutionPlan {
   // For Phase 1 integrations, we pass params through directly, but we enforce they are valid.
   
   // 1. Base construction
-  const runtimePlan: RuntimeExecutionPlan = {
+  const runtimePlan: ExecutionPlan = {
     viewId: "temp-id", // Will be assigned by caller or dashboard spec
     integrationId: plan.integrationId,
     resource: plan.resource,

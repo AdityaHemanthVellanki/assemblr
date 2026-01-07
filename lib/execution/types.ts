@@ -1,6 +1,7 @@
 export type ExecutionPlan = {
   viewId: string;
   integrationId: string;
+  capabilityId?: string;
   // Deprecated: resource
   resource?: string; 
   params?: Record<string, unknown>;

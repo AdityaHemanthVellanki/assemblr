@@ -2,28 +2,34 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
+import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
+import { IntegrationRuntime } from "@/lib/core/runtime";
 import { GitHubExecutor } from "@/lib/integrations/executors/github";
 import { LinearExecutor } from "@/lib/integrations/executors/linear";
 import { SlackExecutor } from "@/lib/integrations/executors/slack";
 import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
-import { IntegrationExecutor } from "@/lib/execution/types";
+import { IntegrationExecutor, ExecutionResult } from "@/lib/execution/types";
 import { getCapability } from "@/lib/capabilities/registry";
 import { toolSpecSchema } from "@/lib/spec/dashboardSpec";
 
 const EXECUTORS: Record<string, IntegrationExecutor> = {
-  github: new GitHubExecutor(),
+  github: new GitHubExecutor(), // Legacy
   linear: new LinearExecutor(),
   slack: new SlackExecutor(),
   notion: new NotionExecutor(),
   google: new GoogleExecutor(),
 };
 
+const RUNTIMES: Record<string, IntegrationRuntime> = {
+  github: new GitHubRuntime(),
+};
+
 export async function executeToolAction(
   toolId: string,
   actionId: string,
   args: Record<string, any>
-) {
+): Promise<ExecutionResult> {
   const supabase = await createSupabaseServerClient();
 
   // 1. Fetch Tool Spec
@@ -49,32 +55,53 @@ export async function executeToolAction(
     throw new Error("Only integration_call actions can be executed on server");
   }
 
-  const { integrationId, capability, params: defaultParams } = action.config;
+  const config = action.config || {};
+  const integrationId = config.integrationId;
+  const capabilityId = config.capability; // Renamed to match intent
+  const defaultParams = config.params;
 
-  if (!integrationId || !capability) {
+  if (!integrationId || !capabilityId) {
     throw new Error("Invalid action configuration: missing integrationId or capabilityId");
   }
 
-  // 3. Resolve Capability & Executor
+  // 3. Get Access Token
+  const accessToken = await getValidAccessToken(project.org_id, integrationId);
+
+  // 4. Execute using Runtime (Preferred) or Legacy Executor
+  const runtime = RUNTIMES[integrationId];
+  if (runtime) {
+      const cap = runtime.capabilities[capabilityId];
+      if (!cap) throw new Error(`Capability ${capabilityId} not found in runtime`);
+      
+      const context = await runtime.resolveContext(accessToken);
+      const mergedParams = { ...(defaultParams || {}), ...args };
+      
+      // Execute
+      const data = await cap.execute(mergedParams, context);
+      
+      // Standardize result
+      return {
+          viewId: "action_exec",
+          status: "success",
+          rows: Array.isArray(data) ? data : [data],
+          timestamp: new Date().toISOString(),
+          source: "live_api"
+      };
+  }
+
+  // Fallback to Legacy Executor
   const executor = EXECUTORS[integrationId];
   if (!executor) {
     throw new Error(`No executor for ${integrationId}`);
   }
 
-  const capDef = getCapability(capability);
+  const capDef = getCapability(capabilityId);
   if (!capDef) {
-    throw new Error(`Capability ${capability} not found`);
+    throw new Error(`Capability ${capabilityId} not found`);
   }
 
-  // 4. Merge Params (default + args)
-  // TODO: Securely handle parameter merging and validation
   const mergedParams = { ...(defaultParams || {}), ...args };
 
-  // 5. Get Access Token
-  const accessToken = await getValidAccessToken(project.org_id, integrationId);
-
-  // 6. Execute
-  // We mock a "Plan" structure expected by executor
   const result = await executor.execute({
     plan: {
       viewId: "action_exec",

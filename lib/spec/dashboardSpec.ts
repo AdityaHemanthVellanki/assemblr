@@ -71,17 +71,16 @@ export const conditionSchema = z.object({
   value: z.any(),
 });
 
+export const actionStepSchema = z.object({
+  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data"]),
+  config: z.record(z.string(), z.any()),
+});
+
 export const actionSchema = z.object({
   id: z.string(),
   type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data", "workflow"]),
-  config: z.object({
-    integrationId: z.string().optional(),
-    capability: z.string().optional(),
-    params: z.record(z.string(), z.any()).optional(), // Can use {{state.var}}
-    updates: z.record(z.string(), z.any()).optional(), // For state_mutation
-    pageId: z.string().optional(), // For navigation
-    steps: z.array(z.string()).optional(), // For workflow (action IDs)
-  }),
+  config: z.record(z.string(), z.any()).optional(), // Legacy single-step or specific config
+  steps: z.array(actionStepSchema).optional(), // Multi-step
   inputs: z.record(z.string(), z.string()).optional(), // Map args to internal params
 });
 
