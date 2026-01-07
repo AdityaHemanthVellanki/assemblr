@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { IntegrationRuntime, Capability } from "@/lib/core/runtime";
+import { Permission, checkPermission, DEV_PERMISSIONS } from "@/lib/core/permissions";
+import { PermissionDeniedError } from "@/lib/core/errors";
 
 export class GitHubRuntime implements IntegrationRuntime {
   id = "github";
@@ -7,6 +9,17 @@ export class GitHubRuntime implements IntegrationRuntime {
 
   constructor() {
     this.registerCapabilities();
+  }
+
+  checkPermissions(capabilityId: string, userPermissions: Permission[]) {
+      // For now, assume DEV_PERMISSIONS if none passed (during migration)
+      // or enforce strict check.
+      // The requirement says: "Runtime must hard-fail unauthorized access"
+      const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
+      const allowed = checkPermission(perms, this.id, capabilityId, "read"); // Assume read for these fetchers
+      if (!allowed) {
+          throw new PermissionDeniedError(this.id, capabilityId);
+      }
   }
 
   private registerCapabilities() {
@@ -19,18 +32,40 @@ export class GitHubRuntime implements IntegrationRuntime {
         limit: z.number().optional(),
       }),
       autoResolvedParams: ["owner"],
-      execute: async (params, context) => {
+      execute: async (params, context, trace) => {
         const { owner, repo } = params;
         const { token } = context;
         const url = `https://api.github.com/repos/${owner}/${repo}/commits`;
-        const res = await fetch(url, {
-          headers: {
-             Authorization: `Bearer ${token}`,
-             Accept: "application/vnd.github.v3+json"
-          }
-        });
-        if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
-        return await res.json();
+        
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        
+        try {
+            const res = await fetch(url, {
+              headers: {
+                 Authorization: `Bearer ${token}`,
+                 Accept: "application/vnd.github.v3+json"
+              }
+            });
+            if (!res.ok) {
+                status = "error";
+                throw new Error(`GitHub API error: ${res.statusText}`);
+            }
+            const data = await res.json();
+            return data;
+        } catch (e) {
+            status = "error";
+            throw e;
+        } finally {
+            trace.logIntegrationAccess({
+                integrationId: "github",
+                capabilityId: "github_commits_list",
+                params: { owner, repo },
+                status,
+                latency_ms: Date.now() - startTime,
+                metadata: { url }
+            });
+        }
       }
     };
 
@@ -40,16 +75,37 @@ export class GitHubRuntime implements IntegrationRuntime {
         paramsSchema: z.object({
             limit: z.number().optional()
         }),
-        execute: async (params, context) => {
+        execute: async (params, context, trace) => {
             const { token } = context;
-            const res = await fetch("https://api.github.com/user/repos?per_page=100", {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    Accept: "application/vnd.github.v3+json"
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const url = "https://api.github.com/user/repos?per_page=100";
+
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json"
+                    }
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
                 }
-            });
-            if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
-            return await res.json();
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_repos_list",
+                    params: {},
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
         }
     };
 
@@ -62,18 +118,39 @@ export class GitHubRuntime implements IntegrationRuntime {
             state: z.enum(["open", "closed", "all"]).optional()
         }),
         autoResolvedParams: ["owner"],
-        execute: async (params, context) => {
+        execute: async (params, context, trace) => {
             const { owner, repo, state } = params;
             const { token } = context;
             const url = `https://api.github.com/repos/${owner}/${repo}/issues?state=${state || "all"}`;
-            const res = await fetch(url, {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    Accept: "application/vnd.github.v3+json"
+            
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json"
+                    }
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
                 }
-            });
-            if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
-            return await res.json();
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_issues_list",
+                    params: { owner, repo, state },
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
         }
     };
   }

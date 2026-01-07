@@ -10,6 +10,8 @@ import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
 import { IntegrationRuntime } from "@/lib/core/runtime";
 import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { findMetrics } from "@/lib/metrics/store";
+import { ExecutionTracer } from "@/lib/observability/tracer";
+import { ExecutionError } from "@/lib/core/errors";
 
 // Runtime Registry
 const RUNTIMES: Record<string, IntegrationRuntime> = {
@@ -36,152 +38,189 @@ export async function processToolChat(input: {
 }): Promise<ToolChatResponse> {
   getServerEnv();
 
-  // 1. Compile Intent
-  const schemas = await getDiscoveredSchemas(input.orgId);
-  const metrics = await findMetrics(input.orgId);
-  
-  const intent = await compileIntent(
-    input.userMessage,
-    input.messages,
-    input.connectedIntegrationIds,
-    schemas,
-    metrics,
-    input.mode
-  );
+  // Initialize Tracer
+  const tracer = new ExecutionTracer(input.mode === "create" ? "create" : "run");
 
-  console.log("[Orchestrator] Compiled Intent:", JSON.stringify(intent, null, 2));
+  try {
+    // 1. Compile Intent
+    const schemas = await getDiscoveredSchemas(input.orgId);
+    const metrics = await findMetrics(input.orgId);
+    
+    const intent = await compileIntent(
+      input.userMessage,
+      input.messages,
+      input.connectedIntegrationIds,
+      schemas,
+      metrics,
+      input.mode
+    );
 
-  // 2. Dispatch & Execute
-  let executionResults: any[] = [];
-  let executionError: string | undefined;
+    tracer.setIntent(intent);
+    console.log("[Orchestrator] Compiled Intent:", JSON.stringify(intent, null, 2));
 
-  if (intent.intent_type === "chat" || intent.intent_type === "analyze") {
-    if (intent.tasks && intent.tasks.length > 0) {
-      for (const task of intent.tasks) {
-        // Resolve Runtime
-        // We need to know which integration owns this capability.
-        // For now, we iterate runtimes to find it, or use a registry map.
-        // Optimization: Capability ID usually prefixed, e.g. "github_commits_list"
-        const integrationId = task.capabilityId.split("_")[0]; 
-        const runtime = RUNTIMES[integrationId];
-        
-        if (!runtime) {
-          console.warn(`No runtime for integration: ${integrationId}`);
-          continue;
-        }
+    // 2. Dispatch & Execute
+    let executionResults: any[] = [];
 
-        try {
-          const token = await getValidAccessToken(input.orgId, integrationId);
-          // Context Resolution
-          const context = await runtime.resolveContext(token);
-          const capability = runtime.capabilities[task.capabilityId];
+    if (intent.intent_type === "chat" || intent.intent_type === "analyze") {
+      if (intent.tasks && intent.tasks.length > 0) {
+        for (const task of intent.tasks) {
+          // Resolve Runtime
+          const integrationId = task.capabilityId.split("_")[0]; 
+          const runtime = RUNTIMES[integrationId];
           
-          if (!capability) {
-             throw new Error(`Capability ${task.capabilityId} not found in runtime ${integrationId}`);
+          if (!runtime) {
+            console.warn(`No runtime for integration: ${integrationId}`);
+            continue;
           }
 
-          // Execute
-          const result = await capability.execute(task.params, context);
-          executionResults.push({ task, result });
-        } catch (e) {
-          console.error(`Task ${task.id} failed:`, e);
-          executionError = e instanceof Error ? e.message : "Unknown execution error";
+          const agentStart = Date.now();
+          
+          try {
+            const token = await getValidAccessToken(input.orgId, integrationId);
+            // Context Resolution
+            const context = await runtime.resolveContext(token);
+            const capability = runtime.capabilities[task.capabilityId];
+            
+            if (!capability) {
+               throw new Error(`Capability ${task.capabilityId} not found in runtime ${integrationId}`);
+            }
+
+            // Execute with Trace
+            const result = await capability.execute(task.params, context, tracer);
+            executionResults.push({ task, result });
+            
+            tracer.logAgentExecution({
+                agentId: integrationId, // Mapping Integration to Agent ID for now
+                task: task.capabilityId,
+                input: task.params,
+                output: "Success (Data Omitted)",
+                duration_ms: Date.now() - agentStart
+            });
+
+          } catch (e) {
+            console.error(`Task ${task.id} failed:`, e);
+            tracer.logAgentExecution({
+                agentId: integrationId,
+                task: task.capabilityId,
+                input: task.params,
+                output: "Error",
+                duration_ms: Date.now() - agentStart
+            });
+            throw e; // Bubble up to global catcher
+          }
         }
       }
     }
-  }
 
-  // 3. Output Generation
-  
-  // Branch A: Create Mode (Mini App Materialization)
-  if (input.mode === "create") {
-      if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
-          return {
-              explanation: "I couldn't determine how to build a tool from your request. Please clarify.",
-              message: { type: "text", content: "I couldn't determine how to build a tool from your request. Please clarify." },
-              spec: input.currentSpec
-          };
-      }
+    // 3. Output Generation
+    
+    // Branch A: Create Mode (Mini App Materialization)
+    if (input.mode === "create") {
+        if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
+            tracer.finish("failure", "Intent mismatch");
+            return {
+                explanation: "I couldn't determine how to build a tool from your request. Please clarify.",
+                message: { type: "text", content: "I couldn't determine how to build a tool from your request. Please clarify." },
+                spec: input.currentSpec,
+                metadata: { trace: tracer.getTrace() }
+            };
+        }
 
-      const mutation = intent.tool_mutation;
-      if (!mutation) {
-          return {
-              explanation: "I understood your request but couldn't generate a valid tool specification.",
-              message: { type: "text", content: "I understood your request but couldn't generate a valid tool specification." },
-              spec: input.currentSpec
-          };
-      }
+        const mutation = intent.tool_mutation;
+        if (!mutation) {
+            tracer.finish("failure", "No tool mutation generated");
+            return {
+                explanation: "I understood your request but couldn't generate a valid tool specification.",
+                message: { type: "text", content: "I understood your request but couldn't generate a valid tool specification." },
+                spec: input.currentSpec,
+                metadata: { trace: tracer.getTrace() }
+            };
+        }
 
-      // Apply Mutation to Spec
-      let updatedSpec = { ...input.currentSpec };
-      updatedSpec.kind = "mini_app"; // Enforce Kind
+        // Apply Mutation to Spec
+        let updatedSpec = { ...input.currentSpec };
+        updatedSpec.kind = "mini_app"; // Enforce Kind
 
-      if (mutation.pagesAdded) {
-          updatedSpec.pages = [...(updatedSpec.pages || []), ...mutation.pagesAdded];
-      }
-      // If components added without page, add to first page
-      if (mutation.componentsAdded && mutation.componentsAdded.length > 0) {
-          if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
-              updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
-          }
-          updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...mutation.componentsAdded];
-      }
-      if (mutation.actionsAdded) {
-          updatedSpec.actions = [...(updatedSpec.actions || []), ...mutation.actionsAdded];
-      }
-      if (mutation.stateAdded) {
-          updatedSpec.state = { ...(updatedSpec.state || {}), ...mutation.stateAdded };
-      }
+        if (mutation.pagesAdded) {
+            updatedSpec.pages = [...(updatedSpec.pages || []), ...mutation.pagesAdded];
+            mutation.pagesAdded.forEach(p => tracer.logUIMutation({ componentId: p.id, changeType: "added", details: p }));
+        }
+        // If components added without page, add to first page
+        if (mutation.componentsAdded && mutation.componentsAdded.length > 0) {
+            if (!updatedSpec.pages || updatedSpec.pages.length === 0) {
+                updatedSpec.pages = [{ id: "page_home", name: "Home", components: [], layoutMode: "grid", state: {} }];
+            }
+            updatedSpec.pages[0].components = [...updatedSpec.pages[0].components, ...mutation.componentsAdded];
+            mutation.componentsAdded.forEach(c => tracer.logUIMutation({ componentId: c.id, changeType: "added", details: c }));
+        }
+        if (mutation.actionsAdded) {
+            updatedSpec.actions = [...(updatedSpec.actions || []), ...mutation.actionsAdded];
+        }
+        if (mutation.stateAdded) {
+            updatedSpec.state = { ...(updatedSpec.state || {}), ...mutation.stateAdded };
+            Object.keys(mutation.stateAdded).forEach(k => tracer.logStateMutation({ key: k, oldValue: undefined, newValue: mutation.stateAdded![k] }));
+        }
 
-      // Verify Contract
-      const hasUI = updatedSpec.pages?.some(p => p.components.length > 0);
-      if (!hasUI) {
-          return {
-              explanation: "I failed to generate a visible user interface. Please try again.",
-              message: { type: "text", content: "I failed to generate a visible user interface. Please try again." },
-              spec: input.currentSpec
-          };
-      }
+        // Verify Contract
+        const hasUI = updatedSpec.pages?.some(p => p.components.length > 0);
+        if (!hasUI) {
+            tracer.finish("failure", "No UI components generated");
+            return {
+                explanation: "I failed to generate a visible user interface. Please try again.",
+                message: { type: "text", content: "I failed to generate a visible user interface. Please try again." },
+                spec: input.currentSpec,
+                metadata: { trace: tracer.getTrace() }
+            };
+        }
 
+        tracer.finish("success");
+        return {
+            explanation: tracer.generateExplanation(),
+            message: { type: "text", content: "I've built your mini app." },
+            spec: updatedSpec,
+            metadata: { persist: true, trace: tracer.getTrace() }
+        };
+    }
+
+    // Branch B: Chat Mode (Text Response)
+    if (executionResults.length > 0) {
+        let content = "Here is what I found:\n\n";
+        for (const res of executionResults) {
+            const data = res.result;
+            if (Array.isArray(data)) {
+                content += `**${res.task.capabilityId}** (${data.length} items):\n`;
+                content += "```json\n" + JSON.stringify(data.slice(0, 3), null, 2) + "\n```\n";
+            } else {
+                content += `**${res.task.capabilityId}**:\n`;
+                content += "```json\n" + JSON.stringify(data, null, 2) + "\n```\n";
+            }
+        }
+        tracer.finish("success");
+        return {
+            explanation: tracer.generateExplanation(),
+            message: { type: "text", content },
+            spec: input.currentSpec,
+            metadata: { trace: tracer.getTrace() }
+        };
+    }
+
+    tracer.finish("success", "No actions needed");
+    return {
+        explanation: "I understood your request but didn't find any actions to take.",
+        message: { type: "text", content: "I understood your request but didn't find any actions to take." },
+        spec: input.currentSpec,
+        metadata: { trace: tracer.getTrace() }
+    };
+
+  } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      tracer.finish("failure", msg);
+      
       return {
-          explanation: "I've built your mini app.",
-          message: { type: "text", content: "I've built your mini app." },
-          spec: updatedSpec,
-          metadata: { persist: true }
+          explanation: `I encountered an error: ${msg}`,
+          message: { type: "text", content: `Error: ${msg}` },
+          spec: input.currentSpec,
+          metadata: { trace: tracer.getTrace(), error: msg }
       };
   }
-
-  // Branch B: Chat Mode (Text Response)
-  if (executionResults.length > 0) {
-      let content = "Here is what I found:\n\n";
-      for (const res of executionResults) {
-          const data = res.result;
-          if (Array.isArray(data)) {
-              content += `**${res.task.capabilityId}** (${data.length} items):\n`;
-              content += "```json\n" + JSON.stringify(data.slice(0, 3), null, 2) + "\n```\n";
-          } else {
-              content += `**${res.task.capabilityId}**:\n`;
-              content += "```json\n" + JSON.stringify(data, null, 2) + "\n```\n";
-          }
-      }
-      return {
-          explanation: "Here are the results.",
-          message: { type: "text", content },
-          spec: input.currentSpec
-      };
-  }
-
-  if (executionError) {
-      return {
-          explanation: `I encountered an error: ${executionError}`,
-          message: { type: "text", content: `Error: ${executionError}` },
-          spec: input.currentSpec
-      };
-  }
-
-  return {
-      explanation: "I understood your request but didn't find any actions to take.",
-      message: { type: "text", content: "I understood your request but didn't find any actions to take." },
-      spec: input.currentSpec
-  };
 }
