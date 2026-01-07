@@ -32,6 +32,31 @@ interface ToolRendererProps {
 }
 
 export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRendererProps) {
+  // Support for Multi-Page Tools
+  const [activePageId, setActivePageId] = React.useState<string | null>(null);
+  const [toolState, setToolState] = React.useState(spec.state || {});
+
+  const executeAction = React.useCallback((actionId?: string) => {
+      if (!actionId) return;
+      const action = spec.actions?.find(a => a.id === actionId);
+      if (!action) return;
+
+      if (action.type === "state_mutation") {
+          const updates = action.config?.updates || {};
+          setToolState((prev: any) => ({ ...prev, ...updates }));
+      }
+      if (action.type === "navigation") {
+          if (action.config?.pageId) setActivePageId(action.config.pageId);
+      }
+      // TODO: Implement integration_call
+  }, [spec.actions]);
+
+  React.useEffect(() => {
+    if (spec?.pages?.length > 0 && !activePageId) {
+      setActivePageId(spec.pages[0].id);
+    }
+  }, [spec, activePageId]);
+
   if (!spec) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -40,11 +65,81 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
     );
   }
 
+  // Legacy View Support
+  const hasLegacyViews = spec.views?.length > 0 && (!spec.pages || spec.pages.length === 0);
+  const activePage = spec.pages?.find(p => p.id === activePageId);
+
   // A tool has "real data" only if we have at least one successful execution result
-  // AND views are defined.
+  // AND views/components are defined.
   const hasRealData =
-    spec.views.length > 0 &&
+    (hasLegacyViews || (activePage?.components && activePage.components.length > 0)) &&
     Object.values(executionResults).some((r) => r.status === "success" && Array.isArray(r.rows) && r.rows.length > 0);
+  
+  // Render Content
+  const renderContent = () => {
+     if (hasLegacyViews) {
+         return renderLegacyViews(spec, executionResults);
+     }
+     if (activePage) {
+         return (
+             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                 {activePage.components.map(comp => {
+                    // Basic Component Rendering
+                     if (comp.type === "button") {
+                         const onClickAction = comp.actions?.find(a => a.trigger === "onClick")?.actionId;
+                         return (
+                             <div key={comp.id} className="col-span-1">
+                                 <button 
+                                     onClick={() => executeAction(onClickAction)}
+                                     className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                                 >
+                                     {comp.label || "Button"}
+                                 </button>
+                             </div>
+                         )
+                     }
+                     if (comp.type === "text") {
+                         // Simple interpolation
+                         let content = String(comp.properties?.content || comp.label || "");
+                         content = content.replace(/{{(.*?)}}/g, (_, key) => toolState[key.trim()] || "");
+                         
+                         return (
+                             <div key={comp.id} className="col-span-4 prose dark:prose-invert">
+                                 {content}
+                             </div>
+                         )
+                     }
+                     if (comp.type === "input") {
+                         const bindKey = comp.dataSource?.type === "state" ? comp.dataSource.value : undefined;
+                         return (
+                             <div key={comp.id} className="col-span-1 space-y-2">
+                                 <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                                     {comp.label}
+                                 </label>
+                                 <input 
+                                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                                     placeholder={String(comp.properties?.placeholder || "")}
+                                     value={bindKey ? toolState[bindKey] || "" : undefined}
+                                     onChange={(e) => {
+                                         if (bindKey) setToolState((prev: any) => ({ ...prev, [bindKey]: e.target.value }));
+                                     }}
+                                 />
+                             </div>
+                         )
+                     }
+                    // Fallback
+                    return (
+                        <div key={comp.id} className="col-span-4 border p-4 rounded-md">
+                            <div className="font-bold mb-2">{comp.type}: {comp.label || comp.id}</div>
+                            <pre className="text-xs overflow-auto max-h-40">{JSON.stringify(comp, null, 2)}</pre>
+                        </div>
+                    );
+                 })}
+             </div>
+         );
+     }
+     return <div>No pages defined</div>;
+  };
 
   return (
     <div className="h-full overflow-auto bg-muted/5 p-6">
@@ -53,6 +148,19 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
         {spec.description && (
           <p className="text-muted-foreground">{spec.description}</p>
         )}
+        {spec.pages?.length > 1 && (
+            <div className="flex gap-2 mt-4">
+                {spec.pages.map(page => (
+                    <button 
+                        key={page.id}
+                        onClick={() => setActivePageId(page.id)}
+                        className={`px-3 py-1 text-sm rounded-md ${activePageId === page.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+                    >
+                        {page.name}
+                    </button>
+                ))}
+            </div>
+        )}
       </div>
 
       {isLoading ? (
@@ -60,13 +168,13 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <p>Executing queries...</p>
         </div>
-      ) : !hasRealData ? (
+      ) : !hasRealData && !activePage ? (
         <div className="flex h-[400px] flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground">
           <p className="mb-2 text-lg font-medium">No data yet</p>
           <p className="text-sm">
             Connect integrations and define queries to see real data.
           </p>
-          {spec.views.length > 0 && (
+          {(spec.views?.length > 0 || spec.pages?.length > 0) && (
              <div className="mt-4 max-w-md text-xs text-red-500">
                {Object.values(executionResults).map(r => r.error).filter(Boolean).map((err, i) => (
                  <div key={i}>Error: {err}</div>
@@ -75,11 +183,19 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
           )}
         </div>
       ) : (
-        <>
-          {/* Metrics Grid */}
-          <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {spec.views
-              .filter((v) => v.type === "metric")
+        renderContent()
+      )}
+    </div>
+  );
+}
+
+export function renderLegacyViews(spec: DashboardSpec, executionResults: Record<string, ExecutionResult>) {
+  return (
+    <>
+      {/* Metrics Grid */}
+      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {spec.views
+          .filter((v) => v.type === "metric")
               .map((view) => {
                 const metric = spec.metrics.find((m) => m.id === view.metricId);
                 const result = executionResults[view.id];
@@ -381,7 +497,5 @@ export function ToolRenderer({ spec, executionResults = {}, isLoading }: ToolRen
               })}
           </div>
         </>
-      )}
-    </div>
   );
 }

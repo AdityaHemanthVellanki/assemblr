@@ -29,7 +29,10 @@ function wrapMetricInSpec(metric: Metric): DashboardSpec {
       id: "exec-view",
       type: "metric",
       metricId: metric.id
-    }]
+    }],
+    pages: [],
+    actions: [],
+    state: {}
   };
 }
 

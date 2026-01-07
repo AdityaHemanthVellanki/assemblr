@@ -59,12 +59,59 @@ const viewSchema = z
   })
   .strict();
 
+export const actionSchema = z.object({
+  id: z.string(),
+  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data"]),
+  config: z.record(z.string(), z.any()),
+  trigger: z.enum(["manual", "on_load", "interval"]).optional(),
+});
+
+export const componentSchema = z.object({
+  id: z.string(),
+  type: z.enum([
+    "table", "metric", "chart", "text", "form", "input", "button", "json", "code", "status", "container"
+  ]),
+  label: z.string().optional(),
+  properties: z.record(z.string(), z.any()).default({}),
+  dataSource: z.object({
+    type: z.enum(["static", "query", "state", "expression"]),
+    value: z.any(),
+  }).optional(),
+  actions: z.array(z.object({
+    trigger: z.string(), // e.g. "onClick", "onSubmit"
+    actionId: z.string(),
+  })).optional(),
+  layout: z.object({
+    x: z.number().optional(),
+    y: z.number().optional(),
+    w: z.number().optional(),
+    h: z.number().optional(),
+  }).optional(),
+});
+
+export const pageSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string().optional(),
+  components: z.array(componentSchema).default([]),
+  layoutMode: z.enum(["grid", "stack", "canvas"]).default("grid"),
+});
+
 export const dashboardSpecSchema = z
   .object({
     title: z.string().min(1),
     description: z.string().min(1).optional(),
+    // Legacy support (optional now)
     metrics: z.array(metricSchema).default([]),
     views: z.array(viewSchema).default([]),
+    // New Tool Architecture
+    pages: z.array(pageSchema).default([]),
+    actions: z.array(actionSchema).default([]),
+    state: z.record(z.string(), z.any()).default({}),
+    theme: z.object({
+        mode: z.enum(["light", "dark", "system"]).optional(),
+        primaryColor: z.string().optional()
+    }).optional()
   })
   .strict()
   .superRefine((spec, ctx) => {
