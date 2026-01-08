@@ -2,9 +2,20 @@ import { z } from "zod";
 
 export const miniAppEventSchema = z
   .object({
-    type: z.enum(["onLoad", "onPageLoad", "onComponentLoad", "onChange", "onClick", "onSubmit"]),
+    type: z.enum([
+      "onLoad", 
+      "onUnload", 
+      "onInterval",
+      "onPageLoad", 
+      "onComponentLoad", 
+      "onChange", 
+      "onClick", 
+      "onSubmit"
+    ]),
     actionId: z.string().min(1),
     args: z.record(z.string(), z.any()).optional(),
+    // For onInterval
+    intervalMs: z.number().optional(), 
   })
   .strict();
 
@@ -59,6 +70,12 @@ export const miniAppPageSchema = z
   })
   .passthrough();
 
+export const miniAppLifecycleSchema = z.object({
+  onLoad: z.array(miniAppEventSchema).optional(),
+  onUnload: z.array(miniAppEventSchema).optional(),
+  onInterval: z.array(miniAppEventSchema).optional(),
+}).optional();
+
 export const miniAppSpecSchema = z
   .object({
     kind: z.literal("mini_app"),
@@ -67,6 +84,7 @@ export const miniAppSpecSchema = z
     pages: z.array(miniAppPageSchema).default([]),
     state: z.record(z.string(), z.any()).default({}),
     actions: z.array(miniAppActionSchema).default([]),
+    lifecycle: miniAppLifecycleSchema,
     permissions: z.array(z.string()).optional(),
   })
   .passthrough();

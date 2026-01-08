@@ -249,6 +249,42 @@ function MiniAppRoot({
     [spec.pages, snapshot.activePageId],
   );
 
+  // Global Lifecycle: onLoad & onUnload
+  const lifecycleFired = React.useRef(false);
+  React.useEffect(() => {
+    if (lifecycleFired.current) return;
+    lifecycleFired.current = true;
+
+    // onLoad
+    const onLoad = spec.lifecycle?.onLoad ?? [];
+    for (const h of onLoad) store.dispatch(h.actionId, h.args ?? {});
+
+    return () => {
+      // onUnload
+      const onUnload = spec.lifecycle?.onUnload ?? [];
+      for (const h of onUnload) store.dispatch(h.actionId, h.args ?? {});
+    };
+  }, [spec.lifecycle, store]);
+
+  // Global Lifecycle: onInterval
+  React.useEffect(() => {
+    const intervals: NodeJS.Timeout[] = [];
+    const onInterval = spec.lifecycle?.onInterval ?? [];
+    
+    for (const h of onInterval) {
+      if (h.intervalMs && h.intervalMs > 0) {
+        const id = setInterval(() => {
+          store.dispatch(h.actionId, h.args ?? {});
+        }, h.intervalMs);
+        intervals.push(id);
+      }
+    }
+
+    return () => {
+      intervals.forEach(clearInterval);
+    };
+  }, [spec.lifecycle, store]);
+
   const pageLoadFired = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     if (!activePage?.id) return;

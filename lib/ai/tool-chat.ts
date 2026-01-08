@@ -17,6 +17,7 @@ import { OrgPolicy } from "@/lib/core/governance";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { materializeSpec } from "@/lib/spec/materializer";
 import { RUNTIMES } from "@/lib/integrations/map";
+import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 
 const versioningService = new VersioningService();
 
@@ -66,11 +67,13 @@ export async function processToolChat(input: {
     // 2. Dispatch & Execute
     const executionResults: any[] = [];
 
-    if (intent.intent_type === "chat" || intent.intent_type === "analyze") {
-      if (intent.tasks && intent.tasks.length > 0) {
-        for (const task of intent.tasks) {
+    if (intent.intent_type === "chat" || intent.intent_type === "execute") {
+      if (intent.execution_graph && intent.execution_graph.nodes.length > 0) {
+        for (const node of intent.execution_graph.nodes) {
+          if (node.type !== "integration_call" || !node.capabilityId) continue;
+
           // Resolve Runtime
-          const integrationId = task.capabilityId.split("_")[0]; 
+          const integrationId = node.capabilityId.split("_")[0]; 
           const runtime = RUNTIMES[integrationId];
           
           if (!runtime) {
@@ -84,30 +87,35 @@ export async function processToolChat(input: {
             const token = await getValidAccessToken(input.orgId, integrationId);
             // Context Resolution
             const context = await runtime.resolveContext(token);
-            const capability = runtime.capabilities[task.capabilityId];
+            const capability = runtime.capabilities[node.capabilityId];
             
             if (!capability) {
-               throw new Error(`Capability ${task.capabilityId} not found in runtime ${integrationId}`);
+               throw new Error(`Capability ${node.capabilityId} not found in runtime ${integrationId}`);
+            }
+
+            // Enforce Permissions
+            if (runtime.checkPermissions) {
+                runtime.checkPermissions(node.capabilityId, DEV_PERMISSIONS);
             }
 
             // Execute with Trace
-            const result = await capability.execute(task.params, context, tracer);
-            executionResults.push({ task, result });
+            const result = await capability.execute(node.params, context, tracer);
+            executionResults.push({ task: node, result });
             
             tracer.logAgentExecution({
                 agentId: integrationId, // Mapping Integration to Agent ID for now
-                task: task.capabilityId,
-                input: task.params,
+                task: node.capabilityId,
+                input: node.params,
                 output: "Success (Data Omitted)",
                 duration_ms: Date.now() - agentStart
             });
 
           } catch (e) {
-            console.error(`Task ${task.id} failed:`, e);
+            console.error(`Task ${node.id} failed:`, e);
             tracer.logAgentExecution({
                 agentId: integrationId,
-                task: task.capabilityId,
-                input: task.params,
+                task: node.capabilityId ?? "unknown",
+                input: node.params,
                 output: "Error",
                 duration_ms: Date.now() - agentStart
             });
@@ -121,7 +129,7 @@ export async function processToolChat(input: {
     
     // Branch A: Create Mode (Mini App Materialization)
     if (input.mode === "create") {
-        if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
+        if (intent.intent_type !== "create") {
             tracer.finish("failure", "Intent mismatch");
             return {
                 explanation: "I couldn't determine how to build a tool from your request. Please clarify.",

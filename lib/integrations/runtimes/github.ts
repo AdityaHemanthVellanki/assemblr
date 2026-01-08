@@ -27,13 +27,15 @@ export class GitHubRuntime implements IntegrationRuntime {
       id: "github_commits_list",
       integrationId: "github",
       paramsSchema: z.object({
-        owner: z.string(),
+        owner: z.string().optional(), // Inferred from context if missing
         repo: z.string(),
         limit: z.number().optional(),
       }),
       autoResolvedParams: ["owner"],
       execute: async (params, context, trace) => {
-        const { owner, repo } = params;
+        const owner = params.owner ?? context.owner;
+        if (!owner) throw new Error("Missing owner and unable to infer from context");
+        const { repo } = params;
         const { token } = context;
         const url = `https://api.github.com/repos/${owner}/${repo}/commits`;
         
@@ -113,13 +115,15 @@ export class GitHubRuntime implements IntegrationRuntime {
         id: "github_issues_list",
         integrationId: "github",
         paramsSchema: z.object({
-            owner: z.string(),
+            owner: z.string().optional(), // Inferred from context if missing
             repo: z.string(),
             state: z.enum(["open", "closed", "all"]).optional()
         }),
         autoResolvedParams: ["owner"],
         execute: async (params, context, trace) => {
-            const { owner, repo, state } = params;
+            const owner = params.owner ?? context.owner;
+            if (!owner) throw new Error("Missing owner and unable to infer from context");
+            const { repo, state } = params;
             const { token } = context;
             const url = `https://api.github.com/repos/${owner}/${repo}/issues?state=${state || "all"}`;
             
