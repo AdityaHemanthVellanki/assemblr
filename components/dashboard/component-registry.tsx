@@ -18,6 +18,8 @@ import {
   YAxis,
 } from "recharts";
 
+import { HeatmapComponent, validateHeatmapProps } from "./heatmap-component";
+
 // Types
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 
@@ -26,6 +28,12 @@ export type ComponentProps = {
   state: Record<string, any>;
   onEvent: (eventName: string, args?: any) => void;
   renderChildren?: (children: any[]) => React.ReactNode;
+};
+
+export type ComponentRenderer = {
+  render: React.FC<ComponentProps>;
+  validateProps?: (props: any) => void;
+  supportedEvents?: string[];
 };
 
 // 1. Component Implementation
@@ -283,65 +291,115 @@ const BarChartComponent = ({ component, state }: ComponentProps) => {
 };
 
 // 2. Registry Definition
-export const COMPONENT_REGISTRY: Record<string, React.FC<ComponentProps>> = {
-  // Primitives
-  Button: ButtonComponent,
-  Text: TextComponent,
-  Container: ContainerComponent,
-  
-  // Inputs
-  TextInput: TextInputComponent,
-  Select: SelectComponent,
-  Dropdown: SelectComponent, // Alias
-  
-  // Outputs
-  Table: TableComponent,
-  LineChart: LineChartComponent,
-  BarChart: BarChartComponent,
-  Status: StatusComponent,
-  
-  // Layout / Other
-  Form: ContainerComponent, // Alias for now
-  
-  // Legacy / Lowercase Aliases
-  button: ButtonComponent,
-  text: TextComponent,
-  input: TextInputComponent,
-  textinput: TextInputComponent,
-  select: SelectComponent,
-  dropdown: SelectComponent,
-  table: TableComponent,
-  container: ContainerComponent,
-  form: ContainerComponent,
-  modal: ContainerComponent,
-  status: StatusComponent,
-  linechart: LineChartComponent,
-  barchart: BarChartComponent,
-  
-  // Dashboard Fallbacks
-  metric: TextComponent, 
-  chart: LineChartComponent, 
 
-  // Stubs for other required types
-  Checkbox: TextInputComponent, // Placeholder
-  DatePicker: TextInputComponent, // Placeholder
-  Grid: ContainerComponent, // Alias
-  Tabs: ContainerComponent, // Placeholder
-  Markdown: TextComponent, // Alias
+// Visualization Component (Generic Wrapper)
+const VisualizationComponent = (props: ComponentProps) => {
+  const { component } = props;
+  const kind = component.properties?.kind || "heatmap"; 
+  
+  if (kind === "heatmap") {
+      return <HeatmapComponent {...props} />;
+  }
+  
+  // Future extensions: scatter, calendar, etc.
+  
+  return (
+      <div className="p-4 border border-destructive/50 text-destructive bg-destructive/5 rounded-md">
+          Unsupported visualization kind: {kind}
+      </div>
+  );
 };
 
-export function getComponent(type: string) {
+// Helper to wrap simple components
+const simple = (render: React.FC<ComponentProps>, supportedEvents: string[] = []): ComponentRenderer => ({
+    render,
+    supportedEvents
+});
+
+export const COMPONENT_REGISTRY: Record<string, ComponentRenderer> = {
+  // Primitives
+  Button: simple(ButtonComponent, ["onClick"]),
+  Text: simple(TextComponent),
+  Container: simple(ContainerComponent),
+  
+  // Inputs
+  TextInput: simple(TextInputComponent, ["onChange"]),
+  Select: simple(SelectComponent, ["onChange"]),
+  Dropdown: simple(SelectComponent, ["onChange"]), // Alias
+  
+  // Outputs
+  Table: simple(TableComponent),
+  LineChart: simple(LineChartComponent),
+  BarChart: simple(BarChartComponent),
+  Status: simple(StatusComponent),
+  Heatmap: {
+      render: HeatmapComponent,
+      validateProps: validateHeatmapProps,
+      supportedEvents: []
+  },
+  Visualization: {
+      render: VisualizationComponent,
+      supportedEvents: []
+  },
+  
+  // Layout / Other
+  Form: simple(ContainerComponent), // Alias for now
+  
+  // Legacy / Lowercase Aliases
+  button: simple(ButtonComponent, ["onClick"]),
+  text: simple(TextComponent),
+  input: simple(TextInputComponent, ["onChange"]),
+  textinput: simple(TextInputComponent, ["onChange"]),
+  select: simple(SelectComponent, ["onChange"]),
+  dropdown: simple(SelectComponent, ["onChange"]),
+  table: simple(TableComponent),
+  container: simple(ContainerComponent),
+  form: simple(ContainerComponent),
+  modal: simple(ContainerComponent),
+  status: simple(StatusComponent),
+  linechart: simple(LineChartComponent),
+  barchart: simple(BarChartComponent),
+  heatmap: {
+      render: HeatmapComponent,
+      validateProps: validateHeatmapProps,
+      supportedEvents: []
+  },
+  visualization: {
+      render: VisualizationComponent,
+      supportedEvents: []
+  },
+  
+  // Dashboard Fallbacks
+  metric: simple(TextComponent), 
+  chart: simple(LineChartComponent), 
+
+  // Stubs for other required types
+  Checkbox: simple(TextInputComponent, ["onChange"]), // Placeholder
+  DatePicker: simple(TextInputComponent, ["onChange"]), // Placeholder
+  Grid: simple(ContainerComponent), // Alias
+  Tabs: simple(ContainerComponent), // Placeholder
+  Markdown: simple(TextComponent), // Alias
+};
+
+export function getComponent(type: string): ComponentRenderer {
   // Try exact match first, then lowercase
   const Comp = COMPONENT_REGISTRY[type] || COMPONENT_REGISTRY[type.toLowerCase()];
   
   if (!Comp) {
     // If we have a chart type that isn't registered, fallback to line chart if it looks like a chart
     if (type.toLowerCase().includes("chart")) {
-        return LineChartComponent;
+        return simple(LineChartComponent);
     }
     
-    console.error(`Component type "${type}" is not registered in COMPONENT_REGISTRY`);
-    throw new Error(`Component type "${type}" is not registered in COMPONENT_REGISTRY`);
+    // Hard fail as requested
+    // Note: The pre-render check in runtime should catch this first, 
+    // but if we get here during render, we must fail.
+    const errorMsg = JSON.stringify({
+        error: "unsupported_component",
+        componentType: type,
+        allowedTypes: Object.keys(COMPONENT_REGISTRY)
+    });
+    throw new Error(errorMsg);
   }
   return Comp;
 }

@@ -5,13 +5,14 @@ import * as React from "react";
 import { ChatPanel } from "@/components/dashboard/chat-panel";
 import { ToolRenderer } from "@/components/dashboard/tool-renderer";
 import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { runToolExecution } from "@/app/actions/execute-tool";
 import type { ExecutionResult } from "@/lib/execution/types";
 
 interface ProjectWorkspaceProps {
   project: {
     id: string;
-    spec: DashboardSpec | null;
+    spec: ToolSpec | null;
   };
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -27,13 +28,23 @@ export function ProjectWorkspace({
   project,
   initialMessages,
 }: ProjectWorkspaceProps) {
-  const [spec, setSpec] = React.useState<DashboardSpec | null>(project.spec);
+  const [spec, setSpec] = React.useState<ToolSpec | null>(project.spec);
   const [results, setResults] = React.useState<Record<string, ExecutionResult>>({});
   const [isExecuting, setIsExecuting] = React.useState(false);
 
   // Re-execute whenever spec changes (debounced ideally, but strict for now)
   React.useEffect(() => {
-    if (!spec || spec.views.length === 0) {
+    if (!spec) {
+      setResults({});
+      return;
+    }
+
+    // Mini apps manage their own execution via runtime
+    if (spec.kind === "mini_app") {
+      return;
+    }
+
+    if (spec.views.length === 0) {
       setResults({});
       return;
     }

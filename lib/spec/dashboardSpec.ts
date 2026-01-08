@@ -59,91 +59,27 @@ const viewSchema = z
   })
   .strict();
 
-export const eventSchema = z.object({
-  type: z.enum(["onClick", "onChange", "onSubmit", "onLoad", "onRefresh"]),
-  actionId: z.string(),
-  args: z.record(z.string(), z.any()).optional(),
-});
+export const DashboardKind = z.literal("dashboard");
+export type DashboardKind = z.infer<typeof DashboardKind>;
 
-export const conditionSchema = z.object({
-  field: z.string(), // e.g. "state.loading"
-  operator: z.enum(["eq", "neq", "gt", "lt", "contains"]),
-  value: z.any(),
-});
-
-export const actionStepSchema = z.object({
-  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data"]),
-  config: z.record(z.string(), z.any()),
-});
-
-export const actionSchema = z.object({
-  id: z.string(),
-  type: z.enum(["integration_call", "state_mutation", "navigation", "refresh_data", "workflow"]),
-  config: z.record(z.string(), z.any()).optional(), // Legacy single-step or specific config
-  steps: z.array(actionStepSchema).optional(), // Multi-step
-  inputs: z.record(z.string(), z.string()).optional(), // Map args to internal params
-});
-
-export const componentSchema = z.object({
-  id: z.string(),
-  type: z.enum([
-    // Legacy / Low-level
-    "table", "metric", "chart", "text", "form", "input", "select", "button", "json", "code", "status", "container", "modal",
-    // Mini-App Primitives (PascalCase)
-    "Button", "Text", "Container", "TextInput", "Select", "Dropdown", "Table", "LineChart", "BarChart", "Status", "Form",
-    // Stubs
-    "Checkbox", "DatePicker", "Grid", "Tabs", "Markdown"
-  ]),
-  label: z.string().optional(),
-  properties: z.record(z.string(), z.any()).default({}), // placeholder, defaultValue, options, content
-  dataSource: z.object({
-    type: z.enum(["static", "query", "state", "expression"]),
-    value: z.any(),
-  }).optional(),
-  events: z.array(eventSchema).optional(),
-  renderIf: conditionSchema.optional(),
-  layout: z.object({
-    x: z.number().optional(),
-    y: z.number().optional(),
-    w: z.number().optional(),
-    h: z.number().optional(),
-  }).optional(),
-});
-
-export const pageSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  path: z.string().optional(),
-  components: z.array(componentSchema).default([]),
-  state: z.record(z.string(), z.any()).default({}), // Page-level state
-  events: z.array(eventSchema).optional(), // Page load events
-  layoutMode: z.enum(["grid", "stack", "canvas"]).default("grid"),
-});
-
-export const toolSpecSchema = z
+export const dashboardSpecSchema = z
   .object({
-    kind: z.enum(["dashboard", "mini_app"]).default("dashboard"),
+    kind: DashboardKind.default("dashboard"),
     title: z.string().min(1),
     description: z.string().min(1).optional(),
-    // Legacy support (optional now)
     metrics: z.array(metricSchema).default([]),
     views: z.array(viewSchema).default([]),
-    // New Tool Architecture
-    pages: z.array(pageSchema).default([]),
-    actions: z.array(actionSchema).default([]),
-    state: z.record(z.string(), z.any()).default({}), // Global state
-    theme: z.object({
+    theme: z
+      .object({
         mode: z.enum(["light", "dark", "system"]).optional(),
-        primaryColor: z.string().optional()
-    }).optional()
+        primaryColor: z.string().optional(),
+      })
+      .optional(),
   })
   .strict();
 
-export const dashboardSpecSchema = toolSpecSchema;
+export type DashboardSpec = z.infer<typeof dashboardSpecSchema>;
 
-export type ToolSpec = z.infer<typeof toolSpecSchema>;
-export type DashboardSpec = ToolSpec; // Alias for backward compat
-
-export function parseDashboardSpec(input: unknown): ToolSpec {
-  return toolSpecSchema.parse(input);
+export function parseDashboardSpec(input: unknown): DashboardSpec {
+  return dashboardSpecSchema.parse(input);
 }

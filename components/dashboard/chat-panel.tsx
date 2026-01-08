@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 
 type IntegrationCTA = {
@@ -40,7 +40,7 @@ type Message =
 interface ChatPanelProps {
   toolId: string;
   initialMessages?: RawMessage[];
-  onSpecUpdate: (spec: DashboardSpec) => void;
+  onSpecUpdate: (spec: ToolSpec) => void;
 }
 
 export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPanelProps) {

@@ -1,4 +1,5 @@
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import { ToolSpec } from "@/lib/spec/toolSpec";
 import { CompiledIntent } from "./intent";
 
 export type ToolRole = "owner" | "editor" | "viewer";
@@ -12,7 +13,7 @@ export type ToolVersion = {
   created_by: string; // User ID
   intent_summary: string;
   compiled_intent?: CompiledIntent;
-  mini_app_spec: DashboardSpec;
+  mini_app_spec: ToolSpec;
   execution_policy?: any;
   status: VersionStatus;
   diff?: VersionDiff;

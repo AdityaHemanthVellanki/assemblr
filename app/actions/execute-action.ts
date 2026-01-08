@@ -16,7 +16,7 @@ import { ExecutionTracer } from "@/lib/observability/tracer";
 import { PermissionDeniedError, ExecutionError } from "@/lib/core/errors";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
-import { toolSpecSchema } from "@/lib/spec/dashboardSpec";
+import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { assemblrABI } from "@/lib/core/abi";
 import { ExecutionContext } from "@/lib/core/abi/middleware";
 
@@ -75,8 +75,9 @@ export async function executeToolAction(
     if (!orgId) throw new Error("Organization not found");
 
     // 2. Parse Spec
-    const parsedSpec = toolSpecSchema.parse(spec);
-    const action = parsedSpec.actions.find((a) => a.id === actionId);
+    const parsedSpec = parseToolSpec(spec);
+    const actions = (parsedSpec as any).actions as Array<any> | undefined;
+    const action = (actions ?? []).find((a) => a.id === actionId);
 
     if (!action) {
         throw new Error(`Action ${actionId} not found`);

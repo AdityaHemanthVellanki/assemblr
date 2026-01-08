@@ -23,71 +23,20 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 import type { ExecutionResult } from "@/lib/execution/types";
 
 import { executeToolAction } from "@/app/actions/execute-action";
+import { MiniAppRuntime } from "@/components/miniapp/runtime";
 
 interface ToolRendererProps {
   toolId: string;
-  spec: DashboardSpec;
+  spec: ToolSpec;
   executionResults?: Record<string, ExecutionResult>;
   isLoading?: boolean;
 }
 
 export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }: ToolRendererProps) {
-  // Support for Multi-Page Tools
-  const [activePageId, setActivePageId] = React.useState<string | null>(null);
-  const [toolState, setToolState] = React.useState(spec.state || {});
-
-  // Update state when spec changes (only if keys are missing)
-  React.useEffect(() => {
-    if (spec.state) {
-      setToolState(prev => {
-        const next = { ...prev };
-        let changed = false;
-        for (const [k, v] of Object.entries(spec.state)) {
-          if (!(k in next)) {
-            next[k] = v;
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
-    }
-  }, [spec.state]);
-
-  const executeAction = React.useCallback(async (actionId?: string, args?: Record<string, any>) => {
-      if (!actionId) return;
-      const action = spec.actions?.find(a => a.id === actionId);
-      if (!action) return;
-
-      console.log("Executing Action:", action.type, action.id, args);
-
-      if (action.type === "state_mutation") {
-          const updates = action.config?.updates || {};
-          // Merge args into updates if needed
-          const mergedUpdates = { ...updates, ...args };
-          setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
-      }
-      
-      if (action.type === "navigation") {
-          if (action.config?.pageId) setActivePageId(action.config.pageId);
-      }
-
-      if (action.type === "integration_call") {
-          // TODO: This needs to call the engine. 
-          // For now, we simulate by updating state if the action expects output
-          // In a real implementation, this would trigger a useQuery re-fetch or mutation
-          console.warn("Integration calls require engine connectivity");
-      }
-  }, [spec.actions]);
-
-  React.useEffect(() => {
-    if (spec?.pages?.length > 0 && !activePageId) {
-      setActivePageId(spec.pages[0].id);
-    }
-  }, [spec, activePageId]);
-
   if (!spec) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -96,9 +45,17 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }:
     );
   }
 
-  // STRICT SEPARATION: Mini App vs Dashboard
   if (spec.kind === "mini_app") {
-      return <MiniAppRuntime toolId={toolId} spec={spec} />;
+    const integrations = {
+      call: async (actionId: string, args: Record<string, any>) => {
+        const result = await executeToolAction(toolId, actionId, args);
+        if (result.status === "success") {
+          return { status: "success" as const, rows: result.rows || [] };
+        }
+        return { status: "error" as const, error: result.error || "Unknown error" };
+      },
+    };
+    return MiniAppRuntime.run({ spec, integrations });
   }
 
   // Dashboard Mode (Legacy)
@@ -141,181 +98,6 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }:
       ) : (
         renderLegacyViews(spec, executionResults)
       )}
-    </div>
-  );
-}
-
-import { getComponent } from "./component-registry";
-
-function MiniAppRuntime({ toolId, spec }: { toolId: string; spec: DashboardSpec }) {
-  const [activePageId, setActivePageId] = React.useState<string | null>(null);
-  const [toolState, setToolState] = React.useState(spec.state || {});
-  const [isExecuting, setIsExecuting] = React.useState(false);
-
-  // Initialize Page
-  React.useEffect(() => {
-    if (spec.pages?.length > 0 && !activePageId) {
-      setActivePageId(spec.pages[0].id);
-    }
-  }, [spec, activePageId]);
-
-  // Update state when spec changes
-  React.useEffect(() => {
-    if (spec.state) {
-      setToolState(prev => {
-        const next = { ...prev };
-        let changed = false;
-        for (const [k, v] of Object.entries(spec.state)) {
-          if (!(k in next)) {
-            next[k] = v;
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
-    }
-  }, [spec.state]);
-
-  const executeAction = React.useCallback(async (actionId: string, args?: Record<string, any>) => {
-      const action = spec.actions?.find(a => a.id === actionId);
-      if (!action) return;
-
-      console.log("[MiniAppRuntime] Executing Action:", action.type, action.id, args);
-      setIsExecuting(true);
-
-      const runStep = async (type: string, config: any) => {
-          if (type === "state_mutation") {
-              const updates = config?.updates || {};
-              const mergedUpdates = { ...updates, ...args };
-              setToolState((prev: any) => ({ ...prev, ...mergedUpdates }));
-          }
-          
-          if (type === "navigation") {
-              if (config?.pageId) setActivePageId(config.pageId);
-          }
-
-          if (type === "integration_call") {
-              // We use the actionId as the capability execution ID for now
-              // In strict mode, config should have capabilityId and params
-              const result = await executeToolAction(toolId, actionId, { ...config, ...args });
-              if (result.status === "success") {
-                  setToolState((prev: any) => ({ ...prev, [`${actionId}.data`]: result.rows }));
-              } else {
-                  console.error("Action execution returned error:", result.error);
-                  setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: result.error }));
-                  throw new Error(result.error); // Stop chain
-              }
-          }
-      };
-
-      try {
-          // Multi-step support
-          if (action.steps && action.steps.length > 0) {
-              for (const step of action.steps) {
-                  await runStep(step.type, step.config);
-              }
-          } else {
-              // Legacy single-step fallback
-              await runStep(action.type, action.config);
-          }
-      } catch (e) {
-          console.error("Action execution failed:", e);
-          setToolState((prev: any) => ({ ...prev, [`${actionId}.error`]: e instanceof Error ? e.message : "Unknown error" }));
-      } finally {
-          setIsExecuting(false);
-      }
-  }, [spec.actions, toolId]);
-
-  // Event Handler
-  const handleEvent = React.useCallback((eventName: string, args?: any) => {
-      // Find the event definition on the component?
-      // For now, we assume the component calls this with specific args.
-      // But we need to know WHICH component triggered it to look up its events.
-      // Refactor: handleEvent needs (componentId, eventName, args)
-      console.warn("handleEvent called without component context");
-  }, []);
-
-  const handleComponentEvent = React.useCallback((componentId: string, eventName: string, args?: any) => {
-      const activePage = spec.pages?.find(p => p.id === activePageId);
-      const component = activePage?.components.find(c => c.id === componentId);
-      if (!component) return;
-
-      // 1. State Binding Update (Implicit)
-      if (eventName === "onChange" && args?.bindKey) {
-          setToolState((prev: any) => ({ ...prev, [args.bindKey]: args.value }));
-      }
-
-      // 2. Explicit Event Actions
-      if (component.events) {
-          const eventHandlers = component.events.filter(e => e.type === eventName);
-          for (const handler of eventHandlers) {
-              // Resolve args: if handler has args, merge them.
-              const actionArgs = { ...(handler.args || {}), ...(args || {}) };
-              executeAction(handler.actionId, actionArgs);
-          }
-      }
-  }, [activePageId, spec.pages, executeAction]);
-
-  const activePage = spec.pages?.find(p => p.id === activePageId);
-
-  if (!activePage) {
-      return <div className="p-6">No pages defined</div>;
-  }
-
-  return (
-    <div className="h-full flex flex-col bg-background relative">
-        {isExecuting && (
-            <div className="absolute inset-0 bg-background/50 z-50 flex items-center justify-center">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-            </div>
-        )}
-        
-        {/* App Header */}
-        <div className="border-b px-6 py-4 flex items-center justify-between">
-            <div>
-                <h1 className="text-xl font-semibold">{spec.title}</h1>
-                {spec.description && <p className="text-sm text-muted-foreground">{spec.description}</p>}
-            </div>
-            {spec.pages?.length > 1 && (
-                <div className="flex gap-2">
-                    {spec.pages.map(page => (
-                        <button 
-                            key={page.id}
-                            onClick={() => setActivePageId(page.id)}
-                            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${activePageId === page.id ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'}`}
-                        >
-                            {page.name}
-                        </button>
-                    ))}
-                </div>
-            )}
-        </div>
-
-        {/* App Content */}
-        <div className="flex-1 overflow-auto p-6">
-             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 max-w-6xl mx-auto">
-                 {activePage.components.map(comp => {
-                     try {
-                         const Component = getComponent(comp.type);
-                         return (
-                             <div key={comp.id} className={comp.layout?.w ? `col-span-${Math.min(comp.layout.w, 4)}` : "col-span-1"}>
-                                 <Component 
-                                     component={comp} 
-                                     state={toolState} 
-                                     onEvent={(name, args) => handleComponentEvent(comp.id, name, args)}
-                                 />
-                             </div>
-                         );
-                     } catch (e) {
-                         return (
-                             <div key={comp.id} className="col-span-4 border border-red-200 bg-red-50 p-4 rounded-md text-red-600 text-sm">
-                                 Error rendering {comp.type}: {e instanceof Error ? e.message : String(e)}
-                             </div>
-                         );
-                     }
-                 })}
-             </div>
-        </div>
     </div>
   );
 }

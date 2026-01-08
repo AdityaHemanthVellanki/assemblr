@@ -4,6 +4,8 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { getServerEnv } from "@/lib/env";
 import { dashboardSpecSchema, type DashboardSpec } from "@/lib/spec/dashboardSpec";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
+import type { MiniAppSpec } from "@/lib/spec/miniAppSpec";
 import { compileIntent } from "./planner";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { getDiscoveredSchemas } from "@/lib/schema/store";
@@ -21,14 +23,14 @@ const versioningService = new VersioningService();
 export type ToolChatResponse = {
   explanation: string;
   message: { type: "text"; content: string };
-  spec: DashboardSpec;
+  spec: ToolSpec;
   metadata?: any;
 };
 
 export async function processToolChat(input: {
   orgId: string;
   toolId: string; // Added toolId
-  currentSpec: DashboardSpec;
+  currentSpec: ToolSpec;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
@@ -62,7 +64,7 @@ export async function processToolChat(input: {
     console.log("[Orchestrator] Compiled Intent:", JSON.stringify(intent, null, 2));
 
     // 2. Dispatch & Execute
-    let executionResults: any[] = [];
+    const executionResults: any[] = [];
 
     if (intent.intent_type === "chat" || intent.intent_type === "analyze") {
       if (intent.tasks && intent.tasks.length > 0) {
@@ -140,21 +142,45 @@ const mutation = intent.tool_mutation;
             };
         }
 
-        // Apply Mutation to Spec via Materializer
-        let updatedSpec: DashboardSpec;
+        let updatedSpec: ToolSpec;
         try {
             updatedSpec = materializeSpec(input.currentSpec, mutation);
-            updatedSpec.kind = "mini_app"; // Enforce Kind
-            
-            // Log Mutations for Tracing
-            if (mutation.pagesAdded) {
-                mutation.pagesAdded.forEach(p => tracer.logUIMutation({ componentId: p.id || "unknown", changeType: "added", details: p }));
-            }
-            if (mutation.componentsAdded) {
-                mutation.componentsAdded.forEach(c => tracer.logUIMutation({ componentId: c.id || "unknown", changeType: "added", details: c }));
-            }
+            (updatedSpec as any).kind = "mini_app"; // Enforce Kind
+
+            const currentMiniApp = input.currentSpec as unknown as Partial<MiniAppSpec>;
+            const updatedMiniApp = updatedSpec as MiniAppSpec;
+
+            const beforePageIds = new Set((currentMiniApp.pages || []).map(p => p.id));
+            const addedPages = (updatedMiniApp.pages || []).filter(p => !beforePageIds.has(p.id));
+            addedPages.forEach(p =>
+                tracer.logUIMutation({
+                    componentId: p.id,
+                    changeType: "added",
+                    details: p
+                })
+            );
+
+            const beforeComponentsByPage: Record<string, Set<string>> = {};
+            (currentMiniApp.pages || []).forEach(p => {
+                beforeComponentsByPage[p.id] = new Set((p.components || []).map(c => c.id));
+            });
+            (updatedMiniApp.pages || []).forEach(p => {
+                const seen = beforeComponentsByPage[p.id] || new Set<string>();
+                (p.components || []).forEach(c => {
+                    if (!seen.has(c.id)) {
+                        tracer.logUIMutation({
+                            componentId: c.id,
+                            changeType: "added",
+                            details: { pageId: p.id, component: c }
+                        });
+                    }
+                });
+            });
+
             if (mutation.stateAdded) {
-                Object.keys(mutation.stateAdded).forEach(k => tracer.logStateMutation({ key: k, oldValue: undefined, newValue: mutation.stateAdded![k] }));
+                Object.keys(mutation.stateAdded).forEach(k =>
+                    tracer.logStateMutation({ key: k, oldValue: undefined, newValue: mutation.stateAdded![k] })
+                );
             }
         } catch (e) {
             console.error("Spec Materialization Failed:", e);
@@ -168,7 +194,7 @@ const mutation = intent.tool_mutation;
         }
 
         // Verify Contract
-        const hasUI = updatedSpec.pages?.some(p => p.components.length > 0);
+        const hasUI = (updatedSpec as MiniAppSpec).pages?.some(p => p.components.length > 0);
         if (!hasUI) {
             tracer.finish("failure", "No UI components generated");
             return {

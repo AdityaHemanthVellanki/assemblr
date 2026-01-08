@@ -21,10 +21,11 @@ export async function getBudget(orgId: string): Promise<OrgBudget> {
   const supabase = await createSupabaseServerClient();
   
   // @ts-ignore
-  let { data, error } = await (supabase.from("org_budgets") as any)
+  const { data: fetchedData } = await (supabase.from("org_budgets") as any)
     .select()
     .eq("org_id", orgId)
     .single();
+  let data = fetchedData;
 
   if (!data) {
     // Create default budget

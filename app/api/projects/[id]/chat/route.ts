@@ -5,7 +5,7 @@ import { processToolChat } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
-import { dashboardSpecSchema } from "@/lib/spec/dashboardSpec";
+import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z.object({
@@ -84,7 +84,7 @@ export async function POST(
     if (!projectRes.data.spec) {
       throw new Error("Project spec is missing");
     }
-    const currentSpec = dashboardSpecSchema.parse(projectRes.data.spec);
+    const currentSpec = parseToolSpec(projectRes.data.spec);
 
     if (!historyRes.data) {
       throw new Error("chat_messages returned null data");
@@ -113,7 +113,7 @@ export async function POST(
     if (mode === "create" && (result.metadata as any)?.persist === true) {
       const { error: updateError } = await supabase
         .from("projects")
-        .update({ spec: result.spec })
+        .update({ spec: result.spec as any })
         .eq("id", toolId);
  
       if (updateError) {

@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
 import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/auth/permissions";
 import { getServerEnv } from "@/lib/env";
-import { dashboardSpecSchema } from "@/lib/spec/dashboardSpec";
+import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ProjectPage({
@@ -50,7 +50,7 @@ export default async function ProjectPage({
   let spec = null;
   if (projectRes.data.spec) {
     try {
-      spec = dashboardSpecSchema.parse(projectRes.data.spec);
+      spec = parseToolSpec(projectRes.data.spec);
     } catch (e) {
       console.error("Failed to parse project spec", e);
       // Don't crash, just show empty/error state

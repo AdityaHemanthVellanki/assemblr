@@ -1,61 +1,48 @@
 
-import { z } from "zod";
-import { 
-    DashboardSpec, 
-    pageSchema, 
-    componentSchema, 
-    actionSchema, 
-    dashboardSpecSchema 
-} from "./dashboardSpec";
-
-// Infer types locally since they aren't exported
-type Page = z.infer<typeof pageSchema>;
-type Component = z.infer<typeof componentSchema>;
-type Action = z.infer<typeof actionSchema>;
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 
 export interface ToolMutation {
-    pagesAdded?: Partial<Page>[];
-    // Components might come with an extra 'pageId' from the planner to indicate placement
-    componentsAdded?: (Partial<Component> & { pageId?: string })[];
-    actionsAdded?: Action[];
+    pagesAdded?: (Partial<any> & { pageId?: string; title?: string })[];
+    componentsAdded?: (Partial<any> & { pageId?: string; componentId?: string })[];
+    actionsAdded?: (Partial<any> & { actionId?: string })[];
     stateAdded?: Record<string, any>;
 }
 
-export function materializeSpec(baseSpec: DashboardSpec, mutation: ToolMutation): DashboardSpec {
-    // 1. Deep Clone Base Spec to avoid mutations
-    const spec: DashboardSpec = JSON.parse(JSON.stringify(baseSpec));
-    
-    // Ensure arrays exist
+export function materializeSpec(baseSpec: ToolSpec, mutation: ToolMutation): ToolSpec {
+    const spec: any = JSON.parse(JSON.stringify(baseSpec ?? {}));
     if (!spec.pages) spec.pages = [];
     if (!spec.actions) spec.actions = [];
     if (!spec.state) spec.state = {};
 
-    // 2. Process Pages
-    // Initialize pages with empty components array if missing
+    return materializeMiniApp(spec, mutation) as ToolSpec;
+}
+
+function materializeMiniApp(spec: any, mutation: ToolMutation): any {
+    if (!mutation) return spec;
+
+    if (!spec.pages) spec.pages = [];
+    if (!spec.actions) spec.actions = [];
+    if (!spec.state) spec.state = {};
+
     if (mutation.pagesAdded) {
         for (const rawPage of mutation.pagesAdded) {
-            const page: Page = {
-                id: rawPage.id || `page_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-                name: rawPage.name || "Untitled Page",
+            const canonicalId = (rawPage as any).pageId ?? rawPage.id ?? `page_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            const name = (rawPage as any).name ?? (rawPage as any).title ?? "Untitled Page";
+            const page: any = {
+                id: canonicalId,
+                name,
                 path: rawPage.path,
-                components: [], // FORCE INITIALIZATION
+                components: [],
                 state: rawPage.state || {},
                 layoutMode: rawPage.layoutMode || "grid",
                 events: rawPage.events || []
             };
-            
-            // Check for duplicates
-            const existingIndex = spec.pages.findIndex(p => p.id === page.id);
+            const existingIndex = spec.pages.findIndex((p: any) => p.id === page.id);
             if (existingIndex >= 0) {
-                // Merge or Skip? Usually overwrite or merge. Let's overwrite for now or keep existing components?
-                // User said "pagesAdded", implying new pages.
-                // If ID collision, we might assume it's an update, but "Added" implies new.
-                // For safety, if it exists, we keep the existing one and warn, or update properties.
-                // Let's assume unique IDs for now or overwrite metadata but keep components.
                 spec.pages[existingIndex] = {
                     ...spec.pages[existingIndex],
                     ...page,
-                    components: spec.pages[existingIndex].components // Preserve existing components
+                    components: spec.pages[existingIndex].components
                 };
             } else {
                 spec.pages.push(page);
@@ -63,69 +50,10 @@ export function materializeSpec(baseSpec: DashboardSpec, mutation: ToolMutation)
         }
     }
 
-    // 3. Process Components
-    if (mutation.componentsAdded) {
-        for (const rawComp of mutation.componentsAdded) {
-            const { pageId, ...compData } = rawComp;
-            
-            // Default to first page if no pageId provided
-            let targetPage: Page | undefined;
-            
-            if (pageId) {
-                targetPage = spec.pages.find(p => p.id === pageId);
-                if (!targetPage) {
-                    throw new Error(`Component ${compData.id || "unknown"} references missing pageId: ${pageId}`);
-                }
-            }
-            
-            if (!targetPage) {
-                if (spec.pages.length === 0) {
-                    // Auto-create Home Page if absolutely no pages exist
-                    const homePage: Page = {
-                        id: "page_home",
-                        name: "Home",
-                        components: [],
-                        state: {},
-                        layoutMode: "grid"
-                    };
-                    spec.pages.push(homePage);
-                    targetPage = homePage;
-                } else {
-                    // Fallback to first page
-                    targetPage = spec.pages[0];
-                }
-            }
-
-            // Construct full component
-            // We need to cast because partials might miss required fields, but we assume planner is good enough
-            // or we fill defaults.
-            const component: Component = {
-                id: compData.id || `comp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-                type: (compData.type as any) || "text",
-                label: compData.label,
-                properties: compData.properties || {},
-                dataSource: compData.dataSource,
-                events: compData.events,
-                renderIf: compData.renderIf,
-                layout: compData.layout
-            };
-
-            targetPage.components.push(component);
-        }
+    if (spec.pages.length === 0) {
+        throw new Error("Mini app has no pages. This is a fatal authoring error.");
     }
 
-    // 4. Process Actions
-    if (mutation.actionsAdded) {
-        for (const action of mutation.actionsAdded) {
-            // Check duplicate
-            const exists = spec.actions.some(a => a.id === action.id);
-            if (!exists) {
-                spec.actions.push(action);
-            }
-        }
-    }
-
-    // 5. Process State
     if (mutation.stateAdded) {
         const resolvedState: Record<string, any> = {};
         for (const [key, value] of Object.entries(mutation.stateAdded)) {
@@ -137,7 +65,66 @@ export function materializeSpec(baseSpec: DashboardSpec, mutation: ToolMutation)
         };
     }
 
-    // 6. Validation Phase
+    if (mutation.componentsAdded) {
+        for (const rawComp of mutation.componentsAdded) {
+            const { pageId, componentId, ...compData } = rawComp as any;
+            let targetPage: any | undefined;
+            if (pageId) {
+                targetPage = spec.pages.find((p: any) => p.id === pageId);
+                if (!targetPage) {
+                    const available = spec.pages.map((p: any) => p.id).join(", ") || "(none)";
+                    throw new Error(
+                        `MiniApp materialization error: page '${pageId}' not found. Available pages: ${available}`
+                    );
+                }
+            }
+            if (!targetPage) {
+                targetPage = spec.pages[0];
+            }
+
+            const canonicalId =
+                componentId ??
+                compData.id ??
+                `comp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+            const component: any = {
+                id: canonicalId,
+                type: (compData.type as any) || "text",
+                label: compData.label,
+                properties: compData.properties || {},
+                dataSource: compData.dataSource,
+                events: compData.events,
+                renderIf: compData.renderIf,
+                children: compData.children,
+                layout: compData.layout
+            };
+
+            targetPage.components.push(component);
+        }
+    }
+
+    if (mutation.actionsAdded) {
+        for (const rawAction of mutation.actionsAdded) {
+            const { actionId, id, ...rest } = rawAction as any;
+            const canonicalId =
+                actionId ??
+                id ??
+                `action_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+            const action: any = {
+                id: canonicalId,
+                type: (rest as any).type,
+                config: (rest as any).config,
+                steps: (rest as any).steps
+            };
+
+            const exists = spec.actions.some((a: any) => a.id === action.id);
+            if (!exists) {
+                spec.actions.push(action);
+            }
+        }
+    }
+
     validateSpec(spec);
 
     return spec;
@@ -174,7 +161,7 @@ function resolveTemplates(value: any): any {
     return value;
 }
 
-function validateSpec(spec: DashboardSpec) {
+function validateSpec(spec: any) {
     // 1. Check for duplicate Component IDs across all pages
     const componentIds = new Set<string>();
     for (const page of spec.pages) {
@@ -192,7 +179,7 @@ function validateSpec(spec: DashboardSpec) {
     // 2. Check Action references (if actions reference components, which they don't directly in schema, 
     // but events reference actions)
     // Validate Events reference existing Actions
-    const actionIds = new Set(spec.actions.map(a => a.id));
+    const actionIds = new Set(spec.actions.map((a: any) => a.id));
     for (const page of spec.pages) {
         for (const comp of page.components) {
             if (comp.events) {
