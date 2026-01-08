@@ -174,7 +174,16 @@ class MiniAppStore {
   }
 }
 
-function validateRegisteredComponents(spec: MiniAppSpec) {
+export function validateRegisteredComponents(spec: MiniAppSpec) {
+  // Enforce component canonicalization (lowercase types)
+  for (const page of spec.pages ?? []) {
+    walkComponents((page.components ?? []) as any, (c) => {
+      if (c.type && typeof c.type === "string") {
+        c.type = c.type.toLowerCase();
+      }
+    });
+  }
+
   const missing: Array<{ id: string; type: string }> = [];
   for (const page of spec.pages ?? []) {
     walkComponents((page.components ?? []) as any, (c) => {
