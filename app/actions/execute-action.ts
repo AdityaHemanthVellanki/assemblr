@@ -55,7 +55,7 @@ export async function executeToolAction(
         orgId = project?.org_id;
 
         if (version.status === "draft") {
-             console.log(`[ExecuteAction] Running DRAFT version ${versionId}. Enforcing isolation (mock).`);
+             // Enforcing isolation logic can be added here if needed
         }
     } else {
         // 1. Fetch Tool Spec (Active)

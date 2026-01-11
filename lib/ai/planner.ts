@@ -39,6 +39,12 @@ INSTRUCTIONS:
      - Components trigger Actions via Events.
      - componentsAdded MUST include "pageId" to specify which page they belong to.
      - Actions call Capabilities (integration_call) or Mutate State.
+   - **STRICT COMPONENT RULES**:
+     - ALLOWED TYPES: "container", "text", "button", "input", "select", "list", "table", "card", "heatmap".
+     - FORBIDDEN TYPES: "panel", "banner", "modal", "dialog".
+     - Use "container" with properties.layout="row"|"column"|"grid" for all structure.
+     - To simulate a Panel: Use a Container with properties.variant="card".
+     - To simulate a Banner: Use a Card or Text with appropriate styling (if possible via props, otherwise simple Text).
    - NEVER guess resources. Use capability IDs.
 4. **Tasks (for Chat/Analyze)**:
    - If user wants data, define "tasks" to execute capabilities.

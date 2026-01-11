@@ -351,106 +351,29 @@ const HeatmapComponent: MiniAppComponent = {
 const ContainerComponent: MiniAppComponent = {
   type: "container",
   render: ({ component, renderChildren }) => {
-    const mode = component.properties?.layoutMode ?? "grid";
-    const className =
-      mode === "stack"
-        ? "flex flex-col gap-4"
-        : "grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4";
+    const layout = component.properties?.layout ?? "column";
+    let className = "gap-4";
+
+    if (layout === "row") {
+      className += " flex flex-row flex-wrap items-start";
+    } else if (layout === "column") {
+      className += " flex flex-col";
+    } else if (layout === "grid") {
+      const cols = component.properties?.columns ?? 2;
+      // Simple grid mapping
+      if (cols === 3) className += " grid grid-cols-1 md:grid-cols-3";
+      else if (cols === 4) className += " grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4";
+      else className += " grid grid-cols-1 md:grid-cols-2";
+    } else if (layout === "freeform") {
+       className += " relative h-full min-h-[200px]"; 
+    }
+
+    // Support for "card" variant to simulate Panel
+    if (component.properties?.variant === "card" || component.properties?.variant === "panel") {
+      className += " border rounded-lg p-4 bg-card text-card-foreground shadow-sm";
+    }
+
     return <div className={className}>{renderChildren(component.children ?? [])}</div>;
-  },
-};
-
-const PanelComponent: MiniAppComponent = {
-  type: "panel",
-  render: ({ component, state, renderChildren }) => {
-    const bindKey = getBindKey(component);
-    const data = bindKey ? state[bindKey] : component.dataSource?.value;
-    const title = component.label ?? component.properties?.title;
-    const fields = component.properties?.fields ?? [];
-
-    if (!data) {
-      return (
-        <Card className="h-full">
-          {title ? (
-            <CardHeader className="py-3">
-              <CardTitle className="text-sm font-medium">{String(title)}</CardTitle>
-            </CardHeader>
-          ) : null}
-          <CardContent className="pt-0 text-sm text-muted-foreground">
-            <div className="p-4 text-center">No details available</div>
-          </CardContent>
-        </Card>
-      );
-    }
-
-    return (
-      <Card className="h-full">
-        {title ? (
-          <CardHeader className="py-3">
-            <CardTitle className="text-sm font-medium">{String(title)}</CardTitle>
-          </CardHeader>
-        ) : null}
-        <CardContent className={title ? "pt-0" : "pt-6"}>
-          <div className="space-y-4">
-            <div className="grid gap-2">
-              {Array.isArray(fields) &&
-                fields.map((field: string) => {
-                  const val = data[field];
-                  return (
-                    <div key={field} className="grid grid-cols-3 gap-2 text-sm">
-                      <div className="font-medium text-muted-foreground capitalize">
-                        {field.replace(/_/g, " ")}
-                      </div>
-                      <div className="col-span-2 break-words" title={String(val)}>
-                        {String(val ?? "-")}
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-            {component.children?.length ? (
-              <div className="flex flex-wrap gap-2 pt-4 border-t">
-                {renderChildren(component.children)}
-              </div>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card>
-    );
-  },
-};
-
-const BannerComponent: MiniAppComponent = {
-  type: "banner",
-  render: ({ component, state }) => {
-    const visibleIf = component.properties?.visibleIf;
-    let isVisible = true;
-
-    if (visibleIf !== undefined) {
-      if (typeof visibleIf === "boolean") isVisible = visibleIf;
-      else if (typeof visibleIf === "string") {
-        const match = visibleIf.match(/^{{state\.([a-zA-Z0-9_.$-]+)}}$/);
-        if (match) {
-          isVisible = !!state[match[1]];
-        }
-      }
-    }
-
-    if (!isVisible) return null;
-
-    const message = component.properties?.message ?? component.label ?? "Alert";
-    const severity = component.properties?.severity ?? "info";
-
-    let styles =
-      "bg-blue-50 text-blue-900 border-blue-200 dark:bg-blue-900/30 dark:text-blue-100 dark:border-blue-800";
-    if (severity === "warning")
-      styles =
-        "bg-yellow-50 text-yellow-900 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-100 dark:border-yellow-800";
-    if (severity === "error")
-      styles =
-        "bg-red-50 text-red-900 border-red-200 dark:bg-red-900/30 dark:text-red-100 dark:border-red-800";
-
-    return <div className={`rounded-md border p-4 text-sm ${styles}`}>{String(message)}</div>;
   },
 };
 
@@ -473,10 +396,6 @@ export const MINI_APP_COMPONENTS: Record<string, MiniAppComponent> = {
   Container: ContainerComponent,
   heatmap: HeatmapComponent,
   Heatmap: HeatmapComponent,
-  panel: PanelComponent,
-  Panel: PanelComponent,
-  banner: BannerComponent,
-  Banner: BannerComponent,
 };
 
 export function getMiniAppComponent(type: string): MiniAppComponent {
