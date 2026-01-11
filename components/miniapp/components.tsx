@@ -377,6 +377,62 @@ const ContainerComponent: MiniAppComponent = {
   },
 };
 
+const TableComponent: MiniAppComponent = {
+  type: "table",
+  render: ({ component, state }) => {
+    const bindKey = getBindKey(component);
+    const raw = bindKey ? state[bindKey] : component.properties?.data;
+    const items = Array.isArray(raw) ? raw : [];
+    const title = component.label ?? component.properties?.title;
+    
+    // Columns: [{ key: "id", label: "ID" }]
+    const columns = Array.isArray(component.properties?.columns) 
+      ? component.properties.columns 
+      : (items.length > 0 && typeof items[0] === 'object' 
+          ? Object.keys(items[0]).slice(0, 5).map(k => ({ key: k, label: k })) 
+          : [{ key: "value", label: "Value" }]);
+
+    return (
+      <Card className="h-full flex flex-col overflow-hidden">
+        {title ? (
+          <CardHeader className="py-3 shrink-0">
+            <CardTitle className="text-sm font-medium">{String(title)}</CardTitle>
+          </CardHeader>
+        ) : null}
+        <div className="flex-1 overflow-auto min-h-[100px]">
+          <table className="w-full text-sm text-left border-collapse">
+            <thead className="bg-muted sticky top-0 z-10">
+              <tr>
+                {columns.map((c: any) => (
+                  <th key={c.key} className="p-2 font-medium border-b">{c.label ?? c.key}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {items.length === 0 ? (
+                <tr><td colSpan={columns.length} className="p-4 text-center text-muted-foreground">No data</td></tr>
+              ) : (
+                items.map((item, i) => (
+                  <tr key={i} className="hover:bg-muted/50">
+                    {columns.map((c: any) => {
+                      const val = typeof item === 'object' ? (item as any)[c.key] : item;
+                      return (
+                        <td key={c.key} className="p-2 border-b truncate max-w-[200px]" title={String(val)}>
+                          {val === null || val === undefined ? "" : String(val)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    );
+  },
+};
+
 export const MINI_APP_COMPONENTS: Record<string, MiniAppComponent> = {
   button: ButtonComponent,
   Button: ButtonComponent,
@@ -396,7 +452,10 @@ export const MINI_APP_COMPONENTS: Record<string, MiniAppComponent> = {
   Container: ContainerComponent,
   heatmap: HeatmapComponent,
   Heatmap: HeatmapComponent,
+  table: TableComponent,
+  Table: TableComponent,
 };
+
 
 export function getMiniAppComponent(type: string): MiniAppComponent {
   const comp = MINI_APP_COMPONENTS[type] ?? MINI_APP_COMPONENTS[type.toLowerCase()];

@@ -13,69 +13,162 @@ import { OrgPolicy } from "@/lib/core/governance";
 const policyEngine = new PolicyEngine();
 
 const SYSTEM_PROMPT = `
-You are the Assemblr Intent Compiler.
-Your job is to translate user natural language into a deterministic system intent.
+You are the Assemblr Mini App Architect.
+Your job is to translate user natural language into a deterministic, EXECUTABLE system intent.
 
 CORE RESPONSIBILITY:
 - Analyze the user's goal.
 - Compile it into a machine-readable "CompiledIntent" structure.
-- Decide if the user wants to "chat" (get info), "create" (build a tool), "modify" (edit a tool), or "analyze" (reasoning).
+- Ensure the resulting Mini App is INTERACTIVE, WIRED, and RUNNABLE.
 
 AVAILABLE CAPABILITIES:
 {{CAPABILITIES}}
 
+HARD CONSTRAINTS (STRICT ENFORCEMENT):
+1. **ALLOWED COMPONENTS ONLY**:
+   - Container, Text, Button, Input, Select, List, Table, Card, Heatmap.
+   - BANNED: Panel, Banner, Modal, Dialog, Sidebar, etc.
+   - MAPPINGS:
+     - "Panel" -> Container (variant="card") or Card
+     - "Banner" -> Container + Text
+     - "Sidebar" -> Container (column, fixed width)
+     - "Detail Panel" -> Card inside Container
+
+2. **EXECUTION & WIRING RULES (MANDATORY)**:
+   - **NO ACTION WITHOUT EVENT**: Every Action MUST be triggered by a Component Event (onClick, onChange, onLoad). Unreachable actions are FORBIDDEN.
+   - **NO DATA WITHOUT STATE**: Integration calls MUST write to state. UI MUST read from state.
+     - Pattern: Event -> Action (integration_call) -> State Update (assign) -> Component (dataSource/bindKey).
+   - **NO EMPTY SUCCESS**: At least one component MUST render data or respond to interaction. Static/empty shells are failures.
+
+3. **STATE MANAGEMENT**:
+   - Every integration_call action MUST have a \`config.assign\` property specifying the state key to update (e.g. "commits", "repos").
+   - Components MUST bind to these keys via \`dataSource: { type: "state", value: "key" }\` or \`properties.bindKey\`.
+
+4. **REAL CAPABILITIES ONLY**:
+   - Use ONLY the provided Capability IDs.
+   - NO mocks, NO placeholders, NO "fake" data.
+
 INSTRUCTIONS:
 1. **Analyze Intent**:
-   - "Show me commits" -> intent_type: "chat"
+   - "Show me commits" -> intent_type: "chat" (but if building a tool, use "create")
    - "Build a commit viewer" -> intent_type: "create"
-   - "Add a table of issues" -> intent_type: "modify" (if tool exists)
-2. **Determine Requirements**:
-   - Which integrations are needed? (e.g. "github", "slack")
-   - What are the constraints? (e.g. "sort by date", "limit 10")
-3. **Tool Mutation (for Create/Modify)**:
-   - If creating a tool, define the "tool_mutation" with pages, components, actions, and state.
-   - Follow strict Mini App architecture:
-     - Pages contain Components.
-     - Components trigger Actions via Events.
-     - componentsAdded MUST include "pageId" to specify which page they belong to.
-     - Actions call Capabilities (integration_call) or Mutate State.
-   - **STRICT COMPONENT RULES**:
-     - ALLOWED TYPES: "container", "text", "button", "input", "select", "list", "table", "card", "heatmap".
-     - FORBIDDEN TYPES: "panel", "banner", "modal", "dialog".
-     - Use "container" with properties.layout="row"|"column"|"grid"|"freeform" for all structure.
-     - To simulate a Panel: Use a Container with properties.variant="card".
-     - To simulate a Banner: Use a Card or Text with appropriate styling.
-   - NEVER guess resources. Use capability IDs.
-4. **Tasks (for Chat/Analyze)**:
-   - If user wants data, define "tasks" to execute capabilities.
+   - "Add a table of issues" -> intent_type: "modify"
+2. **Tool Mutation**:
+   - Define "tool_mutation" with pages, components, actions, state.
+   - **Container Layouts**: Use "container" with properties.layout="row"|"column"|"grid"|"freeform".
+   - **Data Binding**:
+     - Action: \`config.assign: "myKey"\`
+     - Component: \`dataSource: { type: "state", value: "myKey" }\`
+3. **Validation**:
+   - Before outputting, verify: Is every action wired? Is state used? Are components valid?
 
 You MUST respond with valid JSON only. Structure:
 {
   "intent_type": "chat" | "create" | "modify" | "analyze",
-  "system_goal": "string summary of goal",
-  "constraints": ["string", "string"],
+  "system_goal": "string",
+  "constraints": ["string"],
   "integrations_required": ["github"],
-  "output_mode": "text" | "mini_app",
-  "execution_policy": {
-    "deterministic": true,
-    "parallelizable": false,
-    "retries": 0
-  },
+  "output_mode": "mini_app",
+  "execution_policy": { "deterministic": true, "parallelizable": false, "retries": 0 },
   "tool_mutation": {
-    "pagesAdded": [],
-    "componentsAdded": [],
-    "actionsAdded": [],
-    "stateAdded": {}
-  },
-  "tasks": [
-    {
-      "id": "t1",
-      "capabilityId": "github_commits_list",
-      "params": { "owner": "assemblr", "repo": "assemblr" }
-    }
-  ]
+    "pagesAdded": [{ "id": "p1", "components": [] }],
+    "componentsAdded": [
+      {
+        "id": "c1", "type": "button", "pageId": "p1", "label": "Load",
+        "events": [{ "type": "onClick", "actionId": "a1" }]
+      },
+      {
+        "id": "c2", "type": "table", "pageId": "p1",
+        "dataSource": { "type": "state", "value": "commits" },
+        "properties": { "columns": [{ "key": "message", "label": "Message" }] }
+      }
+    ],
+    "actionsAdded": [
+      {
+        "id": "a1", "type": "integration_call",
+        "config": {
+          "capabilityId": "github_commits_list",
+          "params": { "owner": "assemblr", "repo": "assemblr" },
+          "assign": "commits"
+        }
+      }
+    ],
+    "stateAdded": { "commits": [] }
+  }
 }
 `;
+
+function validateCompiledIntent(intent: CompiledIntent) {
+  if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
+  const mutation = intent.tool_mutation;
+  if (!mutation) return;
+
+  // 1. Validate Component Types
+  const allowedTypes = new Set(["container", "text", "button", "input", "select", "dropdown", "list", "table", "card", "heatmap"]);
+  const components = mutation.componentsAdded || [];
+  for (const c of components) {
+    if (!allowedTypes.has(c.type.toLowerCase())) {
+      throw new Error(`Unsupported component type: ${c.type}. Allowed: ${Array.from(allowedTypes).join(", ")}`);
+    }
+  }
+
+  // 2. Validate Event Wiring
+  const actions = mutation.actionsAdded || [];
+  const actionIds = new Set(actions.map((a: any) => a.id));
+  const triggeredActions = new Set<string>();
+
+  for (const c of components) {
+    if (c.events) {
+      for (const e of c.events) {
+        if (e.actionId) triggeredActions.add(e.actionId);
+      }
+    }
+  }
+  if (mutation.pagesAdded) {
+    for (const p of mutation.pagesAdded) {
+      if (p.events) {
+        for (const e of p.events) {
+          if (e.actionId) triggeredActions.add(e.actionId);
+        }
+      }
+    }
+  }
+
+  for (const id of actionIds) {
+    if (!triggeredActions.has(id)) {
+      throw new Error(`Action ${id} is defined but never triggered by any component or page event.`);
+    }
+  }
+
+  // 3. Validate Integration State Binding
+  const stateKeysRead = new Set<string>();
+  for (const c of components) {
+    if (c.dataSource?.type === "state" && c.dataSource.value) {
+      stateKeysRead.add(c.dataSource.value);
+    }
+    if (c.properties?.bindKey) {
+      stateKeysRead.add(c.properties.bindKey);
+    }
+    if (c.type === "text" && typeof c.properties?.content === "string") {
+      const matches = c.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
+      if (matches) {
+        matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
+      }
+    }
+  }
+
+  for (const a of actions) {
+    if (a.type === "integration_call") {
+      const assignKey = a.config?.assign;
+      if (!assignKey && !stateKeysRead.has(`${a.id}.data`)) {
+        throw new Error(`Integration action ${a.id} does not assign result to state (config.assign) nor is its default output (${a.id}.data) read by any component.`);
+      }
+      if (assignKey && !stateKeysRead.has(assignKey)) {
+        throw new Error(`Integration action ${a.id} assigns to state key '${assignKey}', but no component reads this key.`);
+      }
+    }
+  }
+}
 
 export async function compileIntent(
   userMessage: string,
@@ -136,10 +229,14 @@ export async function compileIntent(
     if (!content) throw new Error("Empty AI response");
 
     const result = JSON.parse(content);
-    // TODO: Validate with Zod against CompiledIntent schema
+    
+    // Validate the intent
+    validateCompiledIntent(result as CompiledIntent);
+
     return result as CompiledIntent;
   } catch (err) {
     console.error("Intent compilation failed", err);
-    throw new Error("Failed to compile user intent");
+    throw new Error(`Failed to compile user intent: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+

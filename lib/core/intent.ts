@@ -1,5 +1,5 @@
 export type CompiledIntent = {
-  intent_type: "chat" | "create" | "execute";
+  intent_type: "chat" | "create" | "execute" | "modify";
   system_goal: string;
   constraints: string[];
   integrations_required: string[]; // IntegrationID[]
