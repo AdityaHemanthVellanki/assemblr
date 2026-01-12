@@ -65,6 +65,7 @@ INSTRUCTIONS:
 You MUST respond with valid JSON only. Structure:
 {
   "intent_type": "chat" | "create" | "modify" | "analyze",
+  "mutation_kind": "add" | "modify" | "restructure" | "remove" | "style" | "wire",
   "system_goal": "string",
   "constraints": ["string"],
   "integrations_required": ["github"],
@@ -82,6 +83,12 @@ You MUST respond with valid JSON only. Structure:
         "dataSource": { "type": "state", "value": "commits" },
         "properties": { "columns": [{ "key": "message", "label": "Message" }] }
       }
+    ],
+    "componentsUpdated": [
+      { "componentRef": "commits table", "patch": { "properties": { "columns": [{ "key": "sha", "label": "SHA" }, { "key": "message", "label": "Message" }] } } }
+    ],
+    "containerPropsUpdated": [
+      { "componentRef": "main container", "propertiesPatch": { "layout": "row", "gap": 2 } }
     ],
     "actionsAdded": [
       {
@@ -239,4 +246,3 @@ export async function compileIntent(
     throw new Error(`Failed to compile user intent: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
-

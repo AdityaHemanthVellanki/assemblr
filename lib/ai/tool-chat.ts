@@ -21,6 +21,122 @@ import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 
 const versioningService = new VersioningService();
 
+function resolveMutationRefs(spec: ToolSpec, mutation: any): any {
+  const mini = spec as any;
+  function allComponents(): Array<{ pageId: string; comp: any }> {
+    const out: Array<{ pageId: string; comp: any }> = [];
+    for (const p of mini.pages || []) {
+      for (const c of p.components || []) {
+        out.push({ pageId: p.id, comp: c });
+        pushChildren(p.id, c);
+      }
+    }
+    function pushChildren(pageId: string, node: any) {
+      if (Array.isArray(node.children)) {
+        for (const ch of node.children) {
+          out.push({ pageId, comp: ch });
+          pushChildren(pageId, ch);
+        }
+      }
+    }
+    return out;
+  }
+  const comps = allComponents();
+  function matchRef(ref?: string): { id?: string; pageId?: string } | null {
+    if (!ref) return null;
+    const r = String(ref).toLowerCase();
+    for (const { pageId, comp } of comps) {
+      const label = (comp.label ? String(comp.label) : "").toLowerCase();
+      const type = String(comp.type || "").toLowerCase();
+      const title = (comp.properties?.title ? String(comp.properties.title) : "").toLowerCase();
+      const bindKey = (comp.properties?.bindKey ? String(comp.properties.bindKey) : "").toLowerCase();
+      const dsVal = (comp.dataSource?.value ? String(comp.dataSource.value) : "").toLowerCase();
+      const candidates = [label, type, title, bindKey, dsVal].filter(Boolean);
+      if (candidates.some((c) => c && (r.includes(c) || c.includes(r)))) {
+        return { id: comp.id, pageId };
+      }
+    }
+    return null;
+  }
+  function resolveList(list?: any[]) {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (!item) continue;
+      if (!item.id && item.componentRef) {
+        const hit = matchRef(item.componentRef);
+        if (hit) {
+          item.id = hit.id;
+          item.pageId = item.pageId || hit.pageId;
+        }
+      }
+    }
+  }
+  resolveList(mutation.componentsUpdated);
+  resolveList(mutation.componentsRemoved);
+  resolveList(mutation.reparent);
+  resolveList(mutation.containerPropsUpdated);
+  return mutation;
+}
+
+function validateInteraction(spec: MiniAppSpec) {
+  const actionIds = new Set((spec.actions || []).map((a) => a.id));
+  const triggered = new Set<string>();
+  for (const p of spec.pages || []) {
+    for (const c of p.components || []) {
+      collectEvents(c);
+    }
+    function collectEvents(node: any) {
+      if (Array.isArray(node.events)) {
+        for (const e of node.events) {
+          if (e.actionId) triggered.add(e.actionId);
+        }
+      }
+      if (Array.isArray(node.children)) {
+        for (const ch of node.children) collectEvents(ch);
+      }
+    }
+  }
+  for (const id of actionIds) {
+    if (!triggered.has(id)) {
+      throw new Error(`Action ${id} is not triggered by any event`);
+    }
+  }
+  const stateKeysRead = new Set<string>();
+  for (const p of spec.pages || []) {
+    for (const c of p.components || []) {
+      collectBindings(c);
+    }
+    function collectBindings(node: any) {
+      if (node.dataSource?.type === "state" && node.dataSource.value) {
+        stateKeysRead.add(node.dataSource.value);
+      }
+      if (node.properties?.bindKey) {
+        stateKeysRead.add(node.properties.bindKey);
+      }
+      if (node.type === "text" && typeof node.properties?.content === "string") {
+        const m = node.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
+        if (m) {
+          m.forEach((s: string) => stateKeysRead.add(s.replace("{{state.", "").replace("}}", "")));
+        }
+      }
+      if (Array.isArray(node.children)) {
+        for (const ch of node.children) collectBindings(ch);
+      }
+    }
+  }
+  for (const a of spec.actions || []) {
+    if (a.type === "integration_call") {
+      const assignKey = a.config?.assign;
+      if (!assignKey && !stateKeysRead.has(`${a.id}.data`)) {
+        throw new Error(`Integration action ${a.id} has no assign and its default state is not read`);
+      }
+      if (assignKey && !stateKeysRead.has(assignKey)) {
+        throw new Error(`Integration action ${a.id} assigns to '${assignKey}' but no component reads it`);
+      }
+    }
+  }
+}
+
 export type ToolChatResponse = {
   explanation: string;
   message: { type: "text"; content: string };
@@ -151,12 +267,14 @@ const mutation = intent.tool_mutation;
         }
 
         let updatedSpec: ToolSpec;
+        let updatedMiniApp: MiniAppSpec;
         try {
-            updatedSpec = materializeSpec(input.currentSpec, mutation);
+            const resolved = resolveMutationRefs(input.currentSpec, mutation);
+            updatedSpec = materializeSpec(input.currentSpec, resolved);
             (updatedSpec as any).kind = "mini_app"; // Enforce Kind
 
             const currentMiniApp = input.currentSpec as unknown as Partial<MiniAppSpec>;
-            const updatedMiniApp = updatedSpec as MiniAppSpec;
+            updatedMiniApp = updatedSpec as MiniAppSpec;
 
             const beforePageIds = new Set((currentMiniApp.pages || []).map(p => p.id));
             const addedPages = (updatedMiniApp.pages || []).filter(p => !beforePageIds.has(p.id));
@@ -208,6 +326,17 @@ const mutation = intent.tool_mutation;
             return {
                 explanation: "I failed to generate a visible user interface. Please try again.",
                 message: { type: "text", content: "I failed to generate a visible user interface. Please try again." },
+                spec: input.currentSpec,
+                metadata: { trace: tracer.getTrace() }
+            };
+        }
+        try {
+            validateInteraction(updatedMiniApp);
+        } catch (e) {
+            tracer.finish("failure", `Interaction invalid: ${e instanceof Error ? e.message : String(e)}`);
+            return {
+                explanation: "The requested change resulted in non-interactive or unwired UI. Please refine your instruction.",
+                message: { type: "text", content: "The change would create ghost actions or unused state. Please clarify the wiring." },
                 spec: input.currentSpec,
                 metadata: { trace: tracer.getTrace() }
             };

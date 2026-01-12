@@ -352,7 +352,11 @@ const ContainerComponent: MiniAppComponent = {
   type: "container",
   render: ({ component, renderChildren }) => {
     const layout = component.properties?.layout ?? "column";
-    let className = "gap-4";
+    const gapRaw = component.properties?.gap;
+    const density = component.properties?.density;
+    const gapVal = typeof gapRaw === "number" ? gapRaw : density === "compact" ? 2 : density === "spaced" ? 6 : 4;
+    const gapClass = gapVal === 0 ? "gap-0" : gapVal === 1 ? "gap-1" : gapVal === 2 ? "gap-2" : gapVal === 3 ? "gap-3" : gapVal === 4 ? "gap-4" : gapVal === 5 ? "gap-5" : gapVal === 6 ? "gap-6" : gapVal === 8 ? "gap-8" : "gap-4";
+    let className = gapClass;
 
     if (layout === "row") {
       className += " flex flex-row flex-wrap items-start";
