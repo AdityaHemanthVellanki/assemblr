@@ -78,7 +78,9 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
             const patch = (upd.patch || {}) as any;
             if (patch.name !== undefined) target.name = patch.name;
             if (patch.layoutMode !== undefined) target.layoutMode = patch.layoutMode;
-            if (patch.events !== undefined) target.events = patch.events;
+            if (Array.isArray(patch.events)) {
+                target.events = [...(target.events || []), ...patch.events];
+            }
             if (patch.path !== undefined) target.path = patch.path;
         }
     }

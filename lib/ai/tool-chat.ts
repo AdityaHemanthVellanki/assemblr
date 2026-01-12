@@ -71,10 +71,28 @@ function resolveMutationRefs(spec: ToolSpec, mutation: any): any {
       }
     }
   }
+  function resolvePages(list?: any[]) {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (!item) continue;
+      if (!item.pageId && item.pageRef) {
+        const r = String(item.pageRef).toLowerCase();
+        const hit = (mini.pages || []).find((p: any) => {
+          const name = String(p.name ?? "").toLowerCase();
+          const pid = String(p.id ?? "").toLowerCase();
+          return (name && (r.includes(name) || name.includes(r))) || (pid && (r.includes(pid) || pid.includes(r)));
+        });
+        if (hit) {
+          item.pageId = hit.id;
+        }
+      }
+    }
+  }
   resolveList(mutation.componentsUpdated);
   resolveList(mutation.componentsRemoved);
   resolveList(mutation.reparent);
   resolveList(mutation.containerPropsUpdated);
+  resolvePages(mutation.pagesUpdated);
   return mutation;
 }
 

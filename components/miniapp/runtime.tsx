@@ -224,13 +224,23 @@ class MiniAppStore {
 
   getAction = (actionId: string) => this.spec.actions?.find((a) => a.id === actionId);
 
-  dispatch = async (actionId: string, payload: Record<string, any> = {}) => {
+  dispatch = async (
+    actionId: string,
+    payload: Record<string, any> = {},
+    source?: { event: string; originId?: string; auto?: boolean },
+  ) => {
     const action = this.getAction(actionId);
     if (!action) return;
 
     const startedAt = Date.now();
     this.snapshot = { ...this.snapshot, runningActions: [...this.snapshot.runningActions, { actionId, startedAt }] };
-    this.addTrace({ actionId, type: "action", status: "started", message: `Action ${actionId} started` });
+    this.addTrace({
+      actionId,
+      type: "action",
+      status: "started",
+      message: `Action ${actionId} started via ${source?.event ?? "unknown"}` + (source?.auto ? " (auto)" : ""),
+      data: source ? { originId: source.originId, event: source.event, auto: !!source.auto } : undefined,
+    });
     this.emit();
 
     try {
@@ -238,11 +248,23 @@ class MiniAppStore {
       for (const step of steps) {
         await this.runStep(actionId, step.type, step.config ?? {}, payload);
       }
-      this.addTrace({ actionId, type: "action", status: "completed", message: `Action ${actionId} completed` });
+      this.addTrace({
+        actionId,
+        type: "action",
+        status: "completed",
+        message: `Action ${actionId} completed`,
+        data: source ? { originId: source.originId, event: source.event, auto: !!source.auto } : undefined,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.setError(msg);
-      this.addTrace({ actionId, type: "action", status: "error", message: msg });
+      this.addTrace({
+        actionId,
+        type: "action",
+        status: "error",
+        message: msg,
+        data: source ? { originId: source.originId, event: source.event, auto: !!source.auto } : undefined,
+      });
     } finally {
       this.snapshot = { ...this.snapshot, runningActions: this.snapshot.runningActions.filter((a) => a.actionId !== actionId || a.startedAt !== startedAt) };
       this.emit();
@@ -429,12 +451,12 @@ function MiniAppRoot({
 
     // onLoad
     const onLoad = spec.lifecycle?.onLoad ?? [];
-    for (const h of onLoad) store.dispatch(h.actionId, h.args ?? {});
+    for (const h of onLoad) store.dispatch(h.actionId, h.args ?? {}, { event: "onLoad" });
 
     return () => {
       // onUnload
       const onUnload = spec.lifecycle?.onUnload ?? [];
-      for (const h of onUnload) store.dispatch(h.actionId, h.args ?? {});
+      for (const h of onUnload) store.dispatch(h.actionId, h.args ?? {}, { event: "onUnload" });
     };
   }, [spec.lifecycle, store]);
 
@@ -446,7 +468,7 @@ function MiniAppRoot({
     for (const h of onInterval) {
       if (h.intervalMs && h.intervalMs > 0) {
         const id = setInterval(() => {
-          store.dispatch(h.actionId, h.args ?? {});
+          store.dispatch(h.actionId, h.args ?? {}, { event: "onInterval" });
         }, h.intervalMs);
         intervals.push(id);
       }
@@ -464,7 +486,7 @@ function MiniAppRoot({
     pageLoadFired.current.add(activePage.id);
 
     const handlers = (activePage.events ?? []).filter((e) => e.type === "onLoad" || e.type === "onPageLoad");
-    for (const h of handlers) store.dispatch(h.actionId, h.args ?? {});
+    for (const h of handlers) store.dispatch(h.actionId, h.args ?? {}, { event: h.type, originId: activePage.id, auto: !!h.args?.autoAttached });
   }, [activePage, store]);
 
   const componentLoadFired = React.useRef<Set<string>>(new Set());
@@ -475,7 +497,7 @@ function MiniAppRoot({
       if (componentLoadFired.current.has(String(c.id))) return;
       componentLoadFired.current.add(String(c.id));
       const handlers = (c.events ?? []).filter((e: any) => e.type === "onComponentLoad" || e.type === "onLoad");
-      for (const h of handlers) store.dispatch(h.actionId, h.args ?? {});
+      for (const h of handlers) store.dispatch(h.actionId, h.args ?? {}, { event: h.type, originId: String(c.id), auto: !!h.args?.autoAttached });
     });
   }, [activePage, store]);
 
@@ -492,7 +514,7 @@ function MiniAppRoot({
 
       const comp = found as MiniAppComponentSpec;
       const handlers = (comp.events ?? []).filter((e) => e.type === eventName);
-      for (const h of handlers) store.dispatch(h.actionId, { ...(h.args ?? {}), ...(payload ?? {}) });
+      for (const h of handlers) store.dispatch(h.actionId, { ...(h.args ?? {}), ...(payload ?? {}) }, { event: eventName, originId: componentId });
     },
     [activePage, store],
   );

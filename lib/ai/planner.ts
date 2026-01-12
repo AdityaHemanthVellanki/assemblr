@@ -445,10 +445,76 @@ export async function compileIntent(
     if (!content) throw new Error("No response from AI");
 
     const parsed = JSON.parse(content);
+    autoAttachDefaultTriggers(parsed, currentSpec);
     validateCompiledIntent(parsed, currentSpec);
     return parsed;
   } catch (error) {
     console.error("Intent compilation failed:", error);
     throw error;
+  }
+}
+
+function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec): Set<string> {
+  const triggered = new Set<string>();
+  const addFromNode = (node: any) => {
+    if (Array.isArray(node?.events)) {
+      for (const e of node.events) {
+        if (e?.actionId) triggered.add(e.actionId);
+      }
+    }
+  };
+  for (const c of (mutation.componentsAdded ?? [])) addFromNode(c);
+  for (const p of (mutation.pagesAdded ?? [])) addFromNode(p);
+  for (const u of (mutation.componentsUpdated ?? [])) addFromNode(u.patch);
+  for (const u of (mutation.pagesUpdated ?? [])) addFromNode(u.patch);
+  if (currentSpec && (currentSpec as any).kind === "mini_app") {
+    const mini: any = currentSpec as any;
+    for (const p of mini.pages ?? []) {
+      addFromNode(p);
+      for (const c of p.components ?? []) {
+        const stack: any[] = [c];
+        while (stack.length) {
+          const n = stack.shift();
+          if (!n) continue;
+          addFromNode(n);
+          if (Array.isArray(n.children)) stack.push(...n.children);
+        }
+      }
+    }
+  }
+  return triggered;
+}
+
+function autoAttachDefaultTriggers(intent: CompiledIntent, currentSpec?: ToolSpec) {
+  const mutation = intent.tool_mutation as any;
+  if (!mutation) return;
+  const actions = mutation.actionsAdded ?? [];
+  if (!actions.length) return;
+
+  const triggered = collectTriggeredActionIds(mutation, currentSpec);
+  const orphanActions = actions.filter((a: any) => a?.type === "integration_call" && !triggered.has(a.id));
+  if (!orphanActions.length) return;
+
+  let firstPageId: string | undefined;
+  if (Array.isArray(mutation.pagesAdded) && mutation.pagesAdded.length) {
+    const p = mutation.pagesAdded[0];
+    firstPageId = (p as any).pageId ?? p.id;
+  }
+  if (!firstPageId && currentSpec && (currentSpec as any).kind === "mini_app") {
+    const pages = ((currentSpec as any).pages ?? []);
+    firstPageId = pages[0]?.id;
+  }
+  if (!firstPageId) return;
+
+  mutation.pagesUpdated = mutation.pagesUpdated ?? [];
+  for (const a of orphanActions) {
+    mutation.pagesUpdated.push({
+      pageId: firstPageId,
+      patch: {
+        events: [
+          { type: "onPageLoad", actionId: a.id, args: { autoAttached: true } }
+        ]
+      }
+    });
   }
 }
