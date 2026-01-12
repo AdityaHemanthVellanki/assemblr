@@ -18,6 +18,8 @@ export type CompiledIntent = {
   tool_mutation?: {
     pagesAdded?: any[];
     componentsAdded?: any[];
+    componentsUpdated?: Array<{ componentRef: string; patch: any }>;
+    containerPropsUpdated?: Array<{ componentRef: string; propertiesPatch: any }>;
     actionsAdded?: any[];
     stateAdded?: Record<string, any>;
   };

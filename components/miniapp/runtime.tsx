@@ -58,12 +58,28 @@ class MiniAppStore {
 
   constructor(private spec: MiniAppSpec, private integrations: MiniAppIntegrations, initialState: Record<string, any>) {
     this.snapshot = {
-      state: { ...(spec.state ?? {}), ...(initialState ?? {}) },
+      state: { 
+        _trace: [], // System trace log
+        ...(spec.state ?? {}), 
+        ...(initialState ?? {}) 
+      },
       activePageId: spec.pages?.[0]?.id ?? null,
       runningActions: [],
       integrationCalls: [],
       lastError: null,
     };
+  }
+
+  private addTrace(entry: { actionId: string; type: string; status: string; message?: string; data?: any }) {
+    const trace = this.snapshot.state._trace || [];
+    const newEntry = {
+      id: Math.random().toString(36).slice(2),
+      timestamp: Date.now(),
+      ...entry,
+    };
+    // Keep last 50 entries
+    const updatedTrace = [newEntry, ...trace].slice(0, 50);
+    this.setState({ _trace: updatedTrace });
   }
 
   subscribe = (listener: () => void) => {
@@ -101,6 +117,7 @@ class MiniAppStore {
 
     const startedAt = Date.now();
     this.snapshot = { ...this.snapshot, runningActions: [...this.snapshot.runningActions, { actionId, startedAt }] };
+    this.addTrace({ actionId, type: "action", status: "started", message: `Action ${actionId} started` });
     this.emit();
 
     try {
@@ -108,9 +125,11 @@ class MiniAppStore {
       for (const step of steps) {
         await this.runStep(actionId, step.type, step.config ?? {}, payload);
       }
+      this.addTrace({ actionId, type: "action", status: "completed", message: `Action ${actionId} completed` });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.setError(msg);
+      this.addTrace({ actionId, type: "action", status: "error", message: msg });
     } finally {
       this.snapshot = { ...this.snapshot, runningActions: this.snapshot.runningActions.filter((a) => a.actionId !== actionId || a.startedAt !== startedAt) };
       this.emit();
@@ -136,28 +155,51 @@ class MiniAppStore {
       const argsRaw: Record<string, any> =
         (config.args ?? config.params ?? config.payload ?? {}) as Record<string, any>;
       const args = evaluateArgs(argsRaw, ctx);
+      const assignKey = typeof config.assign === "string" ? config.assign : undefined;
+
+      // Set loading state
+      const loadingPatch: Record<string, any> = {
+        [`${actionId}.status`]: "loading",
+        [`${actionId}.error`]: null,
+      };
+      if (assignKey) {
+        loadingPatch[`${assignKey}Status`] = "loading";
+        loadingPatch[`${assignKey}Error`] = null;
+      }
+      this.setState(loadingPatch);
 
       const call = { actionId, startedAt: Date.now(), args: { ...args } };
       this.snapshot = { ...this.snapshot, integrationCalls: [...this.snapshot.integrationCalls, call] };
+      this.addTrace({ actionId, type: "integration", status: "loading", message: `Calling integration...`, data: args });
       this.emit();
 
       const res = await this.integrations.call(actionId, args);
       this.resultsByActionId[actionId] = res;
 
-      const assignKey = typeof config.assign === "string" ? config.assign : undefined;
       if (res.status === "success") {
         const patch: Record<string, any> = {
           [`${actionId}.data`]: res.rows,
           [`${actionId}.status`]: "success",
           [`${actionId}.error`]: null,
         };
-        if (assignKey) patch[assignKey] = res.rows;
+        if (assignKey) {
+          patch[assignKey] = res.rows;
+          patch[`${assignKey}Status`] = "success";
+          patch[`${assignKey}Error`] = null;
+        }
         this.setState(patch);
+        this.addTrace({ actionId, type: "integration", status: "success", message: `Integration success`, data: { rows: res.rows?.length } });
       } else {
-        this.setState({
+        const patch: Record<string, any> = {
           [`${actionId}.status`]: "error",
           [`${actionId}.error`]: res.error,
-        });
+        };
+        if (assignKey) {
+          patch[`${assignKey}Status`] = "error";
+          patch[`${assignKey}Error`] = res.error;
+        }
+        this.setState(patch);
+        this.addTrace({ actionId, type: "integration", status: "error", message: res.error });
         throw new Error(res.error);
       }
 
@@ -205,31 +247,32 @@ export function validateRegisteredComponents(spec: MiniAppSpec) {
 }
 
 function MiniAppHealthPanel({ snapshot }: { snapshot: RuntimeSnapshot }) {
+  const trace = snapshot.state._trace || [];
   return (
-    <div className="border-t p-4 text-xs font-mono bg-muted text-muted-foreground">
-      <div className="grid gap-4 md:grid-cols-3">
+    <div className="border-t p-4 text-xs font-mono bg-muted text-muted-foreground max-h-[400px] overflow-auto">
+      <div className="grid gap-4 md:grid-cols-2">
         <div>
-          <div className="font-semibold mb-1">Registered Components</div>
-          <pre className="whitespace-pre-wrap break-words">{JSON.stringify(Object.keys(MINI_APP_COMPONENTS), null, 2)}</pre>
+          <div className="font-semibold mb-2 sticky top-0 bg-muted py-1 border-b">Action Trace</div>
+          <div className="space-y-2">
+            {trace.length === 0 ? <div className="italic">No events yet</div> : null}
+            {trace.map((t: any) => (
+               <div key={t.id} className="border-l-2 pl-2 border-muted-foreground/20">
+                 <div className="flex gap-2">
+                   <span className="opacity-50">[{new Date(t.timestamp).toLocaleTimeString()}]</span>
+                   <span className={t.status === 'error' ? 'text-red-600 font-bold' : t.status === 'success' ? 'text-green-600 font-bold' : ''}>
+                     {t.type === 'action' ? '⚡' : '🔄'} {t.actionId}
+                   </span>
+                   <span className="uppercase text-[10px] border px-1 rounded">{t.status}</span>
+                 </div>
+                 {t.message ? <div className="mt-1 opacity-75 whitespace-pre-wrap">{t.message}</div> : null}
+                 {t.data ? <pre className="mt-1 opacity-50 text-[10px]">{JSON.stringify(t.data)}</pre> : null}
+               </div>
+            ))}
+          </div>
         </div>
         <div>
-          <div className="font-semibold mb-1">Active State Keys</div>
-          <pre className="whitespace-pre-wrap break-words">{JSON.stringify(Object.keys(snapshot.state ?? {}), null, 2)}</pre>
-        </div>
-        <div>
-          <div className="font-semibold mb-1">Runtime</div>
-          <pre className="whitespace-pre-wrap break-words">
-            {JSON.stringify(
-              {
-                activePageId: snapshot.activePageId,
-                runningActions: snapshot.runningActions,
-                integrationCalls: snapshot.integrationCalls.slice(-10),
-                lastError: snapshot.lastError,
-              },
-              null,
-              2,
-            )}
-          </pre>
+           <div className="font-semibold mb-2 sticky top-0 bg-muted py-1 border-b">State Snapshot</div>
+           <pre className="whitespace-pre-wrap break-words">{JSON.stringify(snapshot.state, (k, v) => k === '_trace' ? undefined : v, 2)}</pre>
         </div>
       </div>
     </div>

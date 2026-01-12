@@ -33,21 +33,26 @@ HARD CONSTRAINTS (STRICT ENFORCEMENT):
      - "Banner" -> Container + Text
      - "Sidebar" -> Container (column, fixed width)
      - "Detail Panel" -> Card inside Container
-
+ 
 2. **EXECUTION & WIRING RULES (MANDATORY)**:
    - **NO ACTION WITHOUT EVENT**: Every Action MUST be triggered by a Component Event (onClick, onChange, onLoad). Unreachable actions are FORBIDDEN.
    - **NO DATA WITHOUT STATE**: Integration calls MUST write to state. UI MUST read from state.
      - Pattern: Event -> Action (integration_call) -> State Update (assign) -> Component (dataSource/bindKey).
    - **NO EMPTY SUCCESS**: At least one component MUST render data or respond to interaction. Static/empty shells are failures.
-
-3. **STATE MANAGEMENT**:
-   - Every integration_call action MUST have a \`config.assign\` property specifying the state key to update (e.g. "commits", "repos").
-   - Components MUST bind to these keys via \`dataSource: { type: "state", value: "key" }\` or \`properties.bindKey\`.
-
+ 
+3. **STATE MANAGEMENT & FEEDBACK LOOPS (CRITICAL)**:
+   - **ASYNC STATUS KEYS**: For every integration_call, you MUST track its status in state.
+     - Pattern: \`config.assign: "commits"\` -> System automatically manages \`commitsStatus\` ("idle"|"loading"|"success"|"error").
+   - **VISIBLE FEEDBACK**: 
+     - Components MUST bind to these status keys to show loading/error states.
+     - Example: Table with \`properties.loadingKey: "commitsStatus"\`, \`properties.errorKey: "commitsError"\`.
+   - **EMPTY STATES**:
+     - Lists/Tables MUST have \`properties.emptyMessage\` explaining what to do next (e.g. "No commits found. Select a repo.").
+ 
 4. **REAL CAPABILITIES ONLY**:
    - Use ONLY the provided Capability IDs.
    - NO mocks, NO placeholders, NO "fake" data.
-
+ 
 INSTRUCTIONS:
 1. **Analyze Intent**:
    - "Show me commits" -> intent_type: "chat" (but if building a tool, use "create")
@@ -59,9 +64,9 @@ INSTRUCTIONS:
    - **Data Binding**:
      - Action: \`config.assign: "myKey"\`
      - Component: \`dataSource: { type: "state", value: "myKey" }\`
-3. **Validation**:
-   - Before outputting, verify: Is every action wired? Is state used? Are components valid?
-
+     - Status: Component properties \`loadingKey: "myKeyStatus"\`, \`errorKey: "myKeyError"\`.
+   - Before outputting, verify: Is every action wired? Is state used? Are components valid? Is feedback visible?
+ 
 You MUST respond with valid JSON only. Structure:
 {
   "intent_type": "chat" | "create" | "modify" | "analyze",
@@ -81,7 +86,12 @@ You MUST respond with valid JSON only. Structure:
       {
         "id": "c2", "type": "table", "pageId": "p1",
         "dataSource": { "type": "state", "value": "commits" },
-        "properties": { "columns": [{ "key": "message", "label": "Message" }] }
+        "properties": { 
+          "columns": [{ "key": "message", "label": "Message" }],
+          "loadingKey": "commitsStatus",
+          "errorKey": "commitsError",
+          "emptyMessage": "No commits found. Click Load to fetch."
+        }
       }
     ],
     "componentsUpdated": [
@@ -100,7 +110,7 @@ You MUST respond with valid JSON only. Structure:
         }
       }
     ],
-    "stateAdded": { "commits": [] }
+    "stateAdded": { "commits": [], "commitsStatus": "idle", "commitsError": null }
   }
 }
 `;
@@ -147,20 +157,32 @@ function validateCompiledIntent(intent: CompiledIntent) {
     }
   }
 
-  // 3. Validate Integration State Binding
+  // 3. Validate State Usage (Mutations -> UI)
   const stateKeysRead = new Set<string>();
-  for (const c of components) {
+  const collectReadKeys = (c: any) => {
     if (c.dataSource?.type === "state" && c.dataSource.value) {
       stateKeysRead.add(c.dataSource.value);
     }
-    if (c.properties?.bindKey) {
-      stateKeysRead.add(c.properties.bindKey);
+    if (c.properties?.bindKey) stateKeysRead.add(c.properties.bindKey);
+    if (c.properties?.loadingKey) stateKeysRead.add(c.properties.loadingKey);
+    if (c.properties?.errorKey) stateKeysRead.add(c.properties.errorKey);
+    if (c.properties?.data && typeof c.properties.data === "string" && c.properties.data.startsWith("{{state.")) {
+      const match = c.properties.data.match(/^{{state\.([a-zA-Z0-9_.$-]+)}}$/);
+      if (match) stateKeysRead.add(match[1]);
     }
     if (c.type === "text" && typeof c.properties?.content === "string") {
       const matches = c.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
       if (matches) {
         matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
       }
+    }
+  };
+
+  for (const c of components) collectReadKeys(c);
+  // Also check componentsUpdated
+  if (mutation.componentsUpdated) {
+    for (const update of mutation.componentsUpdated) {
+      if (update.patch) collectReadKeys({ properties: update.patch.properties, dataSource: update.patch.dataSource });
     }
   }
 
@@ -170,8 +192,25 @@ function validateCompiledIntent(intent: CompiledIntent) {
       if (!assignKey && !stateKeysRead.has(`${a.id}.data`)) {
         throw new Error(`Integration action ${a.id} does not assign result to state (config.assign) nor is its default output (${a.id}.data) read by any component.`);
       }
-      if (assignKey && !stateKeysRead.has(assignKey)) {
-        throw new Error(`Integration action ${a.id} assigns to state key '${assignKey}', but no component reads this key.`);
+      if (assignKey) {
+        if (!stateKeysRead.has(assignKey)) {
+          throw new Error(`Integration action ${a.id} assigns to state key '${assignKey}', but no component reads this key.`);
+        }
+        // Enforce feedback loop
+        const statusKey = `${assignKey}Status`;
+        if (!stateKeysRead.has(statusKey)) {
+           // We might want to relax this for simple "chat" responses, but for "create"/"modify" apps it's critical.
+           // The user said: "Components MUST bind to these status keys".
+           throw new Error(`Integration action ${a.id} implies status key '${statusKey}', but no component binds to it (loadingKey). Feedback loop missing.`);
+        }
+      }
+    }
+    if (a.type === "state_mutation") {
+      const updates = a.config?.updates ?? a.config?.set ?? {};
+      for (const key of Object.keys(updates)) {
+        if (!stateKeysRead.has(key)) {
+          throw new Error(`Action ${a.id} mutates state key '${key}', but no component reads this key. Visible reaction required.`);
+        }
       }
     }
   }
@@ -219,30 +258,27 @@ export async function compileIntent(
     const contextMessages = history.map(m => ({
       role: m.role,
       content: m.content
-    })).slice(-10);
+    }));
 
     const response = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: prompt },
         ...contextMessages,
-        { role: "user", content: userMessage },
+        { role: "user", content: userMessage }
       ],
-      temperature: 0,
+      model: "gpt-4o",
       response_format: { type: "json_object" },
+      temperature: 0,
     });
 
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty AI response");
+    const content = response.choices[0].message.content;
+    if (!content) throw new Error("No response from AI");
 
-    const result = JSON.parse(content);
-    
-    // Validate the intent
-    validateCompiledIntent(result as CompiledIntent);
-
-    return result as CompiledIntent;
-  } catch (err) {
-    console.error("Intent compilation failed", err);
-    throw new Error(`Failed to compile user intent: ${err instanceof Error ? err.message : String(err)}`);
+    const parsed = JSON.parse(content);
+    validateCompiledIntent(parsed);
+    return parsed;
+  } catch (error) {
+    console.error("Intent compilation failed:", error);
+    throw error;
   }
 }

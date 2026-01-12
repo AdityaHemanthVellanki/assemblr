@@ -64,11 +64,14 @@ function getBindKey(component: MiniAppComponentSpec): string | undefined {
 
 const ButtonComponent: MiniAppComponent = {
   type: "button",
-  render: ({ component, emit }) => {
+  render: ({ component, emit, state }) => {
     const label = component.properties?.text ?? component.label ?? "Button";
+    const loadingKey = component.properties?.loadingKey;
+    const isLoading = loadingKey ? state[loadingKey] === "loading" : false;
+    
     return (
-      <Button disabled={!!component.properties?.disabled} onClick={() => emit("onClick")}>
-        {String(label)}
+      <Button disabled={!!component.properties?.disabled || isLoading} onClick={() => emit("onClick")}>
+        {isLoading ? "Loading..." : String(label)}
       </Button>
     );
   },
@@ -166,14 +169,33 @@ const ListComponent: MiniAppComponent = {
     const itemKey = typeof component.properties?.itemKey === "string" ? component.properties.itemKey : undefined;
     const itemLabelKey = typeof component.properties?.itemLabelKey === "string" ? component.properties.itemLabelKey : "name";
 
+    // Feedback Loop Support
+    const loadingKey = component.properties?.loadingKey;
+    const errorKey = component.properties?.errorKey;
+    const isLoading = loadingKey ? state[loadingKey] === "loading" : false;
+    const error = errorKey ? state[errorKey] : null;
+    const emptyMessage = component.properties?.emptyMessage ?? "No items found.";
+
     return (
       <Card className="h-full">
         <CardHeader className="py-3">
           <CardTitle className="text-sm font-medium">{String(title)}</CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          {items.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No items</div>
+          {error ? (
+             <div className="text-sm text-red-500 bg-red-50 p-2 rounded border border-red-200">
+               Error: {String(error)}
+             </div>
+          ) : isLoading ? (
+             <div className="space-y-2 animate-pulse">
+               <div className="h-8 bg-muted rounded" />
+               <div className="h-8 bg-muted rounded" />
+               <div className="h-8 bg-muted rounded" />
+             </div>
+          ) : items.length === 0 ? (
+            <div className="text-sm text-muted-foreground p-4 text-center border-2 border-dashed rounded-lg">
+              {emptyMessage}
+            </div>
           ) : (
             <div className="space-y-2">
               {items.slice(0, 200).map((it, idx) => {
@@ -282,7 +304,14 @@ const HeatmapComponent: MiniAppComponent = {
     const bindKey = getBindKey(component) ?? "commitTimes";
     const raw = component.dataSource?.type === "state" ? state[bindKey] : component.properties?.data;
 
-    if (component.dataSource?.type === "state" && state[bindKey] === undefined) {
+    // Feedback Loop Support
+    const loadingKey = component.properties?.loadingKey;
+    const errorKey = component.properties?.errorKey;
+    const isLoading = loadingKey ? state[loadingKey] === "loading" : false;
+    const error = errorKey ? state[errorKey] : null;
+    const emptyMessage = component.properties?.emptyMessage ?? "No data available.";
+
+    if ((component.dataSource?.type === "state" && state[bindKey] === undefined) || isLoading) {
       return (
         <Card className="h-full min-h-[300px] animate-pulse">
           <CardHeader className="py-3">
@@ -312,8 +341,14 @@ const HeatmapComponent: MiniAppComponent = {
           <CardTitle className="text-sm font-medium">{String(title)}</CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          {!hasAny ? (
-            <div className="text-sm text-muted-foreground">No data</div>
+          {error ? (
+            <div className="text-sm text-red-500 bg-red-50 p-2 rounded border border-red-200">
+              Error: {String(error)}
+            </div>
+          ) : !hasAny ? (
+            <div className="text-sm text-muted-foreground p-4 text-center border-2 border-dashed rounded-lg">
+              {emptyMessage}
+            </div>
           ) : (
             <div className="grid gap-1" style={{ gridTemplateColumns: `64px repeat(24, 16px)` }}>
               <div />
@@ -389,6 +424,13 @@ const TableComponent: MiniAppComponent = {
     const items = Array.isArray(raw) ? raw : [];
     const title = component.label ?? component.properties?.title;
     
+    // Feedback Loop Support
+    const loadingKey = component.properties?.loadingKey;
+    const errorKey = component.properties?.errorKey;
+    const isLoading = loadingKey ? state[loadingKey] === "loading" : false;
+    const error = errorKey ? state[errorKey] : null;
+    const emptyMessage = component.properties?.emptyMessage ?? "No data available.";
+
     // Columns: [{ key: "id", label: "ID" }]
     const columns = Array.isArray(component.properties?.columns) 
       ? component.properties.columns 
@@ -404,7 +446,18 @@ const TableComponent: MiniAppComponent = {
           </CardHeader>
         ) : null}
         <div className="flex-1 overflow-auto min-h-[100px]">
-          <table className="w-full text-sm text-left border-collapse">
+          {error ? (
+             <div className="m-4 text-sm text-red-500 bg-red-50 p-2 rounded border border-red-200">
+               Error: {String(error)}
+             </div>
+          ) : isLoading ? (
+             <div className="p-4 space-y-2 animate-pulse">
+               <div className="h-8 bg-muted rounded" />
+               <div className="h-8 bg-muted rounded" />
+               <div className="h-8 bg-muted rounded" />
+             </div>
+          ) : (
+            <table className="w-full text-sm text-left border-collapse">
             <thead className="bg-muted sticky top-0 z-10">
               <tr>
                 {columns.map((c: any) => (
@@ -414,7 +467,9 @@ const TableComponent: MiniAppComponent = {
             </thead>
             <tbody className="divide-y">
               {items.length === 0 ? (
-                <tr><td colSpan={columns.length} className="p-4 text-center text-muted-foreground">No data</td></tr>
+                <tr><td colSpan={columns.length} className="p-8 text-center text-muted-foreground border-2 border-dashed m-4 rounded-lg">
+                  {emptyMessage}
+                </td></tr>
               ) : (
                 items.map((item, i) => (
                   <tr key={i} className="hover:bg-muted/50">
@@ -431,6 +486,7 @@ const TableComponent: MiniAppComponent = {
               )}
             </tbody>
           </table>
+          )}
         </div>
       </Card>
     );
