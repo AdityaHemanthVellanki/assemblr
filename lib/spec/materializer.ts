@@ -484,4 +484,19 @@ function validateSpec(spec: any) {
             }
         }
     }
+
+    // 3. Check Lifecycle references
+    if (spec.lifecycle) {
+        const checkLifecycle = (events: any[], context: string) => {
+            if (!events) return;
+            for (const event of events) {
+                if (!actionIds.has(normalizeActionId(event.actionId))) {
+                    throw new Error(`${context} references missing action: ${event.actionId}`);
+                }
+            }
+        };
+        checkLifecycle(spec.lifecycle.onLoad, "Lifecycle.onLoad");
+        checkLifecycle(spec.lifecycle.onUnload, "Lifecycle.onUnload");
+        checkLifecycle(spec.lifecycle.onInterval, "Lifecycle.onInterval");
+    }
 }

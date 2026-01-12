@@ -70,9 +70,9 @@ export class MiniAppStore {
       const id = normalizeActionId(event.actionId);
       if (!this.actionRegistry.has(id)) {
         console.warn(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId} (normalized: ${id}). This action may fail at runtime.`);
-        // User requested "Fail fast", but throwing in constructor crashes the whole app. 
-        // We will throw to respect "Fail fast" requirement.
-        // throw new Error(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId}`);
+        // User requested "Fail fast". Since we have Strict Mode in compiler, this should theoretically not happen for generated apps.
+        // But for manual specs or bugs, we throw to prevent undefined behavior.
+        throw new Error(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId}`);
       }
     };
 

@@ -52,6 +52,60 @@ async function runTests() {
   };
   assertThrows(() => validateCompiledIntent(intentMissingAction), "Trigger references missing action");
 
+  // Test 2b: Strict Mode (Lifecycle references missing action)
+  const intentMissingLifecycleAction: CompiledIntent = {
+    intent_type: "modify",
+    tool_mutation: {
+        toolPropsUpdated: { title: "Test" },
+        // We need to mock a full spec structure for validateSpec to catch this if it was checking lifecycle directly
+        // But validateCompiledIntent checks *mutation* references. 
+        // Let's rely on validateSpec being called during materialization if we were testing materializer.
+        // For planner-logic, we check triggers.
+    },
+    original_user_prompt: "",
+    assistant_response_summary: "",
+    outcome: "success"
+  };
+  // Note: validateCompiledIntent mostly checks what's IN the mutation. 
+  // If we want to test materializer validation, we should call materializeSpec.
+
+  // Test 2c: Materializer Validation
+  console.log("\n--- Test 2c: Materializer Validation ---");
+  const baseSpec = { kind: "mini_app", title: "Test", pages: [], actions: [], state: {} };
+  const mutationWithBadLifecycle: any = { // ToolMutation type
+      // We can't easily inject lifecycle via standard ToolMutation unless we use a backdoor or if ToolMutation supports it.
+      // Wait, ToolMutation doesn't have 'lifecycleUpdated'. It's missing from the type definition in materializer.ts snippet I saw.
+      // If the user wants lifecycle updates, they usually come via... where?
+      // Checking miniAppSpec.ts, lifecycle is part of the spec.
+      // Checking ToolMutation in materializer.ts: 
+      // It has toolPropsUpdated, pagesAdded, etc. NO lifecycleUpdated.
+      // How does lifecycle get added? 
+      // Maybe it's not supported in mutation yet?
+      // If so, that's a gap.
+      // BUT, the user issue is about `onPageLoad` which is a PAGE event.
+      // Page events ARE supported in pagesUpdated.
+  };
+  
+  // Let's test Page Event validation in Materializer
+  const badPageUpdate = {
+      pagesUpdated: [{
+          pageId: "p1",
+          patch: {
+              events: [{ type: "onPageLoad", actionId: "ghost_action" }]
+          }
+      }]
+  };
+  // We need a base spec with page p1
+  const specWithPage: any = { 
+      kind: "mini_app", title: "Test", 
+      pages: [{ id: "p1", name: "Home", components: [] }], 
+      actions: [], 
+      state: {} 
+  };
+  
+  const { materializeSpec } = require("../lib/spec/materializer");
+  assertThrows(() => materializeSpec(specWithPage, badPageUpdate), "Page update references missing action");
+
   // Test 3: Unreachable Action
   const intentUnreachable: CompiledIntent = {
     intent_type: "modify",
