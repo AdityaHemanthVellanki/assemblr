@@ -7,6 +7,7 @@ import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
 import { Metric } from "@/lib/metrics/store";
 import { CompiledIntent } from "@/lib/core/intent";
+import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent } from "@/lib/ai/planner-logic";
 import { PolicyEngine } from "@/lib/governance/engine";
 import { OrgPolicy } from "@/lib/core/governance";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
@@ -36,7 +37,11 @@ HARD CONSTRAINTS (STRICT ENFORCEMENT):
      - "Detail Panel" -> Card inside Container
  
 2. **EXECUTION & WIRING RULES (MANDATORY)**:
-   - **NO ACTION WITHOUT EVENT**: Every Action MUST be triggered by a Component Event (onClick, onChange, onLoad). Unreachable actions are FORBIDDEN.
+   - **NO ACTION WITHOUT EVENT**: Every Action MUST be reachable via at least one trigger:
+     - **UI Event**: onClick, onChange, etc.
+     - **Lifecycle**: triggeredBy: { type: "lifecycle", event: "onPageLoad" }
+     - **State Change**: triggeredBy: { type: "state_change", stateKey: "filter" }
+     - **Internal**: triggeredBy: { type: "internal", reason: "orchestration" }
    - **NO DATA WITHOUT STATE**: Integration calls MUST write to state. UI MUST read from state.
      - Pattern: Event -> Action (integration_call) -> State Update (assign) -> Component (dataSource/bindKey).
    - **NO EMPTY SUCCESS**: At least one component MUST render data or respond to interaction. Static/empty shells are failures.
@@ -82,6 +87,9 @@ INSTRUCTIONS:
      - Action: \`config.assign: "myKey"\`
      - Component: \`dataSource: { type: "state", value: "myKey" }\`
      - Status: Component properties \`loadingKey: "myKeyStatus"\`, \`errorKey: "myKeyError"\`.
+   - **Action Triggers**:
+     - If an action updates state based on another state (e.g. filter), use \`triggeredBy: { type: "state_change", stateKey: "..." }\`.
+     - If an action runs on load, use \`triggeredBy: { type: "lifecycle", event: "onPageLoad" }\`.
    - Before outputting, verify: Is every action wired? Is state used? Are components valid? Is feedback visible?
    - Before outputting, verify: Did you reuse existing patterns in TOOL_MEMORY? Did you avoid duplicates?
  
@@ -137,22 +145,7 @@ You MUST respond with valid JSON only. Structure:
 }
 `;
 
-function flattenMiniAppComponents(mini: any): Array<{ pageId: string; component: any }> {
-  const out: Array<{ pageId: string; component: any }> = [];
-  for (const p of mini?.pages ?? []) {
-    for (const c of p.components ?? []) {
-      out.push({ pageId: p.id, component: c });
-      const stack: any[] = Array.isArray(c.children) ? [...c.children] : [];
-      while (stack.length) {
-        const node = stack.shift();
-        if (!node) continue;
-        out.push({ pageId: p.id, component: node });
-        if (Array.isArray(node.children)) stack.push(...node.children);
-      }
-    }
-  }
-  return out;
-}
+
 
 function buildToolMemory(spec?: ToolSpec): any {
   if (!spec || (spec as any).kind !== "mini_app") return { kind: (spec as any)?.kind ?? "unknown" };
@@ -235,153 +228,7 @@ function buildToolMemory(spec?: ToolSpec): any {
   };
 }
 
-function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec) {
-  if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
-  const mutation = intent.tool_mutation;
-  if (!mutation) return;
 
-  const existingMini = currentSpec && (currentSpec as any).kind === "mini_app" ? (currentSpec as any) : null;
-  const existingComponents = existingMini ? flattenMiniAppComponents(existingMini).map((x) => x.component) : [];
-  const existingPages = existingMini ? (existingMini.pages ?? []) : [];
-  const existingActions = existingMini ? (existingMini.actions ?? []) : [];
-
-  // 1. Validate Component Types
-  const allowedTypes = new Set(["container", "text", "button", "input", "select", "dropdown", "list", "table", "card", "heatmap"]);
-  const components = mutation.componentsAdded || [];
-  for (const c of components) {
-    if (!allowedTypes.has(c.type.toLowerCase())) {
-      throw new Error(`Unsupported component type: ${c.type}. Allowed: ${Array.from(allowedTypes).join(", ")}`);
-    }
-  }
-
-  // 2. Validate Event Wiring
-  const actions = mutation.actionsAdded || [];
-  const actionIds = new Set(actions.map((a: any) => a.id));
-  const triggeredActions = new Set<string>();
-
-  const collectTriggered = (node: any) => {
-    if (node?.events) {
-      for (const e of node.events) {
-        if (e?.actionId) triggeredActions.add(e.actionId);
-      }
-    }
-  };
-
-  for (const c of components) collectTriggered(c);
-  if (mutation.pagesAdded) {
-    for (const p of mutation.pagesAdded) {
-      collectTriggered(p);
-    }
-  }
-  if (mutation.componentsUpdated) {
-    for (const u of mutation.componentsUpdated) {
-      if (u?.patch?.events) collectTriggered({ events: u.patch.events });
-    }
-  }
-  if (existingMini) {
-    for (const p of existingPages) {
-      collectTriggered(p);
-      for (const c of p.components ?? []) {
-        const stack: any[] = [c];
-        while (stack.length) {
-          const n = stack.shift();
-          if (!n) continue;
-          collectTriggered(n);
-          if (Array.isArray(n.children)) stack.push(...n.children);
-        }
-      }
-    }
-  }
-
-  for (const id of actionIds) {
-    if (!triggeredActions.has(id)) {
-      throw new Error(`Action ${id} is defined but never triggered by any component or page event.`);
-    }
-  }
-
-  // 3. Validate State Usage (Mutations -> UI)
-  const stateKeysRead = new Set<string>();
-  const collectReadKeys = (c: any) => {
-    if (c.dataSource?.type === "state" && c.dataSource.value) {
-      stateKeysRead.add(c.dataSource.value);
-    }
-    if (c.properties?.bindKey) stateKeysRead.add(c.properties.bindKey);
-    if (c.properties?.loadingKey) stateKeysRead.add(c.properties.loadingKey);
-    if (c.properties?.errorKey) stateKeysRead.add(c.properties.errorKey);
-    if (c.properties?.data && typeof c.properties.data === "string" && c.properties.data.startsWith("{{state.")) {
-      const match = c.properties.data.match(/^{{state\.([a-zA-Z0-9_.$-]+)}}$/);
-      if (match) stateKeysRead.add(match[1]);
-    }
-    if (c.type === "text" && typeof c.properties?.content === "string") {
-      const matches = c.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
-      if (matches) {
-        matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
-      }
-    }
-  };
-
-  for (const c of components) collectReadKeys(c);
-  // Also check componentsUpdated
-  if (mutation.componentsUpdated) {
-    for (const update of mutation.componentsUpdated) {
-      if (update.patch) collectReadKeys({ properties: update.patch.properties, dataSource: update.patch.dataSource });
-    }
-  }
-  if (existingMini) {
-    for (const c of existingComponents) collectReadKeys(c);
-  }
-
-  for (const a of actions) {
-    if (a.type === "integration_call") {
-      const assignKey = a.config?.assign;
-      if (!assignKey && !stateKeysRead.has(`${a.id}.data`)) {
-        throw new Error(`Integration action ${a.id} does not assign result to state (config.assign) nor is its default output (${a.id}.data) read by any component.`);
-      }
-      if (assignKey) {
-        if (!stateKeysRead.has(assignKey)) {
-          throw new Error(`Integration action ${a.id} assigns to state key '${assignKey}', but no component reads this key.`);
-        }
-        // Enforce feedback loop
-        const statusKey = `${assignKey}Status`;
-        if (!stateKeysRead.has(statusKey)) {
-           // We might want to relax this for simple "chat" responses, but for "create"/"modify" apps it's critical.
-           // The user said: "Components MUST bind to these status keys".
-           throw new Error(`Integration action ${a.id} implies status key '${statusKey}', but no component binds to it (loadingKey). Feedback loop missing.`);
-        }
-      }
-    }
-    if (a.type === "state_mutation") {
-      const updates = a.config?.updates ?? a.config?.set ?? {};
-      for (const key of Object.keys(updates)) {
-        if (key.startsWith("_") || key.startsWith("__")) continue;
-        if (!stateKeysRead.has(key)) {
-          throw new Error(`Action ${a.id} mutates state key '${key}', but no component reads this key. Visible reaction required.`);
-        }
-      }
-    }
-  }
-
-  if (existingMini) {
-    const existingPairs = new Set(
-      existingComponents
-        .map((c: any) => {
-          const bk = typeof c.properties?.bindKey === "string" ? c.properties.bindKey : "";
-          const pid = existingPages.find((p: any) => (p.components ?? []).some((x: any) => x === c))?.id ?? "";
-          return `${String(c.type).toLowerCase()}::${pid}::${bk}`;
-        })
-        .filter((x: string) => !x.endsWith("::")),
-    );
-    for (const c of components) {
-      const bk = typeof c.properties?.bindKey === "string" ? c.properties.bindKey : "";
-      if (!bk) continue;
-      const pid = c.pageId ?? "";
-      const key = `${String(c.type).toLowerCase()}::${pid}::${bk}`;
-      if (existingPairs.has(key)) {
-        throw new Error(`Duplicate control detected: a ${c.type} already binds to '${bk}' on page '${pid}'. Reuse the existing component instead of creating a parallel one.`);
-      }
-    }
-  }
-}
 
 export async function compileIntent(
   userMessage: string,
@@ -445,7 +292,7 @@ export async function compileIntent(
     if (!content) throw new Error("No response from AI");
 
     const parsed = JSON.parse(content);
-    autoAttachDefaultTriggers(parsed, currentSpec);
+    repairCompiledIntent(parsed, currentSpec);
     validateCompiledIntent(parsed, currentSpec);
     return parsed;
   } catch (error) {
@@ -454,67 +301,3 @@ export async function compileIntent(
   }
 }
 
-function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec): Set<string> {
-  const triggered = new Set<string>();
-  const addFromNode = (node: any) => {
-    if (Array.isArray(node?.events)) {
-      for (const e of node.events) {
-        if (e?.actionId) triggered.add(e.actionId);
-      }
-    }
-  };
-  for (const c of (mutation.componentsAdded ?? [])) addFromNode(c);
-  for (const p of (mutation.pagesAdded ?? [])) addFromNode(p);
-  for (const u of (mutation.componentsUpdated ?? [])) addFromNode(u.patch);
-  for (const u of (mutation.pagesUpdated ?? [])) addFromNode(u.patch);
-  if (currentSpec && (currentSpec as any).kind === "mini_app") {
-    const mini: any = currentSpec as any;
-    for (const p of mini.pages ?? []) {
-      addFromNode(p);
-      for (const c of p.components ?? []) {
-        const stack: any[] = [c];
-        while (stack.length) {
-          const n = stack.shift();
-          if (!n) continue;
-          addFromNode(n);
-          if (Array.isArray(n.children)) stack.push(...n.children);
-        }
-      }
-    }
-  }
-  return triggered;
-}
-
-function autoAttachDefaultTriggers(intent: CompiledIntent, currentSpec?: ToolSpec) {
-  const mutation = intent.tool_mutation as any;
-  if (!mutation) return;
-  const actions = mutation.actionsAdded ?? [];
-  if (!actions.length) return;
-
-  const triggered = collectTriggeredActionIds(mutation, currentSpec);
-  const orphanActions = actions.filter((a: any) => a?.type === "integration_call" && !triggered.has(a.id));
-  if (!orphanActions.length) return;
-
-  let firstPageId: string | undefined;
-  if (Array.isArray(mutation.pagesAdded) && mutation.pagesAdded.length) {
-    const p = mutation.pagesAdded[0];
-    firstPageId = (p as any).pageId ?? p.id;
-  }
-  if (!firstPageId && currentSpec && (currentSpec as any).kind === "mini_app") {
-    const pages = ((currentSpec as any).pages ?? []);
-    firstPageId = pages[0]?.id;
-  }
-  if (!firstPageId) return;
-
-  mutation.pagesUpdated = mutation.pagesUpdated ?? [];
-  for (const a of orphanActions) {
-    mutation.pagesUpdated.push({
-      pageId: firstPageId,
-      patch: {
-        events: [
-          { type: "onPageLoad", actionId: a.id, args: { autoAttached: true } }
-        ]
-      }
-    });
-  }
-}

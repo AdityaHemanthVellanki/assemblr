@@ -32,6 +32,11 @@ export const miniAppActionSchema = z
     type: z.enum(["integration_call", "state_mutation", "navigation", "derive_state", "workflow"]),
     config: z.record(z.string(), z.any()).optional(),
     steps: z.array(miniAppActionStepSchema).optional(),
+    triggeredBy: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("lifecycle"), event: z.string() }),
+      z.object({ type: z.literal("state_change"), stateKey: z.string() }),
+      z.object({ type: z.literal("internal"), reason: z.enum(["derived", "orchestration"]) }),
+    ]).optional(),
   })
   .passthrough();
 

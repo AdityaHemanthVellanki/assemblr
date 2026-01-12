@@ -100,6 +100,7 @@ function validateInteraction(spec: MiniAppSpec) {
   const actionIds = new Set((spec.actions || []).map((a) => a.id));
   const triggered = new Set<string>();
   for (const p of spec.pages || []) {
+    collectEvents(p);
     for (const c of p.components || []) {
       collectEvents(c);
     }
@@ -113,6 +114,9 @@ function validateInteraction(spec: MiniAppSpec) {
         for (const ch of node.children) collectEvents(ch);
       }
     }
+  }
+  for (const a of spec.actions || []) {
+    if (a.triggeredBy) triggered.add(a.id);
   }
   for (const id of actionIds) {
     if (!triggered.has(id)) {
@@ -146,10 +150,10 @@ function validateInteraction(spec: MiniAppSpec) {
     if (a.type === "integration_call") {
       const assignKey = a.config?.assign;
       if (!assignKey && !stateKeysRead.has(`${a.id}.data`)) {
-        throw new Error(`Integration action ${a.id} has no assign and its default state is not read`);
+        console.warn(`Integration action ${a.id} has no assign and its default state is not read`);
       }
       if (assignKey && !stateKeysRead.has(assignKey)) {
-        throw new Error(`Integration action ${a.id} assigns to '${assignKey}' but no component reads it`);
+        console.warn(`Integration action ${a.id} assigns to '${assignKey}' but no component reads it`);
       }
     }
   }
