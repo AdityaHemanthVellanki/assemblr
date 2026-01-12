@@ -5,6 +5,7 @@ import { z } from "zod";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
+import { getExtractCapabilitiesPrompt } from "@/lib/ai/prompts";
 
 export type CapabilityExtraction = {
   required_capabilities: Capability[];
@@ -53,34 +54,6 @@ function validateNoVendors(extraction: CapabilityExtraction) {
   }
 }
 
-const systemPrompt = `
-You extract required capabilities from a user's intent.
-
-You MUST respond with valid JSON only.
-Do NOT include explanations, prose, markdown, or comments.
-If you cannot comply, return a valid JSON error object.
-
-Hard rules:
-- Output ONLY valid JSON.
-- Output MUST conform exactly to the schema described below.
-- NEVER mention vendor names or integration IDs (e.g. Stripe, HubSpot, Postgres, CSV).
-- NEVER output integration choices.
-- No prose, no explanations, no markdown.
-
-Return a JSON object with this shape:
-{
-  "required_capabilities": Capability[],
-  "optional_capabilities"?: Capability[],
-  "needs_real_time": boolean,
-  "ambiguity_questions"?: string[]
-}
-
-Capability is one of:
-${capabilityEnum.options.map((c) => `"${c}"`).join(", ")}
-
-If the user's intent is ambiguous, add "ambiguity_questions" instead of guessing.
-`;
-
 export async function extractCapabilities(prompt: string): Promise<CapabilityExtraction> {
   getServerEnv();
 
@@ -89,7 +62,7 @@ export async function extractCapabilities(prompt: string): Promise<CapabilityExt
     response = await azureOpenAIClient.chat.completions.create({
       model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
-        { role: "system", content: systemPrompt.trim() },
+        { role: "system", content: getExtractCapabilitiesPrompt(capabilityEnum.options).trim() },
         { role: "user", content: prompt },
       ],
       temperature: 0,

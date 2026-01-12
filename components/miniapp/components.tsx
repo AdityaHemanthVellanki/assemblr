@@ -37,21 +37,38 @@ export type MiniAppComponent = {
 function normalizeOptions(raw: any, labelKey: string, valueKey: string): Array<{ label: string; value: string }> {
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((opt) => {
+    .map((opt, index) => {
       if (opt == null) return null;
       if (typeof opt === "string" || typeof opt === "number" || typeof opt === "boolean") {
-        return { label: String(opt), value: String(opt) };
+        const valStr = String(opt);
+        // Fallback for empty primitive strings
+        const safeValue = valStr.length > 0 ? valStr : `__auto_${index}`;
+        const label = valStr.length > 0 ? valStr : (typeof opt === "string" ? "Empty Option" : String(opt));
+        return { label, value: safeValue };
       }
       if (typeof opt === "object") {
         const rec = opt as Record<string, any>;
-        const value = rec[valueKey] ?? rec.value ?? rec.id ?? rec.name;
-        const label = rec[labelKey] ?? rec.label ?? rec.name ?? rec.id ?? value;
-        if (value == null) return null;
-        return { label: String(label), value: String(value) };
+        const rawValue = rec[valueKey] ?? rec.value ?? rec.id ?? rec.key ?? rec.name;
+        const rawLabel = rec[labelKey] ?? rec.label ?? rec.name ?? rec.id ?? rawValue;
+        
+        // Ensure value is string
+        let value = rawValue != null ? String(rawValue) : "";
+        
+        // Fix empty values
+        if (value.trim().length === 0) {
+           console.warn("[MiniApp] Dropping invalid Select option or using fallback", opt);
+           // Fallback strategy: use index or skip?
+           // User said: "Generate a stable synthetic value"
+           value = `__auto_${index}`;
+        }
+        
+        // Ensure label
+        const label = rawLabel != null ? String(rawLabel) : value;
+        return { label, value };
       }
       return null;
     })
-    .filter(Boolean) as Array<{ label: string; value: string }>;
+    .filter((o): o is { label: string; value: string } => o !== null);
 }
 
 function getBindKey(component: MiniAppComponentSpec): string | undefined {
@@ -131,12 +148,16 @@ const DropdownComponent: MiniAppComponent = {
           : [];
 
     const options = normalizeOptions(rawOptions, labelKey, valueKey);
-    const placeholder = typeof component.properties?.placeholder === "string" ? component.properties.placeholder : "Select";
+    const hasOptions = options.length > 0;
+    const placeholder = typeof component.properties?.placeholder === "string" 
+      ? component.properties.placeholder 
+      : (hasOptions ? "Select" : "No options available");
 
     return (
       <div className="space-y-2">
         {component.label ? <div className="text-sm font-medium">{component.label}</div> : null}
         <Select
+          disabled={!hasOptions || !!component.properties?.disabled}
           value={String(selected ?? "")}
           onValueChange={(val) => {
             if (bindKey) setState({ [bindKey]: val });

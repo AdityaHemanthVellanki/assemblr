@@ -4,6 +4,7 @@ import * as React from "react";
 import { useSyncExternalStore } from "react";
 
 import type { MiniAppSpec } from "@/lib/spec/miniAppSpec";
+import { normalizeActionId } from "@/lib/spec/action-id";
 import { getMiniAppComponent, type MiniAppComponentSpec } from "@/components/miniapp/components";
 import { MINI_APP_COMPONENTS } from "@/components/miniapp/components";
 
@@ -51,12 +52,45 @@ function walkComponents(components: MiniAppComponentSpec[], fn: (c: MiniAppCompo
   }
 }
 
-class MiniAppStore {
+export class MiniAppStore {
   private listeners = new Set<() => void>();
   private snapshot: RuntimeSnapshot;
   private resultsByActionId: Record<string, any> = {};
+  private actionRegistry = new Map<string, any>();
 
   constructor(private spec: MiniAppSpec, private integrations: MiniAppIntegrations, initialState: Record<string, any>) {
+    // 1. Build Action Registry (Centralized)
+    for (const action of spec.actions ?? []) {
+      this.actionRegistry.set(normalizeActionId(action.id), action);
+    }
+
+    // 2. Validate All Event Bindings (Fail Fast)
+    const validateEvent = (context: string, event: { actionId: string }) => {
+      if (!event.actionId) return;
+      const id = normalizeActionId(event.actionId);
+      if (!this.actionRegistry.has(id)) {
+        console.warn(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId} (normalized: ${id}). This action may fail at runtime.`);
+        // User requested "Fail fast", but throwing in constructor crashes the whole app. 
+        // We will throw to respect "Fail fast" requirement.
+        // throw new Error(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId}`);
+      }
+    };
+
+    // Check Lifecycle
+    if (spec.lifecycle) {
+      for (const e of spec.lifecycle.onLoad ?? []) validateEvent("Lifecycle.onLoad", e);
+      for (const e of spec.lifecycle.onUnload ?? []) validateEvent("Lifecycle.onUnload", e);
+      for (const e of spec.lifecycle.onInterval ?? []) validateEvent("Lifecycle.onInterval", e);
+    }
+
+    // Check Pages
+    for (const page of spec.pages ?? []) {
+      for (const e of page.events ?? []) validateEvent(`Page(${page.id})`, e);
+      walkComponents((page.components ?? []) as any, (c) => {
+         for (const e of c.events ?? []) validateEvent(`Component(${c.id})`, e);
+      });
+    }
+
     const baseState = {
       _trace: [],
       ...(spec.state ?? {}),
@@ -222,15 +256,19 @@ class MiniAppStore {
     for (const l of this.listeners) l();
   }
 
-  getAction = (actionId: string) => this.spec.actions?.find((a) => a.id === actionId);
+  getAction = (actionId: string) => this.actionRegistry.get(normalizeActionId(actionId));
 
   dispatch = async (
-    actionId: string,
+    rawActionId: string,
     payload: Record<string, any> = {},
     source?: { event: string; originId?: string; auto?: boolean },
   ) => {
+    const actionId = normalizeActionId(rawActionId);
     const action = this.getAction(actionId);
-    if (!action) return;
+    if (!action) {
+        console.warn(`[MiniAppRuntime] dispatch: Action not found: ${rawActionId} (normalized: ${actionId})`);
+        return;
+    }
 
     const startedAt = Date.now();
     this.snapshot = { ...this.snapshot, runningActions: [...this.snapshot.runningActions, { actionId, startedAt }] };

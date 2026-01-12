@@ -1,5 +1,6 @@
 
 import type { ToolSpec } from "@/lib/spec/toolSpec";
+import { normalizeActionId } from "@/lib/spec/action-id";
 
 export interface ToolMutation {
     toolPropsUpdated?: { title?: string; description?: string };
@@ -79,7 +80,12 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
             if (patch.name !== undefined) target.name = patch.name;
             if (patch.layoutMode !== undefined) target.layoutMode = patch.layoutMode;
             if (Array.isArray(patch.events)) {
-                target.events = [...(target.events || []), ...patch.events];
+                // Normalize action IDs in patch events
+                const events = patch.events.map((e: any) => ({
+                    ...e,
+                    actionId: normalizeActionId(e.actionId)
+                }));
+                target.events = [...(target.events || []), ...events];
             }
             if (patch.path !== undefined) target.path = patch.path;
         }
@@ -226,8 +232,8 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
         for (const rawAction of mutation.actionsAdded) {
             const { actionId, id, ...rest } = rawAction as any;
             const canonicalId =
-                actionId ??
-                id ??
+                (actionId ? normalizeActionId(actionId) : undefined) ??
+                (id ? normalizeActionId(id) : undefined) ??
                 `action_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
             const action: any = {
@@ -459,15 +465,21 @@ function validateSpec(spec: any) {
     // 2. Check Action references (if actions reference components, which they don't directly in schema, 
     // but events reference actions)
     // Validate Events reference existing Actions
-    const actionIds = new Set(spec.actions.map((a: any) => a.id));
+    const actionIds = new Set(spec.actions.map((a: any) => normalizeActionId(a.id)));
     for (const page of spec.pages) {
         for (const comp of page.components) {
             if (comp.events) {
                 for (const event of comp.events) {
-                    if (!actionIds.has(event.actionId)) {
-                        console.warn(`Component ${comp.id} references missing action: ${event.actionId}`);
-                        // throw new Error(`Missing Action: ${event.actionId}`); // Strictness?
+                    if (!actionIds.has(normalizeActionId(event.actionId))) {
+                        throw new Error(`Component ${comp.id} references missing action: ${event.actionId}`);
                     }
+                }
+            }
+        }
+        if (page.events) {
+            for (const event of page.events) {
+                if (!actionIds.has(normalizeActionId(event.actionId))) {
+                    throw new Error(`Page ${page.id} references missing action: ${event.actionId}`);
                 }
             }
         }

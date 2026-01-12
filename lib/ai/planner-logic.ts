@@ -1,5 +1,6 @@
 import { CompiledIntent } from "@/lib/core/intent";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
+import { normalizeActionId } from "@/lib/spec/action-id";
 
 export function flattenMiniAppComponents(mini: any): Array<{ pageId: string; component: any }> {
   const out: Array<{ pageId: string; component: any }> = [];
@@ -23,7 +24,7 @@ export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec)
   const addFromNode = (node: any) => {
     if (Array.isArray(node?.events)) {
       for (const e of node.events) {
-        if (e?.actionId) triggered.add(e.actionId);
+        if (e?.actionId) triggered.add(normalizeActionId(e.actionId));
       }
     }
   };
@@ -31,7 +32,7 @@ export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec)
   // Check explicit triggeredBy (Any type: lifecycle, state_change, internal)
   for (const a of (mutation.actionsAdded ?? [])) {
     if (a.triggeredBy) {
-      triggered.add(a.id);
+      triggered.add(normalizeActionId(a.id));
     }
   }
 
@@ -73,22 +74,66 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
     if (!allowedTypes.has(c.type.toLowerCase())) {
       throw new Error(`Unsupported component type: ${c.type}. Allowed: ${Array.from(allowedTypes).join(", ")}`);
     }
+
+    // Guardrail: Select/Dropdown Must Have Value Key for Object Options
+    if ((c.type.toLowerCase() === "select" || c.type.toLowerCase() === "dropdown")) {
+        // Check for value key if data source is state
+        if (c.dataSource?.type === "state") {
+            const valKey = c.properties?.optionValueKey;
+            if (!valKey) {
+                 console.warn(`[PlannerValidation] Warning: Select component ${c.id} binds to state but missing 'optionValueKey'. Ensure the data source contains 'value' or 'id' fields.`);
+            }
+        }
+        // Check for empty string values in static options
+        if (Array.isArray(c.properties?.options)) {
+             for (const opt of c.properties.options) {
+                  if (opt && typeof opt === "object" && opt.value === "") {
+                       throw new Error(`Select component ${c.id} has an option with empty string value. This is unsafe. Use '__all__' or similar.`);
+                  }
+             }
+        }
+    }
   }
 
-  // 2. Validate Event Wiring
+  // 2. Validate Event Wiring (STRICT MODE)
   const actions = mutation.actionsAdded || [];
-  const actionIds = new Set(actions.map((a: any) => a.id));
+  const actionIds = new Set(actions.map((a: any) => normalizeActionId(a.id)));
   
-  // Use shared collector for triggered actions
-  const triggeredActions = collectTriggeredActionIds(mutation, currentSpec);
+  if (existingMini && existingMini.actions) {
+      existingMini.actions.forEach((a: any) => actionIds.add(normalizeActionId(a.id)));
+  }
 
+  // A. Check for "Action defined but unreachable"
+  const triggeredActions = collectTriggeredActionIds(mutation, currentSpec);
   for (const id of actionIds) {
-    if (!triggeredActions.has(id)) {
-      // Relaxed validation: check if it's explicitly internal or state_change
-      // (Though collectTriggeredActionIds should have caught it)
+    // Only check newly added actions for reachability to avoid blocking legacy updates
+    const isNew = actions.some((a: any) => normalizeActionId(a.id) === id);
+    if (isNew && !triggeredActions.has(id)) {
       throw new Error(`Action ${id} is defined but never triggered by any component, page event, or explicit trigger (state_change/internal).`);
     }
   }
+
+  // B. Check for "Trigger references missing action" (Strict Mode)
+  const checkTrigger = (context: string, event: { actionId?: string }) => {
+      if (!event.actionId) return;
+      const normalized = normalizeActionId(event.actionId);
+      if (!actionIds.has(normalized)) {
+          throw new Error(`[Strict Mode] ${context} triggers action '${event.actionId}' (normalized: '${normalized}'), but this action is not defined in the intent or existing app.`);
+      }
+  };
+
+  for (const c of (mutation.componentsAdded ?? [])) {
+      if (c.events) c.events.forEach((e: any) => checkTrigger(`Component ${c.id}`, e));
+  }
+  for (const p of (mutation.pagesAdded ?? [])) {
+      if (p.events) p.events.forEach((e: any) => checkTrigger(`Page ${p.id}`, e));
+  }
+  for (const u of (mutation.pagesUpdated ?? [])) {
+      if (u.patch?.events) u.patch.events.forEach((e: any) => checkTrigger(`Page Update ${u.pageId}`, e));
+  }
+  // Check triggers in existing app components if they were not modified? 
+  // We only check new/modified parts to be safe, but Strict Mode implies we shouldn't allow broken refs.
+  // For now, focus on the mutation payload.
 
   // 3. Validate State Usage (Mutations -> UI)
   const stateKeysRead = new Set<string>();
@@ -188,6 +233,18 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   const mutation = intent.tool_mutation as any;
   if (!mutation) return;
   const actions = mutation.actionsAdded ?? [];
+
+  // NORMALIZE ALL ACTION IDs IMMEDIATELY
+  for (const a of actions) {
+      if (a.id) {
+          const oldId = a.id;
+          a.id = normalizeActionId(a.id);
+          if (oldId !== a.id) {
+              console.log(`[PlannerRepair] Normalized action ID: ${oldId} -> ${a.id}`);
+          }
+      }
+  }
+
   if (!actions.length) return;
 
   // 1. Identify Target Page (First Page)
