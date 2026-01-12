@@ -38,6 +38,12 @@ async function runTests() {
   console.log("\n--- Test 2: Strict Mode Validation ---");
   const intentMissingAction: CompiledIntent = {
     intent_type: "modify",
+    system_goal: "test",
+    constraints: [],
+    integrations_required: [],
+    output_mode: "mini_app",
+    execution_graph: { nodes: [], edges: [] },
+    execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
     tool_mutation: {
       pagesUpdated: [{
         pageId: "p1",
@@ -46,26 +52,24 @@ async function runTests() {
         }
       }]
     },
-    original_user_prompt: "",
-    assistant_response_summary: "",
     outcome: "success"
-  };
+  } as any;
   assertThrows(() => validateCompiledIntent(intentMissingAction), "Trigger references missing action");
 
   // Test 2b: Strict Mode (Lifecycle references missing action)
   const intentMissingLifecycleAction: CompiledIntent = {
     intent_type: "modify",
+    system_goal: "test",
+    constraints: [],
+    integrations_required: [],
+    output_mode: "mini_app",
+    execution_graph: { nodes: [], edges: [] },
+    execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
     tool_mutation: {
         toolPropsUpdated: { title: "Test" },
-        // We need to mock a full spec structure for validateSpec to catch this if it was checking lifecycle directly
-        // But validateCompiledIntent checks *mutation* references. 
-        // Let's rely on validateSpec being called during materialization if we were testing materializer.
-        // For planner-logic, we check triggers.
     },
-    original_user_prompt: "",
-    assistant_response_summary: "",
     outcome: "success"
-  };
+  } as any;
   // Note: validateCompiledIntent mostly checks what's IN the mutation. 
   // If we want to test materializer validation, we should call materializeSpec.
 
@@ -109,31 +113,43 @@ async function runTests() {
   // Test 3: Unreachable Action
   const intentUnreachable: CompiledIntent = {
     intent_type: "modify",
+    system_goal: "test",
+    constraints: [],
+    integrations_required: [],
+    output_mode: "mini_app",
+    execution_graph: { nodes: [], edges: [] },
+    execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
     tool_mutation: {
       actionsAdded: [{ id: "orphan_action", type: "integration_call" }]
     },
-    original_user_prompt: "",
-    assistant_response_summary: "",
     outcome: "success"
-  };
+  } as any;
   assertThrows(() => validateCompiledIntent(intentUnreachable), "Action defined but unreachable");
 
   // Test 4: Repair & Normalization
   console.log("\n--- Test 4: Repair & Normalization ---");
   const intentToRepair: CompiledIntent = {
     intent_type: "modify",
+    system_goal: "test",
+    constraints: [],
+    integrations_required: [],
+    output_mode: "mini_app",
+    execution_graph: { nodes: [], edges: [] },
+    execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
     tool_mutation: {
       actionsAdded: [
         { id: "fetch-data", type: "integration_call", config: { assign: "data" } } // Orphan, kebab-case
       ],
-      pagesAdded: [{ id: "p1" }]
+      pagesAdded: [{ id: "p1" }],
+      componentsAdded: [
+        { id: "c1", type: "text", dataSource: { type: "state", value: "data" } }
+      ]
     },
-    original_user_prompt: "",
-    assistant_response_summary: "",
     outcome: "success"
-  };
+  } as any;
   
   repairCompiledIntent(intentToRepair);
+  // @ts-ignore
   const repairedAction = intentToRepair.tool_mutation.actionsAdded[0];
   assert(repairedAction.id === "fetch_data", "Action ID normalized in repair");
   assert(repairedAction.triggeredBy?.type === "lifecycle", "Orphan action auto-bound to lifecycle");
@@ -147,12 +163,47 @@ async function runTests() {
     failures++;
   }
 
-  // Test 5: Runtime Registry & Execution
+  // Test 4b: Repair Integration Pipeline (Auto-Inject Normalizer)
+  console.log("\n--- Test 4b: Repair Integration Pipeline ---");
+  const intentPipeline: CompiledIntent = {
+    intent_type: "modify",
+    system_goal: "test",
+    tool_mutation: {
+      actionsAdded: [
+        { id: "fetch_raw_data", type: "integration_call", config: { assign: "rawData" } }
+      ],
+      pagesAdded: [{ id: "p1" }],
+      componentsAdded: [
+        { id: "list1", type: "list", dataSource: { type: "state", value: "rawItems" } } // Binds to FUTURE normalized data
+      ]
+    },
+    outcome: "success"
+  } as any;
+
+  repairCompiledIntent(intentPipeline);
+  const actions = intentPipeline.tool_mutation!.actionsAdded!;
+  const normalizer = actions.find((a: any) => a.id === "normalize_raw_data");
+  assert(!!normalizer, "Auto-injected normalization action");
+  assert(normalizer?.config?.assign === "rawItems", "Normalizer assigns to expected key");
+  assert(normalizer?.triggeredBy?.type === "state_change" && normalizer.triggeredBy.stateKey === "rawData", "Normalizer triggered by raw data change");
+  
+  const statusMapper = actions.find((a: any) => a.id === "map_status_raw_data");
+  assert(!!statusMapper, "Auto-injected status mapper");
+  
+  try {
+      validateCompiledIntent(intentPipeline);
+      console.log("✅ PASS: Pipeline intent passes validation");
+  } catch (e: any) {
+      console.error(`❌ FAIL: Pipeline intent failed validation: ${e.message}`);
+      failures++;
+  }
+
   console.log("\n--- Test 5: Runtime Registry & Execution ---");
   const spec: MiniAppSpec = {
     kind: "mini_app",
     title: "Test App",
-    pages: [{ id: "p1", name: "Home", components: [], events: [{ type: "onPageLoad", actionId: "fetch-data" }] }], // Kebab ref
+    state: {},
+    pages: [{ id: "p1", name: "Home", layoutMode: "grid", components: [], events: [{ type: "onPageLoad", actionId: "fetch-data" }] }], // Kebab ref
     actions: [{ id: "fetch_data", type: "integration_call" }] // Snake def
   };
 

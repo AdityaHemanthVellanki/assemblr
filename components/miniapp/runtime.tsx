@@ -270,6 +270,18 @@ export class MiniAppStore {
         return;
     }
 
+    // Fix 7: Action Graph Ordering (Conditionals)
+    if (action.runIf) {
+        const ctx = { state: this.snapshot.state, payload: payload ?? {}, results: this.resultsByActionId };
+        const shouldRun = evaluateExpression(action.runIf, ctx);
+        // Strict check: false, "false", null, undefined -> skip.
+        // 0 or "" might be valid inputs, but usually "runIf" implies boolean.
+        if (shouldRun === false || shouldRun === "false" || shouldRun === null || shouldRun === undefined) {
+             console.log(`[MiniAppRuntime] Skipping action ${actionId} because runIf evaluated to ${shouldRun}`);
+             return;
+        }
+    }
+
     const startedAt = Date.now();
     this.snapshot = { ...this.snapshot, runningActions: [...this.snapshot.runningActions, { actionId, startedAt }] };
     this.addTrace({

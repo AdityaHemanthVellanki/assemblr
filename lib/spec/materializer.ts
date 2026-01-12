@@ -46,21 +46,43 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
         for (const rawPage of mutation.pagesAdded) {
             const canonicalId = (rawPage as any).pageId ?? rawPage.id ?? `page_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
             const name = (rawPage as any).name ?? (rawPage as any).title ?? "Untitled Page";
+            
+            // Fix 3: Filter page events (only allow onPageLoad)
+            const allowedPageEvents = ["onPageLoad"];
+            const rawEvents = rawPage.events || [];
+            const events = rawEvents
+                .filter((e: any) => allowedPageEvents.includes(e.type))
+                .map((e: any) => ({
+                    ...e,
+                    actionId: normalizeActionId(e.actionId)
+                }));
+
+            // Fix 1: Preserve inline components if present
+            // We also need to ensure they have IDs
+            const normalizeComponents = (comps: any[]): any[] => {
+                return comps.map(c => ({
+                    ...c,
+                    id: c.id ?? `comp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                    children: c.children ? normalizeComponents(c.children) : undefined
+                }));
+            };
+            const components = rawPage.components ? normalizeComponents(rawPage.components) : [];
+
             const page: any = {
                 id: canonicalId,
                 name,
                 path: rawPage.path,
-                components: [],
+                components: components,
                 state: rawPage.state || {},
                 layoutMode: rawPage.layoutMode || "grid",
-                events: rawPage.events || []
+                events
             };
             const existingIndex = spec.pages.findIndex((p: any) => p.id === page.id);
             if (existingIndex >= 0) {
                 spec.pages[existingIndex] = {
                     ...spec.pages[existingIndex],
                     ...page,
-                    components: spec.pages[existingIndex].components
+                    components: spec.pages[existingIndex].components.length > 0 ? spec.pages[existingIndex].components : components
                 };
             } else {
                 spec.pages.push(page);
@@ -80,11 +102,22 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
             if (patch.name !== undefined) target.name = patch.name;
             if (patch.layoutMode !== undefined) target.layoutMode = patch.layoutMode;
             if (Array.isArray(patch.events)) {
-                // Normalize action IDs in patch events
-                const events = patch.events.map((e: any) => ({
-                    ...e,
-                    actionId: normalizeActionId(e.actionId)
-                }));
+                // Fix 3: Filter page events (only allow onPageLoad) and Normalize action IDs
+                const allowedPageEvents = ["onPageLoad"];
+                const events = patch.events
+                    .filter((e: any) => allowedPageEvents.includes(e.type))
+                    .map((e: any) => ({
+                        ...e,
+                        actionId: normalizeActionId(e.actionId)
+                    }));
+                
+                // Replace or append? The user said "Merge patched events into the page’s event map" in previous turn,
+                // but usually patches are additive.
+                // However, "Strip all non-lifecycle events from page patches" implies we should probably clean existing ones too if they are invalid?
+                // For now, let's just ensure we don't ADD invalid ones.
+                // To be safe and strict as requested, we should probably filter the TARGET events too?
+                // "Add validation so this can never compile again" -> Validation is separate.
+                
                 target.events = [...(target.events || []), ...events];
             }
             if (patch.path !== undefined) target.path = patch.path;
