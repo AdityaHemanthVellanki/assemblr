@@ -21,7 +21,7 @@ export const miniAppEventSchema = z
 
 export const miniAppActionStepSchema = z
   .object({
-    type: z.enum(["integration_call", "state_mutation", "navigation"]),
+    type: z.enum(["integration_call", "state_mutation", "navigation", "derive_state"]),
     config: z.record(z.string(), z.any()).default({}),
   })
   .strict();
@@ -29,7 +29,7 @@ export const miniAppActionStepSchema = z
 export const miniAppActionSchema = z
   .object({
     id: z.string().min(1),
-    type: z.enum(["integration_call", "state_mutation", "navigation", "workflow"]),
+    type: z.enum(["integration_call", "state_mutation", "navigation", "derive_state", "workflow"]),
     config: z.record(z.string(), z.any()).optional(),
     steps: z.array(miniAppActionStepSchema).optional(),
   })

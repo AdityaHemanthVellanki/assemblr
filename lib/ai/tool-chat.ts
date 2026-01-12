@@ -174,7 +174,8 @@ export async function processToolChat(input: {
       schemas,
       metrics,
       input.mode,
-      input.policies || [] // Pass policies
+      input.policies || [], // Pass policies
+      input.currentSpec,
     );
 
     tracer.setIntent(intent);

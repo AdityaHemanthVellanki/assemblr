@@ -17,6 +17,7 @@ export type CompiledIntent = {
   // Legacy support for gradual migration (Optional)
   tool_mutation?: {
     pagesAdded?: any[];
+    pagesUpdated?: Array<{ id?: string; pageId?: string; name?: string; path?: string; layoutMode?: "grid" | "stack" }>;
     componentsAdded?: any[];
     componentsUpdated?: Array<{ componentRef: string; patch: any }>;
     containerPropsUpdated?: Array<{ componentRef: string; propertiesPatch: any }>;

@@ -57,17 +57,129 @@ class MiniAppStore {
   private resultsByActionId: Record<string, any> = {};
 
   constructor(private spec: MiniAppSpec, private integrations: MiniAppIntegrations, initialState: Record<string, any>) {
+    const baseState = {
+      _trace: [],
+      ...(spec.state ?? {}),
+      ...(initialState ?? {}),
+    } as Record<string, any>;
+    const derived = this.computeDerivedPatch(baseState);
     this.snapshot = {
-      state: { 
-        _trace: [], // System trace log
-        ...(spec.state ?? {}), 
-        ...(initialState ?? {}) 
-      },
+      state: { ...baseState, ...derived },
       activePageId: spec.pages?.[0]?.id ?? null,
       runningActions: [],
       integrationCalls: [],
       lastError: null,
     };
+  }
+
+  private computeDerivedPatch(state: Record<string, any>): Record<string, any> {
+    const defs = state.__derivations;
+    if (!Array.isArray(defs)) return {};
+    const patch: Record<string, any> = {};
+    for (const d of defs) {
+      if (!d || typeof d !== "object") continue;
+      const target = typeof d.target === "string" ? d.target : undefined;
+      const source = typeof d.source === "string" ? d.source : undefined;
+      const op = typeof d.op === "string" ? d.op : undefined;
+      if (!target || !source || !op) continue;
+
+      const srcVal = state[source];
+      const srcArr = Array.isArray(srcVal) ? srcVal : [];
+      const args = (d.args ?? {}) as Record<string, any>;
+
+      if (op === "filter") {
+        const field = typeof args.field === "string" ? args.field : undefined;
+        if (!field) continue;
+        const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
+        const includesKey = typeof args.includesKey === "string" ? args.includesKey : undefined;
+        const equalsVal = equalsKey ? state[equalsKey] : args.equals;
+        const includesVal = includesKey ? state[includesKey] : args.includes;
+        patch[target] = srcArr.filter((it: any) => {
+          const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+          if (includesVal != null && includesVal !== "") return String(v ?? "").includes(String(includesVal));
+          if (equalsVal != null && equalsVal !== "") return String(v ?? "") === String(equalsVal);
+          return true;
+        });
+        continue;
+      }
+
+      if (op === "sort") {
+        const field = typeof args.field === "string" ? args.field : undefined;
+        if (!field) continue;
+        const dir = args.direction === "asc" || args.direction === "desc" ? args.direction : "asc";
+        const next = [...srcArr];
+        next.sort((a: any, b: any) => {
+          const av = a && typeof a === "object" ? (a as any)[field] : undefined;
+          const bv = b && typeof b === "object" ? (b as any)[field] : undefined;
+          const na = typeof av === "number" ? av : Number.isFinite(Number(av)) ? Number(av) : null;
+          const nb = typeof bv === "number" ? bv : Number.isFinite(Number(bv)) ? Number(bv) : null;
+          let cmp = 0;
+          if (na != null && nb != null) cmp = na - nb;
+          else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+          return dir === "asc" ? cmp : -cmp;
+        });
+        patch[target] = next;
+        continue;
+      }
+
+      if (op === "map") {
+        const pick = Array.isArray(args.pick) ? args.pick.filter((x: any) => typeof x === "string") : [];
+        if (!pick.length) continue;
+        patch[target] = srcArr.map((it: any) => {
+          const out: Record<string, any> = {};
+          for (const k of pick) out[k] = it && typeof it === "object" ? (it as any)[k] : undefined;
+          return out;
+        });
+        continue;
+      }
+
+      if (op === "count") {
+        patch[target] = srcArr.length;
+        continue;
+      }
+
+      if (op === "groupByCount") {
+        const field = typeof args.field === "string" ? args.field : undefined;
+        if (!field) continue;
+        const m = new Map<string, number>();
+        for (const it of srcArr) {
+          const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+          const k = String(v ?? "");
+          m.set(k, (m.get(k) ?? 0) + 1);
+        }
+        patch[target] = Array.from(m.entries()).map(([key, count]) => ({ key, count }));
+        continue;
+      }
+
+      if (op === "latest") {
+        const byField = typeof args.byField === "string" ? args.byField : "timestamp";
+        const next = [...srcArr];
+        next.sort((a: any, b: any) => {
+          const av = a && typeof a === "object" ? (a as any)[byField] : undefined;
+          const bv = b && typeof b === "object" ? (b as any)[byField] : undefined;
+          return String(bv ?? "").localeCompare(String(av ?? ""));
+        });
+        patch[target] = next[0] ?? null;
+        continue;
+      }
+
+      if (op === "aggregateByDay") {
+        const tsField = typeof args.timestampField === "string" ? args.timestampField : "timestamp";
+        const m = new Map<string, number>();
+        for (const it of srcArr) {
+          const raw = it && typeof it === "object" ? (it as any)[tsField] : undefined;
+          const d = raw instanceof Date ? raw : new Date(raw);
+          if (Number.isNaN(d.getTime())) continue;
+          const day = d.toISOString().slice(0, 10);
+          m.set(day, (m.get(day) ?? 0) + 1);
+        }
+        patch[target] = Array.from(m.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([day, count]) => ({ day, count }));
+        continue;
+      }
+    }
+    return patch;
   }
 
   private addTrace(entry: { actionId: string; type: string; status: string; message?: string; data?: any }) {
@@ -77,7 +189,6 @@ class MiniAppStore {
       timestamp: Date.now(),
       ...entry,
     };
-    // Keep last 50 entries
     const updatedTrace = [newEntry, ...trace].slice(0, 50);
     this.setState({ _trace: updatedTrace });
   }
@@ -91,7 +202,9 @@ class MiniAppStore {
 
   setState = (partial: Record<string, any>) => {
     if (!partial || typeof partial !== "object") return;
-    this.snapshot = { ...this.snapshot, state: { ...this.snapshot.state, ...partial } };
+    const merged = { ...this.snapshot.state, ...partial };
+    const derived = this.computeDerivedPatch(merged);
+    this.snapshot = { ...this.snapshot, state: { ...merged, ...derived } };
     this.emit();
   };
 
@@ -148,6 +261,13 @@ class MiniAppStore {
     if (type === "navigation") {
       const pageId = config.pageId;
       if (typeof pageId === "string" && pageId.length) this.setActivePageId(pageId);
+      return;
+    }
+
+    if (type === "derive_state") {
+      const tmp = { ...this.snapshot.state, __derivations: [config] };
+      const patch = this.computeDerivedPatch(tmp);
+      this.setState(patch);
       return;
     }
 
@@ -272,7 +392,7 @@ function MiniAppHealthPanel({ snapshot }: { snapshot: RuntimeSnapshot }) {
         </div>
         <div>
            <div className="font-semibold mb-2 sticky top-0 bg-muted py-1 border-b">State Snapshot</div>
-           <pre className="whitespace-pre-wrap break-words">{JSON.stringify(snapshot.state, (k, v) => k === '_trace' ? undefined : v, 2)}</pre>
+           <pre className="whitespace-pre-wrap break-words">{JSON.stringify(snapshot.state, (k, v) => (k === "_trace" || k === "__derivations") ? undefined : v, 2)}</pre>
         </div>
       </div>
     </div>

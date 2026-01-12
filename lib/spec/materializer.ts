@@ -2,10 +2,14 @@
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 
 export interface ToolMutation {
+    toolPropsUpdated?: { title?: string; description?: string };
     pagesAdded?: (Partial<any> & { pageId?: string; title?: string })[];
+    pagesUpdated?: Array<{ pageId?: string; id?: string; pageRef?: string; patch: Partial<any> }>;
     componentsAdded?: (Partial<any> & { pageId?: string; componentId?: string })[];
     actionsAdded?: (Partial<any> & { actionId?: string })[];
+    actionsUpdated?: Array<{ actionId?: string; id?: string; actionRef?: string; patch: Partial<any> }>;
     stateAdded?: Record<string, any>;
+    stateRenamed?: Array<{ from: string; to: string }>;
     componentsUpdated?: Array<{ id?: string; componentRef?: string; pageId?: string; patch: Partial<any> }>;
     componentsRemoved?: Array<{ id?: string; componentRef?: string; pageId?: string }>;
     reparent?: Array<{ id?: string; componentRef?: string; fromPageId?: string; toPageId: string; toParentId?: string; position?: number }>;
@@ -27,6 +31,15 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
     if (!spec.pages) spec.pages = [];
     if (!spec.actions) spec.actions = [];
     if (!spec.state) spec.state = {};
+
+    if (mutation.toolPropsUpdated) {
+        if (typeof mutation.toolPropsUpdated.title === "string" && mutation.toolPropsUpdated.title.length) {
+            spec.title = mutation.toolPropsUpdated.title;
+        }
+        if (typeof mutation.toolPropsUpdated.description === "string") {
+            spec.description = mutation.toolPropsUpdated.description;
+        }
+    }
 
     if (mutation.pagesAdded) {
         for (const rawPage of mutation.pagesAdded) {
@@ -58,6 +71,18 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
         throw new Error("Mini app has no pages. This is a fatal authoring error.");
     }
 
+    if (mutation.pagesUpdated && mutation.pagesUpdated.length) {
+        for (const upd of mutation.pagesUpdated) {
+            const target = findPage(spec, upd.pageId ?? upd.id, upd.pageRef);
+            if (!target) throw new Error(`Page update failed: page not found (${upd.pageId || upd.id || upd.pageRef})`);
+            const patch = (upd.patch || {}) as any;
+            if (patch.name !== undefined) target.name = patch.name;
+            if (patch.layoutMode !== undefined) target.layoutMode = patch.layoutMode;
+            if (patch.events !== undefined) target.events = patch.events;
+            if (patch.path !== undefined) target.path = patch.path;
+        }
+    }
+
     if (mutation.stateAdded) {
         const resolvedState: Record<string, any> = {};
         for (const [key, value] of Object.entries(mutation.stateAdded)) {
@@ -67,6 +92,12 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
             ...spec.state,
             ...resolvedState
         };
+    }
+
+    if (mutation.stateRenamed && mutation.stateRenamed.length) {
+        for (const r of mutation.stateRenamed) {
+            renameStateKey(spec, r.from, r.to);
+        }
     }
 
     if (mutation.componentsAdded) {
@@ -211,9 +242,126 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
         }
     }
 
+    if (mutation.actionsUpdated && mutation.actionsUpdated.length) {
+        for (const upd of mutation.actionsUpdated) {
+            const target = findAction(spec, upd.actionId ?? upd.id, upd.actionRef);
+            if (!target) throw new Error(`Action update failed: action not found (${upd.actionId || upd.id || upd.actionRef})`);
+            const patch = (upd.patch || {}) as any;
+            if (patch.type && patch.type !== target.type) {
+                throw new Error(`Action update failed: type change from ${target.type} to ${patch.type} is not allowed`);
+            }
+            if (patch.config !== undefined) target.config = { ...(target.config || {}), ...(patch.config || {}) };
+            if (patch.steps !== undefined) target.steps = patch.steps;
+        }
+    }
+
     validateSpec(spec);
 
     return spec;
+}
+
+function findPage(spec: any, id?: string, pageRef?: string): any | null {
+    if (id) {
+        const p = (spec.pages ?? []).find((x: any) => x.id === id);
+        if (p) return p;
+    }
+    if (!pageRef) return null;
+    const r = String(pageRef).toLowerCase();
+    const candidates = (spec.pages ?? []).filter((p: any) => {
+        const name = String(p.name ?? "").toLowerCase();
+        const pid = String(p.id ?? "").toLowerCase();
+        return (name && (r.includes(name) || name.includes(r))) || (pid && (r.includes(pid) || pid.includes(r)));
+    });
+    return candidates[0] ?? null;
+}
+
+function findAction(spec: any, id?: string, actionRef?: string): any | null {
+    if (id) {
+        const a = (spec.actions ?? []).find((x: any) => x.id === id);
+        if (a) return a;
+    }
+    if (!actionRef) return null;
+    const r = String(actionRef).toLowerCase();
+    const candidates = (spec.actions ?? []).filter((a: any) => {
+        const aid = String(a.id ?? "").toLowerCase();
+        const cap = String(a.config?.capabilityId ?? "").toLowerCase();
+        return (aid && (r.includes(aid) || aid.includes(r))) || (cap && (r.includes(cap) || cap.includes(r)));
+    });
+    return candidates[0] ?? null;
+}
+
+function renameStateKey(spec: any, from: string, to: string) {
+    if (!from || !to || from === to) return;
+    if (spec.state && Object.prototype.hasOwnProperty.call(spec.state, to)) {
+        throw new Error(`State rename failed: target key already exists (${to})`);
+    }
+    if (!spec.state || !Object.prototype.hasOwnProperty.call(spec.state, from)) {
+        throw new Error(`State rename failed: source key not found (${from})`);
+    }
+    spec.state[to] = spec.state[from];
+    delete spec.state[from];
+
+    for (const page of spec.pages ?? []) {
+        for (const c of page.components ?? []) {
+            renameStateRefsInComponent(c, from, to);
+        }
+    }
+    for (const a of spec.actions ?? []) {
+        renameStateRefsInAction(a, from, to);
+    }
+}
+
+function renameStateRefsInComponent(node: any, from: string, to: string) {
+    if (!node || typeof node !== "object") return;
+    if (node.dataSource?.type === "state" && node.dataSource.value === from) node.dataSource.value = to;
+    if (node.properties) {
+        if (node.properties.bindKey === from) node.properties.bindKey = to;
+        if (node.properties.loadingKey === `${from}Status`) node.properties.loadingKey = `${to}Status`;
+        if (node.properties.errorKey === `${from}Error`) node.properties.errorKey = `${to}Error`;
+        if (typeof node.properties.content === "string") {
+            node.properties.content = node.properties.content.replaceAll(`{{state.${from}}}`, `{{state.${to}}}`);
+        }
+    }
+    if (Array.isArray(node.children)) {
+        for (const ch of node.children) renameStateRefsInComponent(ch, from, to);
+    }
+}
+
+function renameStateRefsInAction(action: any, from: string, to: string) {
+    if (!action || typeof action !== "object") return;
+    if (action.type === "integration_call" && action.config) {
+        if (action.config.assign === from) action.config.assign = to;
+        action.config = renameStateRefsInObject(action.config, from, to);
+    }
+    if (action.type === "state_mutation" && action.config) {
+        const updates = (action.config.updates ?? action.config.set) as any;
+        if (updates && typeof updates === "object") {
+            const next: any = {};
+            for (const [k, v] of Object.entries(updates)) {
+                const nk = k === from ? to : k;
+                next[nk] = renameStateRefsInObject(v, from, to);
+            }
+            if (action.config.updates) action.config.updates = next;
+            if (action.config.set) action.config.set = next;
+        }
+        action.config = renameStateRefsInObject(action.config, from, to);
+    }
+    if (Array.isArray(action.steps)) {
+        action.steps = action.steps.map((s: any) => ({ ...s, config: renameStateRefsInObject(s.config, from, to) }));
+    }
+}
+
+function renameStateRefsInObject(value: any, from: string, to: string): any {
+    if (typeof value === "string") {
+        return value.replaceAll(`{{state.${from}}}`, `{{state.${to}}}`);
+    }
+    if (Array.isArray(value)) return value.map((v) => renameStateRefsInObject(v, from, to));
+    if (!value || typeof value !== "object") return value;
+    const out: any = {};
+    for (const [k, v] of Object.entries(value)) {
+        out[k] = renameStateRefsInObject(v, from, to);
+    }
+    return out;
 }
 
 type FindResult = { page: any; parent: any | null; index: number; component: any } | null;

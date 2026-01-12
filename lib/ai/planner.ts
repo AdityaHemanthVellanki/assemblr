@@ -9,6 +9,7 @@ import { Metric } from "@/lib/metrics/store";
 import { CompiledIntent } from "@/lib/core/intent";
 import { PolicyEngine } from "@/lib/governance/engine";
 import { OrgPolicy } from "@/lib/core/governance";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 
 const policyEngine = new PolicyEngine();
 
@@ -52,7 +53,23 @@ HARD CONSTRAINTS (STRICT ENFORCEMENT):
 4. **REAL CAPABILITIES ONLY**:
    - Use ONLY the provided Capability IDs.
    - NO mocks, NO placeholders, NO "fake" data.
- 
+
+5. **TOOL CONTINUITY & COMPOSABILITY (CRITICAL)**:
+   - You are modifying a persistent tool runtime, not starting from scratch.
+   - You will be given TOOL_MEMORY (current pages, components, state, actions, bindings, and learned patterns).
+   - You MUST prefer reusing and extending existing structure over adding parallel duplicates.
+     - If a "repo selector" pattern exists, reuse it instead of adding a new selector.
+     - If a "data fetch + loading + empty + error" pipeline exists, reuse it and add a new table/list bound to the same selection state.
+   - Multi-page composition is allowed and encouraged:
+     - Add pages when the user asks, or when separation improves clarity.
+     - Navigation must be explicit and user-visible (buttons/links triggering navigation actions).
+   - Names are first-class:
+     - Prefer stable, user-friendly names for pages, components, actions, and state keys.
+     - If user requests renames, use pagesUpdated/componentsUpdated/actionsUpdated/stateRenamed rather than rebuilding.
+   - Derived state is allowed but must be deterministic and safe:
+     - Only allow filtering/sorting/grouping/aggregation/mapping based on existing state.
+     - Represent derived rules in state key "__derivations" and bind derived outputs via state.
+
 INSTRUCTIONS:
 1. **Analyze Intent**:
    - "Show me commits" -> intent_type: "chat" (but if building a tool, use "create")
@@ -66,6 +83,7 @@ INSTRUCTIONS:
      - Component: \`dataSource: { type: "state", value: "myKey" }\`
      - Status: Component properties \`loadingKey: "myKeyStatus"\`, \`errorKey: "myKeyError"\`.
    - Before outputting, verify: Is every action wired? Is state used? Are components valid? Is feedback visible?
+   - Before outputting, verify: Did you reuse existing patterns in TOOL_MEMORY? Did you avoid duplicates?
  
 You MUST respond with valid JSON only. Structure:
 {
@@ -77,7 +95,9 @@ You MUST respond with valid JSON only. Structure:
   "output_mode": "mini_app",
   "execution_policy": { "deterministic": true, "parallelizable": false, "retries": 0 },
   "tool_mutation": {
+    "toolPropsUpdated": { "title": "string?", "description": "string?" },
     "pagesAdded": [{ "id": "p1", "components": [] }],
+    "pagesUpdated": [{ "pageRef": "home page", "patch": { "name": "string?", "layoutMode": "grid|stack" } }],
     "componentsAdded": [
       {
         "id": "c1", "type": "button", "pageId": "p1", "label": "Load",
@@ -100,6 +120,8 @@ You MUST respond with valid JSON only. Structure:
     "containerPropsUpdated": [
       { "componentRef": "main container", "propertiesPatch": { "layout": "row", "gap": 2 } }
     ],
+    "actionsUpdated": [{ "actionRef": "load commits", "patch": { "config": { } } }],
+    "stateRenamed": [{ "from": "oldKey", "to": "newKey" }],
     "actionsAdded": [
       {
         "id": "a1", "type": "integration_call",
@@ -115,10 +137,113 @@ You MUST respond with valid JSON only. Structure:
 }
 `;
 
-function validateCompiledIntent(intent: CompiledIntent) {
+function flattenMiniAppComponents(mini: any): Array<{ pageId: string; component: any }> {
+  const out: Array<{ pageId: string; component: any }> = [];
+  for (const p of mini?.pages ?? []) {
+    for (const c of p.components ?? []) {
+      out.push({ pageId: p.id, component: c });
+      const stack: any[] = Array.isArray(c.children) ? [...c.children] : [];
+      while (stack.length) {
+        const node = stack.shift();
+        if (!node) continue;
+        out.push({ pageId: p.id, component: node });
+        if (Array.isArray(node.children)) stack.push(...node.children);
+      }
+    }
+  }
+  return out;
+}
+
+function buildToolMemory(spec?: ToolSpec): any {
+  if (!spec || (spec as any).kind !== "mini_app") return { kind: (spec as any)?.kind ?? "unknown" };
+  const mini: any = spec as any;
+  const flat = flattenMiniAppComponents(mini);
+
+  const components = flat.map(({ pageId, component }) => ({
+    id: component.id,
+    pageId,
+    type: component.type,
+    label: component.label,
+    dataSource: component.dataSource,
+    properties: {
+      title: component.properties?.title,
+      bindKey: component.properties?.bindKey,
+      loadingKey: component.properties?.loadingKey,
+      errorKey: component.properties?.errorKey,
+      emptyMessage: component.properties?.emptyMessage,
+    },
+    events: component.events ?? [],
+  }));
+
+  const actions = (mini.actions ?? []).map((a: any) => ({
+    id: a.id,
+    type: a.type,
+    config: a.config,
+    steps: a.steps,
+  }));
+
+  const stateKeys = Object.keys(mini.state ?? {}).filter((k) => !(k.startsWith("_") || k.startsWith("__")));
+
+  const componentsByActionId: Record<string, Array<{ id: string; pageId: string; type: string; label?: string }>> = {};
+  for (const { pageId, component } of flat) {
+    for (const e of component.events ?? []) {
+      if (!e?.actionId) continue;
+      componentsByActionId[e.actionId] = componentsByActionId[e.actionId] ?? [];
+      componentsByActionId[e.actionId].push({ id: component.id, pageId, type: component.type, label: component.label });
+    }
+  }
+
+  const readersByStateKey: Record<string, Array<{ id: string; pageId: string; type: string; label?: string }>> = {};
+  for (const { pageId, component } of flat) {
+    const keys: string[] = [];
+    if (component.dataSource?.type === "state" && typeof component.dataSource.value === "string") keys.push(component.dataSource.value);
+    if (typeof component.properties?.bindKey === "string") keys.push(component.properties.bindKey);
+    if (typeof component.properties?.loadingKey === "string") keys.push(component.properties.loadingKey);
+    if (typeof component.properties?.errorKey === "string") keys.push(component.properties.errorKey);
+    for (const k of keys) {
+      readersByStateKey[k] = readersByStateKey[k] ?? [];
+      readersByStateKey[k].push({ id: component.id, pageId, type: component.type, label: component.label });
+    }
+  }
+
+  const pipelines = actions
+    .filter((a: any) => a.type === "integration_call")
+    .map((a: any) => {
+      const assignKey = a.config?.assign;
+      const statusKey = assignKey ? `${assignKey}Status` : `${a.id}.status`;
+      const errorKey = assignKey ? `${assignKey}Error` : `${a.id}.error`;
+      return {
+        actionId: a.id,
+        capabilityId: a.config?.capabilityId,
+        assignKey,
+        triggerComponents: componentsByActionId[a.id] ?? [],
+        readers: assignKey ? readersByStateKey[assignKey] ?? [] : readersByStateKey[`${a.id}.data`] ?? [],
+        statusReaders: readersByStateKey[statusKey] ?? [],
+        errorReaders: readersByStateKey[errorKey] ?? [],
+      };
+    });
+
+  return {
+    kind: mini.kind,
+    title: mini.title,
+    description: mini.description,
+    pages: (mini.pages ?? []).map((p: any) => ({ id: p.id, name: p.name, layoutMode: p.layoutMode, componentCount: (p.components ?? []).length })),
+    stateKeys,
+    components,
+    actions,
+    pipelines,
+  };
+}
+
+function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec) {
   if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
   const mutation = intent.tool_mutation;
   if (!mutation) return;
+
+  const existingMini = currentSpec && (currentSpec as any).kind === "mini_app" ? (currentSpec as any) : null;
+  const existingComponents = existingMini ? flattenMiniAppComponents(existingMini).map((x) => x.component) : [];
+  const existingPages = existingMini ? (existingMini.pages ?? []) : [];
+  const existingActions = existingMini ? (existingMini.actions ?? []) : [];
 
   // 1. Validate Component Types
   const allowedTypes = new Set(["container", "text", "button", "input", "select", "dropdown", "list", "table", "card", "heatmap"]);
@@ -134,18 +259,35 @@ function validateCompiledIntent(intent: CompiledIntent) {
   const actionIds = new Set(actions.map((a: any) => a.id));
   const triggeredActions = new Set<string>();
 
-  for (const c of components) {
-    if (c.events) {
-      for (const e of c.events) {
-        if (e.actionId) triggeredActions.add(e.actionId);
+  const collectTriggered = (node: any) => {
+    if (node?.events) {
+      for (const e of node.events) {
+        if (e?.actionId) triggeredActions.add(e.actionId);
       }
     }
-  }
+  };
+
+  for (const c of components) collectTriggered(c);
   if (mutation.pagesAdded) {
     for (const p of mutation.pagesAdded) {
-      if (p.events) {
-        for (const e of p.events) {
-          if (e.actionId) triggeredActions.add(e.actionId);
+      collectTriggered(p);
+    }
+  }
+  if (mutation.componentsUpdated) {
+    for (const u of mutation.componentsUpdated) {
+      if (u?.patch?.events) collectTriggered({ events: u.patch.events });
+    }
+  }
+  if (existingMini) {
+    for (const p of existingPages) {
+      collectTriggered(p);
+      for (const c of p.components ?? []) {
+        const stack: any[] = [c];
+        while (stack.length) {
+          const n = stack.shift();
+          if (!n) continue;
+          collectTriggered(n);
+          if (Array.isArray(n.children)) stack.push(...n.children);
         }
       }
     }
@@ -185,6 +327,9 @@ function validateCompiledIntent(intent: CompiledIntent) {
       if (update.patch) collectReadKeys({ properties: update.patch.properties, dataSource: update.patch.dataSource });
     }
   }
+  if (existingMini) {
+    for (const c of existingComponents) collectReadKeys(c);
+  }
 
   for (const a of actions) {
     if (a.type === "integration_call") {
@@ -208,9 +353,31 @@ function validateCompiledIntent(intent: CompiledIntent) {
     if (a.type === "state_mutation") {
       const updates = a.config?.updates ?? a.config?.set ?? {};
       for (const key of Object.keys(updates)) {
+        if (key.startsWith("_") || key.startsWith("__")) continue;
         if (!stateKeysRead.has(key)) {
           throw new Error(`Action ${a.id} mutates state key '${key}', but no component reads this key. Visible reaction required.`);
         }
+      }
+    }
+  }
+
+  if (existingMini) {
+    const existingPairs = new Set(
+      existingComponents
+        .map((c: any) => {
+          const bk = typeof c.properties?.bindKey === "string" ? c.properties.bindKey : "";
+          const pid = existingPages.find((p: any) => (p.components ?? []).some((x: any) => x === c))?.id ?? "";
+          return `${String(c.type).toLowerCase()}::${pid}::${bk}`;
+        })
+        .filter((x: string) => !x.endsWith("::")),
+    );
+    for (const c of components) {
+      const bk = typeof c.properties?.bindKey === "string" ? c.properties.bindKey : "";
+      if (!bk) continue;
+      const pid = c.pageId ?? "";
+      const key = `${String(c.type).toLowerCase()}::${pid}::${bk}`;
+      if (existingPairs.has(key)) {
+        throw new Error(`Duplicate control detected: a ${c.type} already binds to '${bk}' on page '${pid}'. Reuse the existing component instead of creating a parallel one.`);
       }
     }
   }
@@ -223,7 +390,8 @@ export async function compileIntent(
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = [],
   mode: "create" | "chat" = "create",
-  policies: OrgPolicy[] = [] // Added policies
+  policies: OrgPolicy[] = [], // Added policies
+  currentSpec?: ToolSpec,
 ): Promise<CompiledIntent> {
   getServerEnv();
 
@@ -251,8 +419,10 @@ export async function compileIntent(
     )
     .join("\n\n");
 
-  const prompt = (SYSTEM_PROMPT
-    .replace("{{CAPABILITIES}}", capsText)) + `\n\nMODE HINT: ${mode.toUpperCase()}`;
+  const toolMemory = buildToolMemory(currentSpec);
+  const prompt =
+    SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsText) +
+    `\n\nMODE HINT: ${mode.toUpperCase()}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
 
   try {
     const contextMessages = history.map(m => ({
@@ -275,7 +445,7 @@ export async function compileIntent(
     if (!content) throw new Error("No response from AI");
 
     const parsed = JSON.parse(content);
-    validateCompiledIntent(parsed);
+    validateCompiledIntent(parsed, currentSpec);
     return parsed;
   } catch (error) {
     console.error("Intent compilation failed:", error);
