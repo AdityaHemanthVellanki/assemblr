@@ -187,8 +187,11 @@ async function runTests() {
   assert(normalizer?.config?.assign === "rawItems", "Normalizer assigns to expected key");
   assert(normalizer?.triggeredBy?.type === "state_change" && normalizer.triggeredBy.stateKey === "rawData", "Normalizer triggered by raw data change");
   
-  const statusMapper = actions.find((a: any) => a.id === "map_status_raw_data");
-  assert(!!statusMapper, "Auto-injected status mapper");
+  // Test Option A: Direct binding (No status mapper)
+  const listComp = intentPipeline.tool_mutation!.componentsAdded![0];
+  // Note: logic wires loadingKey to *integration* status (rawDataStatus)
+  assert(listComp.properties?.loadingKey === "rawDataStatus", "Auto-wired loadingKey");
+  assert(listComp.properties?.errorKey === "rawDataError", "Auto-wired errorKey");
   
   try {
       validateCompiledIntent(intentPipeline);
@@ -197,6 +200,59 @@ async function runTests() {
       console.error(`❌ FAIL: Pipeline intent failed validation: ${e.message}`);
       failures++;
   }
+
+  // Test 4c: Status Mirroring for Generic List
+  console.log("\n--- Test 4c: Status Mirroring for Generic List ---");
+  const intentGenericList: CompiledIntent = {
+    intent_type: "modify",
+    system_goal: "test",
+    tool_mutation: {
+      actionsAdded: [
+        { id: "fetch_github_commits", type: "integration_call", config: { assign: "github_commits" } }
+      ],
+      pagesAdded: [{ id: "p1" }],
+      componentsAdded: [
+        { id: "list_generic", type: "list", dataSource: { type: "state", value: "filteredActivity" }, properties: { loadingKey: "activityListStatus", errorKey: "activityListError" } }
+      ]
+    },
+    outcome: "success"
+  } as any;
+  repairCompiledIntent(intentGenericList);
+  const mirror = intentGenericList.tool_mutation!.actionsAdded!.find((a: any) => a.id === "mirror_status_github_commits");
+  assert(!!mirror, "Injected status mirroring action");
+  assert(Array.isArray(mirror.triggeredBy) && mirror.triggeredBy.length === 2, "Mirroring action triggered by both status and error changes");
+  assert(mirror.type === "workflow" && Array.isArray(mirror.steps) && mirror.steps[0].type === "state_mutation", "Mirroring uses state_mutation step");
+  try {
+    validateCompiledIntent(intentGenericList);
+    console.log("✅ PASS: Generic list intent passes validation");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Generic list intent failed validation: ${e.message}`);
+    failures++;
+  }
+
+  // Test 6: New Validation Rules
+  console.log("\n--- Test 6: New Validation Rules ---");
+  const intentBadType: CompiledIntent = {
+      intent_type: "modify",
+      tool_mutation: {
+          actionsAdded: [{ id: "bad", type: "custom_function" }]
+      },
+      outcome: "success"
+  } as any;
+  assertThrows(() => validateCompiledIntent(intentBadType), "Invalid action type");
+
+  const intentBadClick: CompiledIntent = {
+      intent_type: "modify",
+      tool_mutation: {
+          componentsAdded: [{ 
+              id: "l1", type: "list", 
+              properties: { itemTemplate: { onClick: "some_action" } } 
+          }]
+      },
+      outcome: "success"
+  } as any;
+  assertThrows(() => validateCompiledIntent(intentBadClick), "defines onClick on itemTemplate");
+
 
   console.log("\n--- Test 5: Runtime Registry & Execution ---");
   const spec: MiniAppSpec = {

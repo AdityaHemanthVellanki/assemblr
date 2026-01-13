@@ -29,13 +29,22 @@ export const miniAppActionStepSchema = z
 export const miniAppActionSchema = z
   .object({
     id: z.string().min(1),
-    type: z.enum(["integration_call", "state_mutation", "navigation", "derive_state", "workflow"]),
+    type: z.enum(["integration_call", "internal", "navigation", "workflow"]),
     config: z.record(z.string(), z.any()).optional(),
     steps: z.array(miniAppActionStepSchema).optional(),
-    triggeredBy: z.discriminatedUnion("type", [
-      z.object({ type: z.literal("lifecycle"), event: z.string() }),
-      z.object({ type: z.literal("state_change"), stateKey: z.string() }),
-      z.object({ type: z.literal("internal"), reason: z.enum(["derived", "orchestration"]) }),
+    triggeredBy: z.union([
+      z.discriminatedUnion("type", [
+        z.object({ type: z.literal("lifecycle"), event: z.string() }),
+        z.object({ type: z.literal("state_change"), stateKey: z.string() }),
+        z.object({ type: z.literal("internal"), reason: z.string().optional() }),
+      ]),
+      z.array(
+        z.discriminatedUnion("type", [
+            z.object({ type: z.literal("lifecycle"), event: z.string() }),
+            z.object({ type: z.literal("state_change"), stateKey: z.string() }),
+            z.object({ type: z.literal("internal"), reason: z.string().optional() }),
+        ])
+      )
     ]).optional(),
   })
   .passthrough();
@@ -54,7 +63,7 @@ export const miniAppComponentSchema: z.ZodType<any> = z.lazy(() =>
         })
         .optional(),
       events: z.array(miniAppEventSchema).optional(),
-      children: z.array(miniAppComponentSchema).optional(),
+      children: z.array(z.string()).optional(),
       layout: z
         .object({
           w: z.number().optional(),

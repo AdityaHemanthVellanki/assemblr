@@ -11,6 +11,7 @@ export function flattenMiniAppComponents(mini: any): Array<{ pageId: string; com
       while (stack.length) {
         const node = stack.shift();
         if (!node) continue;
+        if (typeof node === "string") continue; // Skip ID references
         out.push({ pageId: p.id, component: node });
         if (Array.isArray(node.children)) stack.push(...node.children);
       }
@@ -32,6 +33,7 @@ export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec)
   // Check explicit triggeredBy (Any type: lifecycle, state_change, internal)
   for (const a of (mutation.actionsAdded ?? [])) {
     if (a.triggeredBy) {
+      if (Array.isArray(a.triggeredBy) && a.triggeredBy.length === 0) continue;
       triggered.add(normalizeActionId(a.id));
     }
   }
@@ -73,6 +75,20 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   for (const c of components) {
     if (!allowedTypes.has(c.type.toLowerCase())) {
       throw new Error(`Unsupported component type: ${c.type}. Allowed: ${Array.from(allowedTypes).join(", ")}`);
+    }
+
+    // Fix: Children must be strings
+    if (Array.isArray(c.children)) {
+        for (const child of c.children) {
+            if (typeof child !== "string") {
+                 throw new Error(`Component ${c.id} has invalid children. Must be array of string IDs only.`);
+            }
+        }
+    }
+
+    // Fix: itemTemplate.onClick
+    if (c.properties?.itemTemplate?.onClick || c.properties?.itemTemplate?.events?.some((e: any) => e.type === "onClick")) {
+        throw new Error(`Component ${c.id} defines onClick on itemTemplate. This is invalid. Use 'onSelect' on the List component itself.`);
     }
 
     // Fix 5: Illegal Negation in disabledKey
@@ -191,6 +207,12 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   }
 
   for (const a of actions) {
+    // Validate Action Types
+    const allowedActionTypes = new Set(["integration_call", "internal", "navigation", "workflow"]);
+    if (!allowedActionTypes.has(a.type)) {
+         throw new Error(`Action ${a.id} has invalid type '${a.type}'. Allowed: ${Array.from(allowedActionTypes).join(", ")}`);
+    }
+
     if (a.type === "integration_call") {
       const assignKey = a.config?.assign;
       // Fix 2: Actions Exist but UI Does Not Consume Their State
@@ -447,97 +469,44 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
               // Avoid duplicate if it already exists (maybe under different name?)
               const exists = actions.some((x: any) => x.id === normalizeId);
               if (!exists) {
-                  const normalizedKey = `${assignKey.replace(/Raw$|Data$/, "")}Items`; // e.g. githubCommits -> githubItems? Or just use generic suffix?
-                  // User example: rawGithubActivity -> activityItems
-                  // Let's try to be smart about naming.
-                  
-                  const newItem: any = {
-                      id: normalizeId,
-                      type: "custom_function", // or internal_action
-                      inputs: [assignKey],
-                      config: {
-                          code: `return ${assignKey}; // Placeholder normalization`,
-                          assign: normalizedKey
-                      },
-                      triggeredBy: { type: "state_change", stateKey: assignKey }
-                  };
-                  
-                  // Inject!
-                  actions.push(newItem);
-                  console.log(`[PlannerRepair] Auto-injected normalization action: ${normalizeId} (${assignKey} -> ${normalizedKey})`);
-                  
-                  // Now we have a NEW unconsumed key: normalizedKey.
-                  // Should we bind it to a component?
-                  // The user said: "githubCommits → activityItems → filteredActivity → list.dataSource"
-                  // If we stop here, the planner validation will complain about 'activityItems' being unused (if strictly validated).
-                  // But at least the INTEGRATION output is consumed.
-                  // The planner validation loop might need to run again or be robust.
-                  // Let's try to find a List component and bind it?
-                  // This is risky if we guess wrong.
-                  // BUT, the requirement says: "If an integration assigns to X... Auto-inject a normalization action stub".
-                  // It doesn't explicitly say "Auto-wire UI to the stub".
-                  // However, validation MIGHT fail for the stub's output if we are strict about ALL actions.
-                  // "Any action triggered by state_change must have at least one component mutating that state" -> No, that's for inputs.
-                  // "Action mutates state key... but no component reads this key" -> Warns.
-                  // Strict mode for Integration only throws.
-                  // So creating the stub satisfies the INTEGRATION check. The stub itself might generate a warning, but not a fatal error.
+                   const normalizedKey = `${assignKey.replace(/Raw$|Data$/, "")}Items`;
+                   const newItem: any = {
+                       id: normalizeId,
+                       type: "internal",
+                       inputs: [assignKey],
+                       config: {
+                           code: `return ${assignKey}; // Placeholder normalization`,
+                           assign: normalizedKey
+                       },
+                       triggeredBy: { type: "state_change", stateKey: assignKey }
+                   };
+                   actions.push(newItem);
+                   console.log(`[PlannerRepair] Auto-injected normalization action: ${normalizeId} (${assignKey} -> ${normalizedKey})`);
               }
           }
 
-          // 2. Bind Status/Error (Fix 2)
-          // Find components using this data (or the normalized data?)
-          // If we just injected a normalizer, the UI likely doesn't use 'assignKey'.
-          // But we should still wire status/error to *some* component if possible, OR map it.
+          // Fix: Option A - Bind directly. Do NOT create map_status action.
+          // Find the component that consumes the *data* (either assignKey or normalizedKey).
+          // If we injected a normalizer, we know the normalizedKey.
           
-          // Strategy: Find any List/Table/Card that looks related?
-          // Or just find ANY component that binds to the data chain?
-          // This is hard without full graph analysis.
-          
-          // Fallback: If no component binds to it, look for components with "missing" loadingKeys?
-          // Or just Auto-inject internal mapping action?
-          // User: "Then add an internal action that maps: githubCommitsStatus → activityStatus"
-          
-          const statusConsumed = stateKeysRead.has(statusKey) || actions.some((other: any) => {
-               if (other.id === a.id) return false;
-               if (Array.isArray(other.inputs) && other.inputs.includes(statusKey)) return true;
-               const deps = extractStateDependencies(other);
-               return deps.includes(statusKey);
-          });
-          
-          if (!statusConsumed && a.config?.ephemeral_internal !== true) {
-              // Inject status mapper
-               const mapId = `map_status_${a.id.replace(/^fetch_|^get_/, "")}`;
-               const exists = actions.some((x: any) => x.id === mapId);
-               if (!exists) {
-                   const publicStatusKey = `${assignKey.replace(/Raw$|Data$/, "")}ListStatus`; 
-                   // githubCommits -> githubCommitsListStatus
-                   
-                   const newItem: any = {
-                       id: mapId,
-                       type: "state_mutation",
-                       inputs: [statusKey, errorKey],
-                       config: {
-                           updates: {
-                               [publicStatusKey]: `{{ ${statusKey} }}`,
-                               [`${publicStatusKey.replace("Status", "Error")}`]: `{{ ${errorKey} }}`
-                           }
-                       },
-                       triggeredBy: { type: "state_change", stateKey: statusKey } // Trigger on status change
-                   };
-                   actions.push(newItem);
-                   console.log(`[PlannerRepair] Auto-injected status mapping action: ${mapId}`);
-                   
-                   // And now bind this public key to the component?
-                   // If we found a component earlier that binds to the data, we should update it.
-                   // But if we didn't... well, at least the integration output is "consumed" by this mapper (technically input).
-               }
+          let downstreamKey = assignKey;
+          // Check if assignKey is input to an internal action that re-assigns
+          const consumerAction = actions.find((x: any) => x.type === "internal" && x.inputs?.includes(assignKey));
+          if (consumerAction && consumerAction.config?.assign) {
+               downstreamKey = consumerAction.config.assign;
           }
 
-          // Existing logic for UI binding (best effort)
+          // Scan components binding to downstreamKey (or assignKey)
           for (const c of components) {
-              if (c.dataSource?.type === "state" && c.dataSource.value === assignKey) {
-                  // Bind loading/error keys if missing
-                  c.properties = c.properties || {};
+              const bindsToData = 
+                  c.dataSource?.value === assignKey || 
+                  c.dataSource?.value === downstreamKey ||
+                  c.properties?.data?.includes(assignKey) ||
+                  c.properties?.data?.includes(downstreamKey);
+                  
+              if (bindsToData) {
+                  if (!c.properties) c.properties = {};
+                  // Bind to integration status keys directly
                   if (!c.properties.loadingKey) {
                       c.properties.loadingKey = statusKey;
                       console.log(`[PlannerRepair] Auto-wired ${c.id}.loadingKey -> ${statusKey}`);
@@ -546,6 +515,73 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
                       c.properties.errorKey = errorKey;
                       console.log(`[PlannerRepair] Auto-wired ${c.id}.errorKey -> ${errorKey}`);
                   }
+
+                  // If a generic list uses shared keys, mirror GitHub status into shared state via workflow
+                  const usesSharedKeys =
+                    c.properties.loadingKey === "activityListStatus" ||
+                    c.properties.errorKey === "activityListError";
+                  if (c.type === "list" && usesSharedKeys) {
+                    const mirrorId = `mirror_status_${assignKey.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+                    const exists = actions.some((x: any) => x.id === mirrorId);
+                    if (!exists) {
+                      const mirrorAction: any = {
+                        id: mirrorId,
+                        type: "workflow",
+                        inputs: [statusKey, errorKey],
+                        steps: [
+                          {
+                            type: "state_mutation",
+                            config: {
+                              updates: {
+                                activityListStatus: `{{ ${statusKey} }}`,
+                                activityListError: `{{ ${errorKey} }}`,
+                              },
+                            },
+                          },
+                        ],
+                        triggeredBy: [
+                          { type: "state_change", stateKey: statusKey },
+                          { type: "state_change", stateKey: errorKey },
+                        ],
+                      };
+                      actions.push(mirrorAction);
+                      console.log(`[PlannerRepair] Injected status mirroring action: ${mirrorId} -> activityListStatus/Error`);
+                    }
+                  }
+              }
+          }
+          // Additional pass: If a generic list uses shared keys, inject mirroring even if it binds filtered data
+          for (const c of components) {
+              const usesSharedKeys =
+                c?.type === "list" &&
+                (c?.properties?.loadingKey === "activityListStatus" || c?.properties?.errorKey === "activityListError");
+              if (usesSharedKeys) {
+                const mirrorId = `mirror_status_${assignKey.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+                const exists = actions.some((x: any) => x.id === mirrorId);
+                if (!exists) {
+                  const mirrorAction: any = {
+                    id: mirrorId,
+                    type: "workflow",
+                    inputs: [statusKey, errorKey],
+                    steps: [
+                      {
+                        type: "state_mutation",
+                        config: {
+                          updates: {
+                            activityListStatus: `{{ ${statusKey} }}`,
+                            activityListError: `{{ ${errorKey} }}`,
+                          },
+                        },
+                      },
+                    ],
+                    triggeredBy: [
+                      { type: "state_change", stateKey: statusKey },
+                      { type: "state_change", stateKey: errorKey },
+                    ],
+                  };
+                  actions.push(mirrorAction);
+                  console.log(`[PlannerRepair] Injected status mirroring action: ${mirrorId} -> activityListStatus/Error`);
+                }
               }
           }
       }
