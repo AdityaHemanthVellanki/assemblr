@@ -137,10 +137,13 @@ export async function compileIntent(
     )
     .join("\n\n");
 
+  const installedIntegrations = connectedCapabilities.map(c => c.integrationId).filter((v, i, a) => a.indexOf(v) === i);
+  const installedText = `INSTALLED_INTEGRATIONS (Use these for UI filter options, do NOT rely on runtime data):\n${JSON.stringify(installedIntegrations)}`;
+
   const toolMemory = buildToolMemory(currentSpec);
   const prompt =
     SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsText) +
-    `\n\nMODE HINT: ${mode.toUpperCase()}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
+    `\n\n${installedText}\n\nMODE HINT: ${mode.toUpperCase()}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
 
   try {
     const contextMessages = history.map(m => ({

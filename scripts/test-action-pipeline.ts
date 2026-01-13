@@ -1,6 +1,7 @@
 
 import { validateCompiledIntent, repairCompiledIntent } from "../lib/ai/planner-logic";
 import { normalizeActionId } from "../lib/spec/action-id";
+import { ActionRegistry } from "../lib/spec/action-registry";
 import { MiniAppStore } from "../components/miniapp/runtime";
 import { CompiledIntent } from "../lib/core/intent";
 import { MiniAppSpec } from "../lib/spec/miniAppSpec";
@@ -240,6 +241,31 @@ async function runTests() {
       outcome: "success"
   } as any;
   assertThrows(() => validateCompiledIntent(intentBadType), "Invalid action type");
+
+  // Test 6b: state_update is repaired to internal
+  const intentStateUpdate: CompiledIntent = {
+      intent_type: "modify",
+      tool_mutation: {
+          actionsAdded: [{
+              id: "update_filter_state",
+              type: "state_update",
+              config: { updates: { "filters.type": "{{ state.filters.type }}", "filters.integration": "{{ state.filters.integration }}" } },
+              triggeredBy: { type: "lifecycle", event: "onPageLoad" }
+          }]
+      },
+      outcome: "success"
+  } as any;
+  repairCompiledIntent(intentStateUpdate);
+  const upd = intentStateUpdate.tool_mutation!.actionsAdded![0] as any;
+  assert(upd.type === "internal", "Converted state_update to internal");
+  assert(Array.isArray(upd.steps) && upd.steps[0]?.type === "state_mutation", "Added explicit state_mutation step");
+  try {
+    validateCompiledIntent(intentStateUpdate);
+    console.log("✅ PASS: Repaired state_update intent passes validation");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Repaired state_update intent failed validation: ${e.message}`);
+    failures++;
+  }
 
   const intentBadClick: CompiledIntent = {
       intent_type: "modify",

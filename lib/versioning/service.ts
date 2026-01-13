@@ -48,7 +48,19 @@ export class VersioningService {
     try {
         const { error } = await (supabase.from("tool_versions") as any).insert(version);
         if (error) {
-            console.warn("Failed to persist version to tool_versions table (likely missing)", error);
+            console.warn("Failed to persist version to tool_versions table:", error);
+            
+            // Fallback: If 'compiled_intent' column is missing (migration lag), try inserting without it
+            if (error.message?.includes("compiled_intent") || error.details?.includes("compiled_intent")) {
+                console.log("Retrying version persistence without compiled_intent...");
+                const { compiled_intent, ...legacyVersion } = version;
+                const { error: retryError } = await (supabase.from("tool_versions") as any).insert(legacyVersion);
+                if (retryError) {
+                    console.error("Retry failed:", retryError);
+                } else {
+                    console.log("Retry successful (legacy mode)");
+                }
+            }
         }
     } catch (e) {
         console.error("Versioning persistence failed", e);

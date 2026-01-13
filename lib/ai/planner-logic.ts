@@ -1,6 +1,7 @@
 import { CompiledIntent } from "../core/intent";
 import type { ToolSpec } from "../spec/toolSpec";
 import { normalizeActionId } from "../spec/action-id";
+import { ActionRegistry } from "../spec/action-registry";
 
 export function flattenMiniAppComponents(mini: any): Array<{ pageId: string; component: any }> {
   const out: Array<{ pageId: string; component: any }> = [];
@@ -136,15 +137,17 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
 
   // 2. Validate Event Wiring (STRICT MODE)
   const actions = mutation.actionsAdded || [];
-  const actionIds = new Set(actions.map((a: any) => normalizeActionId(a.id)));
+  const registry = new ActionRegistry(actions);
   
   if (existingMini && existingMini.actions) {
-      existingMini.actions.forEach((a: any) => actionIds.add(normalizeActionId(a.id)));
+      registry.registerAll(existingMini.actions);
   }
 
   // A. Check for "Action defined but unreachable"
   const triggeredActions = collectTriggeredActionIds(mutation, currentSpec);
-  for (const id of actionIds) {
+  const allActionIds = registry.getAllIds();
+  
+  for (const id of allActionIds) {
     // Only check newly added actions for reachability to avoid blocking legacy updates
     const isNew = actions.some((a: any) => normalizeActionId(a.id) === id);
     if (isNew && !triggeredActions.has(id)) {
@@ -155,10 +158,7 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   // B. Check for "Trigger references missing action" (Strict Mode)
   const checkTrigger = (context: string, event: { actionId?: string }) => {
       if (!event.actionId) return;
-      const normalized = normalizeActionId(event.actionId);
-      if (!actionIds.has(normalized)) {
-          throw new Error(`[Strict Mode] ${context} triggers action '${event.actionId}' (normalized: '${normalized}'), but this action is not defined in the intent or existing app.`);
-      }
+      registry.ensureExists(event.actionId, context);
   };
 
   for (const c of (mutation.componentsAdded ?? [])) {
@@ -319,299 +319,177 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   if (!mutation) return;
   const actions = mutation.actionsAdded ?? [];
 
-  // NORMALIZE ALL ACTION IDs IMMEDIATELY
+  // 1. NORMALIZE ALL ACTION IDs IMMEDIATELY (Strict Mode)
   for (const a of actions) {
       if (a.id) {
-          const oldId = a.id;
           a.id = normalizeActionId(a.id);
-          if (oldId !== a.id) {
-              console.log(`[PlannerRepair] Normalized action ID: ${oldId} -> ${a.id}`);
-          }
       }
+  }
+
+  // 2. CONVERT INVALID ACTION TYPES (Systemic Fix)
+  for (const a of actions) {
+    if (a.type === "state_update") {
+      a.type = "internal";
+      const updates = a.config?.updates ?? a.config?.set;
+      if (updates && !Array.isArray(a.steps)) {
+        a.steps = [
+          {
+            type: "state_mutation",
+            config: { updates },
+          },
+        ];
+        delete a.config?.updates;
+        delete a.config?.set;
+      }
+      console.log(`[SystemAutoWiring] Converted action ${a.id} from 'state_update' to 'internal'`);
+    }
   }
 
   if (!actions.length) return;
 
-  // 1. Identify Target Page (First Page)
-  let firstPageId: string | undefined;
-  if (Array.isArray(mutation.pagesAdded) && mutation.pagesAdded.length) {
-    const p = mutation.pagesAdded[0];
-    firstPageId = (p as any).pageId ?? p.id;
-  }
-  if (!firstPageId && currentSpec && (currentSpec as any).kind === "mini_app") {
-    const pages = ((currentSpec as any).pages ?? []);
-    firstPageId = pages[0]?.id;
+  // 3. ENFORCE CANONICAL PIPELINE & FEEDBACK LOOPS
+  // "Every integration_call must terminate in UI binding or internal consumer"
+  for (const a of actions) {
+      if (a.type === "integration_call" && a.config?.assign && a.config?.ephemeral_internal !== true) {
+          const rawKey = a.config.assign;
+          const statusKey = `${rawKey}Status`;
+          const errorKey = `${rawKey}Error`;
+          
+          // A. Canonical Normalization Action (Required)
+          // "Integration Call -> Normalizer -> Filter -> UI"
+          // We check if a normalizer exists. If not, we inject one.
+          // We look for any internal action that takes rawKey as input.
+          const hasConsumer = actions.some((x: any) => 
+              x.id !== a.id && 
+              x.type === "internal" && 
+              (x.inputs?.includes(rawKey) || extractStateDependencies(x).includes(rawKey))
+          );
+
+          if (!hasConsumer) {
+               const normalizeId = `normalize_${a.id.replace(/^fetch_|^get_/, "")}`;
+               // Check collision
+               if (!actions.some((x: any) => x.id === normalizeId)) {
+                   const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
+                   actions.push({
+                       id: normalizeId,
+                       type: "internal",
+                       inputs: [rawKey],
+                       config: {
+                           code: `return ${rawKey}; // System auto-normalization`,
+                           assign: normalizedKey
+                       },
+                       triggeredBy: { type: "state_change", stateKey: rawKey }
+                   });
+                   console.log(`[SystemAutoWiring] Injected canonical normalizer: ${normalizeId}`);
+               }
+          }
+
+          // B. Mandatory Feedback Loop (Status/Error)
+          // We inject a "Mirroring" action to ensure status is available to shared UI state if needed,
+          // OR we ensure the UI components bind to it.
+          // For robustness, we check if any component binds to the raw status keys.
+          // If NOT, we don't necessarily fail, but we inject a system binding if there's a generic list.
+          // But to satisfy "Mandatory Feedback Loop Enforcement", we must ensure *some* path exists.
+          
+          // Let's rely on the validation step to fail if binding is missing, 
+          // and here we just try to help by wiring up components that *should* have it.
+      }
   }
 
-  // 2. Identify Orphans (No trigger at all)
+  // 4. FIX COMPONENTS & CHILDREN
+  const components = mutation.componentsAdded || [];
+  for (const c of components) {
+      // Fix Children: Must be strings
+      if (Array.isArray(c.children)) {
+          c.children = c.children.map((child: any) => {
+              if (typeof child === "string") return child;
+              if (child.id) return child.id; // Flatten inline definition
+              return null;
+          }).filter(Boolean);
+      }
+
+      // Fix List Item Click
+      if (c.properties?.itemTemplate?.onClick) {
+          delete c.properties.itemTemplate.onClick;
+          // We can't easily move it to 'onSelect' here without losing logic, 
+          // but we remove the illegal prop to prevent crash.
+          console.log(`[SystemAutoWiring] Removed illegal itemTemplate.onClick from ${c.id}`);
+      }
+
+      // Fix Select Binding
+      if ((c.type === "select" || c.type === "dropdown") && !c.properties?.bindKey) {
+          const key = `filters.${c.id.replace(/^select_|^dropdown_/, "")}`;
+          c.properties = c.properties || {};
+          c.properties.bindKey = key;
+          mutation.stateAdded = mutation.stateAdded || {};
+          if (!mutation.stateAdded[key]) mutation.stateAdded[key] = null;
+          console.log(`[SystemAutoWiring] Auto-bound select ${c.id} to ${key}`);
+      }
+      
+      // Fix Illegal disabledKey
+      if (c.properties?.disabledKey && c.properties.disabledKey.startsWith("!")) {
+           delete c.properties.disabledKey;
+           console.log(`[SystemAutoWiring] Removed illegal disabledKey from ${c.id}`);
+      }
+  }
+
+  // 5. AUTO-WIRE FEEDBACK LOOPS TO COMPONENTS
+  // Scan components and wire up loading/error keys if missing
+  for (const a of actions) {
+      if (a.type === "integration_call" && a.config?.assign) {
+          const rawKey = a.config.assign;
+          const statusKey = `${rawKey}Status`;
+          const errorKey = `${rawKey}Error`;
+          
+          // Find potential consumers (binding to rawKey or a derived key)
+          // We can't easily know derived keys without graph analysis, but we can guess common patterns.
+          // Or just look for components that *don't* have loadingKey.
+          
+          for (const c of components) {
+              const bindsToData = 
+                  c.dataSource?.value === rawKey || 
+                  (c.dataSource?.value && c.dataSource.value.includes(rawKey.replace(/Raw$|Data$/, ""))); // Heuristic match
+                  
+              if (bindsToData) {
+                  c.properties = c.properties || {};
+                  if (!c.properties.loadingKey) c.properties.loadingKey = statusKey;
+                  if (!c.properties.errorKey) c.properties.errorKey = errorKey;
+              }
+          }
+      }
+  }
+  
+  // 6. ENSURE LIFECYCLE TRIGGERS
+  // Ensure hydration actions are triggered
+  let firstPageId: string | undefined;
+  if (Array.isArray(mutation.pagesAdded) && mutation.pagesAdded.length) {
+    firstPageId = (mutation.pagesAdded[0] as any).pageId ?? mutation.pagesAdded[0].id;
+  }
+  if (!firstPageId && currentSpec && (currentSpec as any).kind === "mini_app") {
+    firstPageId = ((currentSpec as any).pages ?? [])[0]?.id;
+  }
+
   const allTriggered = collectTriggeredActionIds(mutation, currentSpec);
   const orphanActions = actions.filter((a: any) => !allTriggered.has(a.id));
 
   for (const action of orphanActions) {
-    // A. Check for State Dependencies (Auto-Bind to State Change)
-    // E.g. filter-activity depends on {{state.filter}}
     const stateDeps = extractStateDependencies(action);
     if (stateDeps.length > 0) {
-      // Bind to the first dependency found.
-      // This logic assumes that if state changes, we want to re-run this action.
       action.triggeredBy = { type: "state_change", stateKey: stateDeps[0] };
-      console.log(`[PlannerRepair] Auto-bound action ${action.id} -> state_change(${stateDeps[0]})`);
-      continue;
-    }
-
-    // B. Check for Hydration (Integration Call -> State, no deps)
-    // E.g. fetch-initial-data
-    if (action.type === "integration_call" && firstPageId) {
-        // Explicitly set triggeredBy so it's not orphaned anymore
+      console.log(`[SystemAutoWiring] Auto-bound ${action.id} to state_change(${stateDeps[0]})`);
+    } else if (action.type === "integration_call" && firstPageId) {
+        // Hydration
         action.triggeredBy = { type: "lifecycle", event: "onPageLoad" };
-        
-        // Also add the runtime event binding
         mutation.pagesUpdated = mutation.pagesUpdated ?? [];
         mutation.pagesUpdated.push({
             pageId: firstPageId,
             patch: {
                 events: [
-                    { type: "onPageLoad", actionId: action.id, args: { autoAttached: true, reason: "implicit_orphan_hydration" } }
+                    { type: "onPageLoad", actionId: action.id, args: { autoAttached: true, reason: "system_hydration" } }
                 ]
             }
         });
-        console.log(`[PlannerRepair] Auto-bound action ${action.id} -> onPageLoad (hydration)`);
-        continue;
+        console.log(`[SystemAutoWiring] Auto-bound ${action.id} to onPageLoad`);
     }
-    
-    // C. Internal Orchestration (Workflow steps, etc)
-    // If we can't figure it out, mark as internal orchestration so validation passes?
-    // User requirement: "Never fail Create Mode for this".
-    // So we default to internal orchestration.
-    action.triggeredBy = { type: "internal", reason: "orchestration" };
-    console.log(`[PlannerRepair] Auto-bound action ${action.id} -> internal(orchestration)`);
-  }
-
-  // 3. Handle Explicit Lifecycle Triggers (triggeredBy: { type: "lifecycle" })
-  // These need to be converted to page events because runtime doesn't support triggeredBy natively yet (or fully)
-  const lifecycleActions = actions.filter((a: any) => a.triggeredBy?.type === "lifecycle" || a.triggeredBy?.event);
-  
-  if (lifecycleActions.length && firstPageId) {
-    mutation.pagesUpdated = mutation.pagesUpdated ?? [];
-    for (const a of lifecycleActions) {
-      // Avoid duplicating if we just added it in step 2B
-      const eventName = a.triggeredBy?.event === "onAppInit" || a.triggeredBy?.event === "onCreateModeEnter" 
-        ? "onPageLoad" 
-        : (a.triggeredBy?.event ?? "onPageLoad");
-      
-      // Check if we already added this event in this mutation pass
-      const alreadyAdded = mutation.pagesUpdated.some((u: any) => 
-        u.pageId === firstPageId && 
-        u.patch?.events?.some((e: any) => e.type === eventName && e.actionId === a.id)
-      );
-
-      if (!alreadyAdded) {
-        mutation.pagesUpdated.push({
-            pageId: firstPageId,
-            patch: {
-            events: [
-                { type: eventName, actionId: a.id, args: { autoAttached: true, reason: "lifecycle_trigger" } }
-            ]
-            }
-        });
-      }
-    }
-  }
-
-  // 4. Auto-Wire Feedback Loops (Fix 2) & Select Binding (Fix 4)
-  const components = mutation.componentsAdded || [];
-  const componentMap = new Map(components.map((c: any) => [c.id, c]));
-
-  // A. Bind Integration Status to Components & Fix Unconsumed Outputs (Part 3 & 5)
-  // Re-scan components and actions to check consumption
-  const stateKeysRead = new Set<string>();
-  const collectReadKeys = (c: any) => {
-      if (c.dataSource?.type === "state" && c.dataSource.value) stateKeysRead.add(c.dataSource.value);
-      if (c.properties?.bindKey) stateKeysRead.add(c.properties.bindKey);
-      if (c.properties?.loadingKey) stateKeysRead.add(c.properties.loadingKey);
-      if (c.properties?.errorKey) stateKeysRead.add(c.properties.errorKey);
-      if (typeof c.properties?.data === "string") {
-           const matches = c.properties.data.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
-           if (matches) matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
-      }
-      if (c.type === "text" && typeof c.properties?.content === "string") {
-          const matches = c.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
-          if (matches) matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
-      }
-  };
-  for (const c of components) collectReadKeys(c);
-  // Also check existing mini? Ideally yes, but repair runs locally on mutation.
-  // We can't easily see existing app structure here if not passed in fully. 
-  // Assuming strict mode for new additions primarily.
-  
-  for (const a of actions) {
-      if (a.type === "integration_call" && a.config?.assign) {
-          const assignKey = a.config.assign;
-          const statusKey = `${assignKey}Status`;
-          const errorKey = `${assignKey}Error`;
-          
-          // 1. Check if Output is Consumed
-          // Check UI
-          let isConsumed = stateKeysRead.has(assignKey);
-          // Check Internal Actions
-          if (!isConsumed) {
-              isConsumed = actions.some((other: any) => {
-                  if (other.id === a.id) return false;
-                  if (Array.isArray(other.inputs) && other.inputs.includes(assignKey)) return true;
-                  const deps = extractStateDependencies(other);
-                  return deps.includes(assignKey);
-              });
-          }
-
-          if (!isConsumed && a.config?.ephemeral_internal !== true) {
-              // Fix 5: Auto-inject normalization action stub
-              const normalizeId = `normalize_${a.id.replace(/^fetch_|^get_/, "")}`;
-              // Avoid duplicate if it already exists (maybe under different name?)
-              const exists = actions.some((x: any) => x.id === normalizeId);
-              if (!exists) {
-                   const normalizedKey = `${assignKey.replace(/Raw$|Data$/, "")}Items`;
-                   const newItem: any = {
-                       id: normalizeId,
-                       type: "internal",
-                       inputs: [assignKey],
-                       config: {
-                           code: `return ${assignKey}; // Placeholder normalization`,
-                           assign: normalizedKey
-                       },
-                       triggeredBy: { type: "state_change", stateKey: assignKey }
-                   };
-                   actions.push(newItem);
-                   console.log(`[PlannerRepair] Auto-injected normalization action: ${normalizeId} (${assignKey} -> ${normalizedKey})`);
-              }
-          }
-
-          // Fix: Option A - Bind directly. Do NOT create map_status action.
-          // Find the component that consumes the *data* (either assignKey or normalizedKey).
-          // If we injected a normalizer, we know the normalizedKey.
-          
-          let downstreamKey = assignKey;
-          // Check if assignKey is input to an internal action that re-assigns
-          const consumerAction = actions.find((x: any) => x.type === "internal" && x.inputs?.includes(assignKey));
-          if (consumerAction && consumerAction.config?.assign) {
-               downstreamKey = consumerAction.config.assign;
-          }
-
-          // Scan components binding to downstreamKey (or assignKey)
-          for (const c of components) {
-              const bindsToData = 
-                  c.dataSource?.value === assignKey || 
-                  c.dataSource?.value === downstreamKey ||
-                  c.properties?.data?.includes(assignKey) ||
-                  c.properties?.data?.includes(downstreamKey);
-                  
-              if (bindsToData) {
-                  if (!c.properties) c.properties = {};
-                  // Bind to integration status keys directly
-                  if (!c.properties.loadingKey) {
-                      c.properties.loadingKey = statusKey;
-                      console.log(`[PlannerRepair] Auto-wired ${c.id}.loadingKey -> ${statusKey}`);
-                  }
-                  if (!c.properties.errorKey) {
-                      c.properties.errorKey = errorKey;
-                      console.log(`[PlannerRepair] Auto-wired ${c.id}.errorKey -> ${errorKey}`);
-                  }
-
-                  // If a generic list uses shared keys, mirror GitHub status into shared state via workflow
-                  const usesSharedKeys =
-                    c.properties.loadingKey === "activityListStatus" ||
-                    c.properties.errorKey === "activityListError";
-                  if (c.type === "list" && usesSharedKeys) {
-                    const mirrorId = `mirror_status_${assignKey.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-                    const exists = actions.some((x: any) => x.id === mirrorId);
-                    if (!exists) {
-                      const mirrorAction: any = {
-                        id: mirrorId,
-                        type: "workflow",
-                        inputs: [statusKey, errorKey],
-                        steps: [
-                          {
-                            type: "state_mutation",
-                            config: {
-                              updates: {
-                                activityListStatus: `{{ ${statusKey} }}`,
-                                activityListError: `{{ ${errorKey} }}`,
-                              },
-                            },
-                          },
-                        ],
-                        triggeredBy: [
-                          { type: "state_change", stateKey: statusKey },
-                          { type: "state_change", stateKey: errorKey },
-                        ],
-                      };
-                      actions.push(mirrorAction);
-                      console.log(`[PlannerRepair] Injected status mirroring action: ${mirrorId} -> activityListStatus/Error`);
-                    }
-                  }
-              }
-          }
-          // Additional pass: If a generic list uses shared keys, inject mirroring even if it binds filtered data
-          for (const c of components) {
-              const usesSharedKeys =
-                c?.type === "list" &&
-                (c?.properties?.loadingKey === "activityListStatus" || c?.properties?.errorKey === "activityListError");
-              if (usesSharedKeys) {
-                const mirrorId = `mirror_status_${assignKey.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-                const exists = actions.some((x: any) => x.id === mirrorId);
-                if (!exists) {
-                  const mirrorAction: any = {
-                    id: mirrorId,
-                    type: "workflow",
-                    inputs: [statusKey, errorKey],
-                    steps: [
-                      {
-                        type: "state_mutation",
-                        config: {
-                          updates: {
-                            activityListStatus: `{{ ${statusKey} }}`,
-                            activityListError: `{{ ${errorKey} }}`,
-                          },
-                        },
-                      },
-                    ],
-                    triggeredBy: [
-                      { type: "state_change", stateKey: statusKey },
-                      { type: "state_change", stateKey: errorKey },
-                    ],
-                  };
-                  actions.push(mirrorAction);
-                  console.log(`[PlannerRepair] Injected status mirroring action: ${mirrorId} -> activityListStatus/Error`);
-                }
-              }
-          }
-      }
-  }
-
-  // B. Fix Select Bindings
-  for (const c of components) {
-      if ((c.type === "select" || c.type === "dropdown") && !c.properties?.bindKey) {
-          // Auto-generate bindKey
-          const key = `filters.${c.id.replace(/^select_|^dropdown_/, "")}`;
-          c.properties = c.properties || {};
-          c.properties.bindKey = key;
-          
-          // Ensure state exists
-          mutation.stateAdded = mutation.stateAdded || {};
-          if (!mutation.stateAdded[key]) {
-              mutation.stateAdded[key] = null; // Initialize
-          }
-          console.log(`[PlannerRepair] Auto-generated bindKey for ${c.id} -> ${key}`);
-      }
-  }
-
-  // C. Fix Illegal disabledKey
-  for (const c of components) {
-      if (c.properties?.disabledKey && c.properties.disabledKey.startsWith("!")) {
-          // Try to invert? No, just drop it to be safe and avoid runtime crash
-          // Ideally we would create a derived state, but that requires adding a transformation action.
-          // For now, dropping the invalid prop allows the app to run (enabled), which is better than crash.
-          console.warn(`[PlannerRepair] Dropping invalid disabledKey '${c.properties.disabledKey}' on ${c.id}`);
-          delete c.properties.disabledKey;
-      }
   }
 }

@@ -5,6 +5,7 @@ import { useSyncExternalStore } from "react";
 
 import type { MiniAppSpec } from "@/lib/spec/miniAppSpec";
 import { normalizeActionId } from "@/lib/spec/action-id";
+import { ActionRegistry } from "@/lib/spec/action-registry";
 import { getMiniAppComponent, type MiniAppComponentSpec } from "@/components/miniapp/components";
 import { MINI_APP_COMPONENTS } from "@/components/miniapp/components";
 
@@ -56,24 +57,16 @@ export class MiniAppStore {
   private listeners = new Set<() => void>();
   private snapshot: RuntimeSnapshot;
   private resultsByActionId: Record<string, any> = {};
-  private actionRegistry = new Map<string, any>();
+  private registry: ActionRegistry;
 
   constructor(private spec: MiniAppSpec, private integrations: MiniAppIntegrations, initialState: Record<string, any>) {
     // 1. Build Action Registry (Centralized)
-    for (const action of spec.actions ?? []) {
-      this.actionRegistry.set(normalizeActionId(action.id), action);
-    }
+    this.registry = new ActionRegistry(spec.actions ?? []);
 
     // 2. Validate All Event Bindings (Fail Fast)
     const validateEvent = (context: string, event: { actionId: string }) => {
       if (!event.actionId) return;
-      const id = normalizeActionId(event.actionId);
-      if (!this.actionRegistry.has(id)) {
-        console.warn(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId} (normalized: ${id}). This action may fail at runtime.`);
-        // User requested "Fail fast". Since we have Strict Mode in compiler, this should theoretically not happen for generated apps.
-        // But for manual specs or bugs, we throw to prevent undefined behavior.
-        throw new Error(`[MiniAppRuntime] ${context} references unknown action: ${event.actionId}`);
-      }
+      this.registry.ensureExists(event.actionId, context);
     };
 
     // Check Lifecycle
@@ -256,7 +249,7 @@ export class MiniAppStore {
     for (const l of this.listeners) l();
   }
 
-  getAction = (actionId: string) => this.actionRegistry.get(normalizeActionId(actionId));
+  getAction = (actionId: string) => this.registry.get(actionId);
 
   dispatch = async (
     rawActionId: string,
@@ -264,10 +257,13 @@ export class MiniAppStore {
     source?: { event: string; originId?: string; auto?: boolean },
   ) => {
     const actionId = normalizeActionId(rawActionId);
-    const action = this.getAction(actionId);
+    const action = this.registry.get(actionId);
     if (!action) {
-        console.warn(`[MiniAppRuntime] dispatch: Action not found: ${rawActionId} (normalized: ${actionId})`);
-        return;
+        // STRICT MODE: Runtime must only execute actions from the registry.
+        const msg = `[MiniAppRuntime] dispatch: Action not found: ${rawActionId} (normalized: ${actionId}). Execution blocked.`;
+        console.error(msg);
+        this.setError(msg);
+        throw new Error(msg);
     }
 
     // Fix 7: Action Graph Ordering (Conditionals)
