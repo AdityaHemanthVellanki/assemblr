@@ -108,8 +108,8 @@ async function runTests() {
       state: {} 
   };
   
-  const { materializeSpec } = require("../lib/spec/materializer");
-  assertThrows(() => materializeSpec(specWithPage, badPageUpdate), "Page update references missing action");
+  const materializer = await import("../lib/spec/materializer");
+  assertThrows(() => materializer.materializeSpec(specWithPage, badPageUpdate), "Page update references missing action");
 
   // Test 3: Unreachable Action
   const intentUnreachable: CompiledIntent = {
@@ -202,6 +202,31 @@ async function runTests() {
       failures++;
   }
 
+  console.log("\n--- Test 4c: Normalizer-only consumption (no status binding) ---");
+  const intentDerivedOnly: CompiledIntent = {
+    intent_type: "modify",
+    system_goal: "test derived consumption",
+    tool_mutation: {
+      actionsAdded: [
+        { id: "load_activity_list", type: "integration_call", config: { assign: "activityList" } }
+      ],
+      pagesAdded: [{ id: "activity_page" }],
+      componentsAdded: [
+        { id: "activity_list", type: "list", dataSource: { type: "state", value: "activityItems" } }
+      ]
+    },
+    outcome: "success"
+  } as any;
+
+  repairCompiledIntent(intentDerivedOnly);
+  try {
+    validateCompiledIntent(intentDerivedOnly);
+    console.log("✅ PASS: Derived-only pipeline passes validation without status bindings");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Derived-only pipeline failed validation: ${e.message}`);
+    failures++;
+  }
+
   // Test 4c: Status Mirroring for Generic List
   console.log("\n--- Test 4c: Status Mirroring for Generic List ---");
   const intentGenericList: CompiledIntent = {
@@ -279,8 +304,107 @@ async function runTests() {
   } as any;
   assertThrows(() => validateCompiledIntent(intentBadClick), "defines onClick on itemTemplate");
 
+  console.log("\n--- Test 5: Assign Action Normalization ---");
+  const intentAssign: CompiledIntent = {
+    intent_type: "modify",
+    system_goal: "test assign normalization",
+    constraints: [],
+    integrations_required: [],
+    output_mode: "mini_app",
+    execution_graph: { nodes: [], edges: [] },
+    execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
+    tool_mutation: {
+      actionsAdded: [
+        {
+          id: "select_activity_item",
+          type: "assign",
+          config: {
+            source: "{{state.activityItems.selectedId}}",
+            target: "selectedActivityId",
+          },
+        },
+      ],
+      componentsAdded: [
+        {
+          id: "activity_list",
+          type: "list",
+          dataSource: { type: "state", value: "activityItems" },
+          events: [{ type: "onSelect", actionId: "select_activity_item" }],
+        },
+      ],
+      stateAdded: {
+        activityItems: [],
+        selectedActivityId: null,
+      },
+    },
+    outcome: "success",
+  } as any;
 
-  console.log("\n--- Test 5: Runtime Registry & Execution ---");
+  repairCompiledIntent(intentAssign);
+  try {
+    validateCompiledIntent(intentAssign);
+    console.log("✅ PASS: assign action normalized and validated");
+  } catch (e: any) {
+    console.error(`❌ FAIL: assign action normalization failed validation: ${e.message}`);
+    failures++;
+  }
+
+  const assignActions = (intentAssign.tool_mutation as any).actionsAdded as any[];
+  assert(
+    !assignActions.some((a: any) => a.type === "assign"),
+    "No action with type 'assign' after normalization",
+  );
+  const selectAction = assignActions.find((a: any) => a.id === "select_activity_item");
+  assert(selectAction.type === "internal", "select_activity_item converted to internal");
+  assert(
+    selectAction.config?.operation === "assign",
+    "select_activity_item tagged with operation=assign",
+  );
+  assert(
+    Array.isArray(selectAction.steps) && selectAction.steps[0]?.type === "state_mutation",
+    "assign normalization injects state_mutation step",
+  );
+
+  console.log("\n--- Test 5b: Runtime execution of normalized assign ---");
+  const specAssign: MiniAppSpec = {
+    kind: "mini_app",
+    title: "Assign Test App",
+    state: { selectedActivityId: null, activityItems: [] },
+    pages: [
+      {
+        id: "home",
+        name: "Home",
+        layoutMode: "grid",
+        components: [
+          {
+            id: "activity_list",
+            type: "list",
+            dataSource: { type: "state", value: "activityItems" },
+            events: [{ type: "onSelect", actionId: "select_activity_item" }],
+          } as any,
+        ],
+      } as any,
+    ],
+    actions: [
+      {
+        id: "select_activity_item",
+        type: "internal",
+        config: { operation: "assign", source: "{{payload.item.id}}", target: "selectedActivityId" },
+        steps: [{ type: "state_mutation", config: { updates: { selectedActivityId: "{{payload.item.id}}" } } }],
+      } as any,
+    ],
+  };
+  try {
+    const storeAssign = new MiniAppStore(specAssign, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    await storeAssign.dispatch("select_activity_item", { item: { id: "X123" } }, { event: "onSelect", originId: "activity_list" });
+    const snap = storeAssign.getSnapshot();
+    assert(snap.state.selectedActivityId === "X123", "Runtime executed normalized assign and updated state");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Runtime assign execution failed: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 6: Runtime Registry & Execution ---");
   const spec: MiniAppSpec = {
     kind: "mini_app",
     title: "Test App",

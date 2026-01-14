@@ -167,11 +167,10 @@ export async function compileIntent(
 
     const parsed = JSON.parse(content);
     repairCompiledIntent(parsed, currentSpec);
-    validateCompiledIntent(parsed, currentSpec);
+    validateCompiledIntent(parsed, currentSpec, { mode });
     return parsed;
   } catch (error) {
     console.error("Intent compilation failed:", error);
     throw error;
   }
 }
-

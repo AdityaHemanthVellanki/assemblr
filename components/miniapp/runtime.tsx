@@ -23,6 +23,19 @@ type RuntimeSnapshot = {
   lastError: string | null;
 };
 
+function resolvePath(obj: any, path: string) {
+  if (obj == null) return undefined;
+  if (!path.includes(".")) return obj[path];
+  
+  const parts = path.split(".");
+  let current = obj;
+  for (const part of parts) {
+    if (current == null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
 function evaluateExpression(expression: any, ctx: { state: Record<string, any>; payload: Record<string, any>; results: Record<string, any> }): any {
   if (typeof expression !== "string") return expression;
 
@@ -30,12 +43,12 @@ function evaluateExpression(expression: any, ctx: { state: Record<string, any>; 
   if (exact) {
     const [, root, key] = exact;
     const src = root === "state" ? ctx.state : root === "payload" ? ctx.payload : ctx.results;
-    return src[key];
+    return resolvePath(src, key);
   }
 
   return expression.replace(/{{\s*(state|payload|results)\.([a-zA-Z0-9_.$-]+)\s*}}/g, (_, root, key) => {
     const src = root === "state" ? ctx.state : root === "payload" ? ctx.payload : ctx.results;
-    const val = src[key];
+    const val = resolvePath(src, key);
     return val === undefined || val === null ? "" : String(val);
   });
 }

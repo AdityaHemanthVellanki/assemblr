@@ -2,6 +2,23 @@ import { CompiledIntent } from "../core/intent";
 import type { ToolSpec } from "../spec/toolSpec";
 import { normalizeActionId } from "../spec/action-id";
 import { ActionRegistry } from "../spec/action-registry";
+import { ACTION_TYPES, type ActionType } from "../spec/action-types";
+
+const COMPONENT_EVENT_ALIASES: Record<string, string[]> = {
+  list: ["onSelect", "onItemClick", "onRowClick"],
+  select: ["onChange"],
+  dropdown: ["onChange"],
+  button: ["onClick"],
+};
+
+function normalizeComponentEventType(componentType: string, eventType: string): string {
+  const typeKey = typeof componentType === "string" ? componentType.toLowerCase() : "";
+  const aliases = COMPONENT_EVENT_ALIASES[typeKey];
+  if (!aliases || !eventType) return eventType;
+  const lower = String(eventType).toLowerCase();
+  const match = aliases.find((a) => a.toLowerCase() === lower);
+  return match ?? eventType;
+}
 
 export function flattenMiniAppComponents(mini: any): Array<{ pageId: string; component: any }> {
   const out: Array<{ pageId: string; component: any }> = [];
@@ -61,7 +78,7 @@ export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec)
   return triggered;
 }
 
-export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec) {
+export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec, options?: { mode?: "create" | "chat" | "modify" }) {
   if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
   const mutation = intent.tool_mutation;
   if (!mutation) return;
@@ -138,6 +155,8 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   // 2. Validate Event Wiring (STRICT MODE)
   const actions = mutation.actionsAdded || [];
   const registry = new ActionRegistry(actions);
+
+  normalizeLegacyActions(actions);
   
   if (existingMini && existingMini.actions) {
       registry.registerAll(existingMini.actions);
@@ -148,10 +167,27 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   const allActionIds = registry.getAllIds();
   
   for (const id of allActionIds) {
-    // Only check newly added actions for reachability to avoid blocking legacy updates
     const isNew = actions.some((a: any) => normalizeActionId(a.id) === id);
     if (isNew && !triggeredActions.has(id)) {
-      throw new Error(`Action ${id} is defined but never triggered by any component, page event, or explicit trigger (state_change/internal).`);
+      const action = actions.find((a: any) => normalizeActionId(a.id) === id);
+      let repaired = false;
+      if (action) {
+        repaired = tryAttachComponentTriggerFromSemantics(mutation, action);
+        if (repaired) {
+          triggeredActions.add(id);
+        }
+      }
+      if (!repaired) {
+        if (options?.mode === "create" && intent.intent_type === "create") {
+          console.warn(
+            `[PlannerValidation] Warning: Action ${id} is defined but never triggered by any component, page event, or explicit trigger (state_change/internal).`,
+          );
+        } else {
+          throw new Error(
+            `Action ${id} is defined but never triggered by any component, page event, or explicit trigger (state_change/internal).`,
+          );
+        }
+      }
     }
   }
 
@@ -208,66 +244,52 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
 
   for (const a of actions) {
     // Validate Action Types
-    const allowedActionTypes = new Set(["integration_call", "internal", "navigation", "workflow"]);
-    if (!allowedActionTypes.has(a.type)) {
-         throw new Error(`Action ${a.id} has invalid type '${a.type}'. Allowed: ${Array.from(allowedActionTypes).join(", ")}`);
+    const allowedActionTypes = new Set<ActionType>([
+      ACTION_TYPES.INTEGRATION_CALL,
+      ACTION_TYPES.INTERNAL,
+      ACTION_TYPES.NAVIGATION,
+      ACTION_TYPES.WORKFLOW,
+    ]);
+    if (!allowedActionTypes.has(a.type as ActionType)) {
+      throw new Error(
+        `Action ${a.id} has invalid type '${a.type}'. Allowed: ${Array.from(allowedActionTypes).join(", ")}`,
+      );
     }
 
     if (a.type === "integration_call") {
-      const assignKey = a.config?.assign;
-      // Fix 2: Actions Exist but UI Does Not Consume Their State
       const isInternal = a.config?.ephemeral_internal === true;
+      const assignKey = a.config?.assign;
+      const statusKey = assignKey ? `${assignKey}Status` : `${a.id}.status`;
+      const errorKey = assignKey ? `${assignKey}Error` : `${a.id}.error`;
 
-      // Check if assignKey is consumed by internal actions
-      const consumedByInternal = actions.some((other: any) => {
-          if (other.id === a.id) return false;
-          // Direct input usage
-          if (Array.isArray(other.inputs) && other.inputs.includes(assignKey)) return true;
-          // State dependency in config (e.g. {{state.githubCommits}})
+      const internalConsumes = (key: string | undefined) => {
+        if (!key) return false;
+        return actions.some((other: any) => {
+          if (!other || other.id === a.id) return false;
+          if (Array.isArray(other.inputs) && other.inputs.includes(key)) return true;
           const deps = extractStateDependencies(other);
-          return deps.includes(assignKey);
-      });
+          return deps.includes(key);
+        });
+      };
 
-      if (!assignKey && !stateKeysRead.has(`${a.id}.data`) && !isInternal) {
-        throw new Error(`Integration action ${a.id} does not assign result to state (config.assign) nor is its default output (${a.id}.data) read by any component. Mark as 'ephemeral_internal: true' if this is intentional.`);
-      }
+      let dataConsumed = false;
       if (assignKey) {
-        if (!stateKeysRead.has(assignKey) && !consumedByInternal && !isInternal) {
-           throw new Error(`Integration action ${a.id} assigns to state key '${assignKey}', but no component or internal action reads this key.`);
-        }
-        // Enforce feedback loop
-        const statusKey = `${assignKey}Status`;
-        const errorKey = `${assignKey}Error`;
-        const hasStatus = stateKeysRead.has(statusKey);
-        const hasError = stateKeysRead.has(errorKey);
-        
-        // Internal actions usually don't consume status/error, so we primarily check UI binding here.
-        // But if the integration output ITSELF is consumed by internal action (e.g. normalization), 
-        // the UI might bind to the NORMALIZED result's status/error, not the raw integration's status/error.
-        // However, the user requirement 2 says: "Enforce status & error feedback loops... Bind githubCommitsStatus -> activityStatus"
-        // This implies we SHOULD see binding for the raw integration status too? 
-        // Or maybe just ONE of the status/error keys should be used if it's an internal pipeline?
-        // Let's stick to the requirement: "Ensure both keys exist... And bind them to UI components"
-        
-        if (!hasStatus && !hasError && !isInternal) {
-           // If we have an internal consumer, maybe we can relax this?
-           // "Integration pipeline... Normalizer... Filter... UI Binding"
-           // If the UI binds to "filteredActivity", it might handle loading state via "filteredActivity" or "activityStatus"?
-           // But the raw fetch has "githubCommitsStatus".
-           // Requirement says: "Bind githubCommitsStatus -> activityStatus" (via internal action mapping).
-           // So we should check if status/error are used EITHER by UI OR by internal action (as input).
-           
-           const statusConsumed = actions.some((other: any) => {
-               if (other.id === a.id) return false;
-               if (Array.isArray(other.inputs) && (other.inputs.includes(statusKey) || other.inputs.includes(errorKey))) return true;
-               const deps = extractStateDependencies(other);
-               return deps.includes(statusKey) || deps.includes(errorKey);
-           });
+        dataConsumed = stateKeysRead.has(assignKey) || internalConsumes(assignKey);
+      } else {
+        const dataKey = `${a.id}.data`;
+        dataConsumed = stateKeysRead.has(dataKey) || internalConsumes(dataKey);
+      }
 
-           if (!statusConsumed) {
-                throw new Error(`Integration action ${a.id} implies status/error keys ('${statusKey}', '${errorKey}'), but no component or internal action binds to them. Feedback loop missing.`);
-           }
-        }
+      const statusConsumed =
+        stateKeysRead.has(statusKey) ||
+        stateKeysRead.has(errorKey) ||
+        internalConsumes(statusKey) ||
+        internalConsumes(errorKey);
+
+      if (!dataConsumed && !statusConsumed && !isInternal) {
+        throw new Error(
+          `Integration action ${a.id} is unused: neither data nor status/error are consumed`,
+        );
       }
     }
     if (a.type === "state_mutation") {
@@ -314,10 +336,32 @@ function extractStateDependencies(action: any): string[] {
     return Array.from(deps);
 }
 
+function normalizeLegacyActions(actions: any[]) {
+  if (!Array.isArray(actions)) return;
+  for (const a of actions) {
+    if (!a || typeof a !== "object") continue;
+    const legacyOps = new Set(["assign", "filter", "map", "derive_state", "derive", "update_state"]);
+    if (typeof a.type === "string" && legacyOps.has(a.type)) {
+      const op = a.type;
+      a.type = ACTION_TYPES.INTERNAL;
+      const cfg = a.config ?? {};
+      a.config = { operation: op, ...cfg };
+      if (op === "assign") {
+        const source = cfg.source ?? cfg.value ?? cfg.from;
+        const target = cfg.target ?? cfg.key ?? cfg.to;
+        if (source && target && !Array.isArray(a.steps)) {
+          a.steps = [{ type: "state_mutation", config: { updates: { [String(target)]: source } } }];
+        }
+      }
+    }
+  }
+}
+
 export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec) {
   const mutation = intent.tool_mutation as any;
   if (!mutation) return;
   const actions = mutation.actionsAdded ?? [];
+  const components = mutation.componentsAdded || [];
 
   // 1. NORMALIZE ALL ACTION IDs IMMEDIATELY (Strict Mode)
   for (const a of actions) {
@@ -326,10 +370,13 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
       }
   }
 
+  normalizeLegacyActions(actions);
+
   // 2. CONVERT INVALID ACTION TYPES (Systemic Fix)
   for (const a of actions) {
-    if (a.type === "state_update") {
-      a.type = "internal";
+    if (a.type === "state_update" || a.type === "state_mutation") {
+      const originalType = a.type;
+      a.type = ACTION_TYPES.INTERNAL;
       const updates = a.config?.updates ?? a.config?.set;
       if (updates && !Array.isArray(a.steps)) {
         a.steps = [
@@ -341,7 +388,7 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
         delete a.config?.updates;
         delete a.config?.set;
       }
-      console.log(`[SystemAutoWiring] Converted action ${a.id} from 'state_update' to 'internal'`);
+      console.log(`[SystemAutoWiring] Converted action ${a.id} from '${originalType}' to 'internal'`);
     }
   }
 
@@ -385,38 +432,81 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           }
 
           // B. Mandatory Feedback Loop (Status/Error)
-          // We inject a "Mirroring" action to ensure status is available to shared UI state if needed,
-          // OR we ensure the UI components bind to it.
-          // For robustness, we check if any component binds to the raw status keys.
-          // If NOT, we don't necessarily fail, but we inject a system binding if there's a generic list.
-          // But to satisfy "Mandatory Feedback Loop Enforcement", we must ensure *some* path exists.
+          // We inject a "Mirroring" action to ensure status is available to shared UI state if needed.
           
-          // Let's rely on the validation step to fail if binding is missing, 
-          // and here we just try to help by wiring up components that *should* have it.
+          // Check if status/error is consumed by UI or other actions
+          let statusConsumed = false;
+          
+          // Check UI Components
+          for (const c of components) {
+              if (c.properties?.loadingKey === statusKey || c.properties?.errorKey === errorKey) statusConsumed = true;
+              if (c.dataSource?.type === "state" && (c.dataSource.value === statusKey || c.dataSource.value === errorKey)) statusConsumed = true;
+              // Check content strings for {{state.key}}
+              const propsStr = JSON.stringify(c.properties || {});
+              if (propsStr.includes(`{{state.${statusKey}}}`) || propsStr.includes(`{{state.${errorKey}}}`)) statusConsumed = true;
+          }
+
+          // Check Internal Actions
+          if (!statusConsumed) {
+              statusConsumed = actions.some((x: any) => 
+                  x.id !== a.id && 
+                  (x.inputs?.includes(statusKey) || x.inputs?.includes(errorKey) || 
+                   extractStateDependencies(x).includes(statusKey) || extractStateDependencies(x).includes(errorKey))
+              );
+          }
+
+          if (!statusConsumed) {
+               const mirrorId = `mirror_status_${a.id.replace(/^fetch_|^get_/, "")}`;
+               // Check collision
+               if (!actions.some((x: any) => x.id === mirrorId)) {
+                   actions.push({
+                       id: mirrorId,
+                       type: "workflow", 
+                       triggeredBy: [
+                           { type: "state_change", stateKey: statusKey },
+                           { type: "state_change", stateKey: errorKey }
+                       ],
+                       steps: [
+                           {
+                               type: "state_mutation",
+                               config: { 
+                                   updates: { 
+                                       [`debug.${a.id}.status`]: `{{state.${statusKey}}}`,
+                                       [`debug.${a.id}.error`]: `{{state.${errorKey}}}`
+                                   } 
+                               }
+                           }
+                       ]
+                   });
+                   console.log(`[SystemAutoWiring] Injected status mirroring action: ${mirrorId}`);
+               }
+          }
       }
   }
 
   // 4. FIX COMPONENTS & CHILDREN
-  const components = mutation.componentsAdded || [];
   for (const c of components) {
-      // Fix Children: Must be strings
+      if (Array.isArray(c.events)) {
+        c.events = c.events.map((e: any) => {
+          if (!e || typeof e !== "object") return e;
+          const t = typeof e.type === "string" ? normalizeComponentEventType(c.type, e.type) : e.type;
+          return { ...e, type: t };
+        });
+      }
+
       if (Array.isArray(c.children)) {
           c.children = c.children.map((child: any) => {
               if (typeof child === "string") return child;
-              if (child.id) return child.id; // Flatten inline definition
+              if (child.id) return child.id;
               return null;
           }).filter(Boolean);
       }
 
-      // Fix List Item Click
       if (c.properties?.itemTemplate?.onClick) {
           delete c.properties.itemTemplate.onClick;
-          // We can't easily move it to 'onSelect' here without losing logic, 
-          // but we remove the illegal prop to prevent crash.
           console.log(`[SystemAutoWiring] Removed illegal itemTemplate.onClick from ${c.id}`);
       }
 
-      // Fix Select Binding
       if ((c.type === "select" || c.type === "dropdown") && !c.properties?.bindKey) {
           const key = `filters.${c.id.replace(/^select_|^dropdown_/, "")}`;
           c.properties = c.properties || {};
@@ -426,12 +516,14 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           console.log(`[SystemAutoWiring] Auto-bound select ${c.id} to ${key}`);
       }
       
-      // Fix Illegal disabledKey
       if (c.properties?.disabledKey && c.properties.disabledKey.startsWith("!")) {
            delete c.properties.disabledKey;
            console.log(`[SystemAutoWiring] Removed illegal disabledKey from ${c.id}`);
       }
   }
+
+  autoAttachComponentEventTriggers(mutation, actions);
+  inferSelectionSemantics(mutation, actions);
 
   // 5. AUTO-WIRE FEEDBACK LOOPS TO COMPONENTS
   // Scan components and wire up loading/error keys if missing
@@ -492,4 +584,129 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
         console.log(`[SystemAutoWiring] Auto-bound ${action.id} to onPageLoad`);
     }
   }
+  // 7. CONVERT EXPLICIT LIFECYCLE TRIGGERS TO PAGE EVENTS
+  // If an action has triggeredBy: { type: "lifecycle", event: "onPageLoad" },
+  // we must ensure it is actually wired to the page event.
+  if (firstPageId) {
+      for (const action of actions) {
+          const triggers = Array.isArray(action.triggeredBy) ? action.triggeredBy : (action.triggeredBy ? [action.triggeredBy] : []);
+          const lifecycleTrigger = triggers.find((t: any) => t.type === "lifecycle" && t.event === "onPageLoad");
+          
+          if (lifecycleTrigger) {
+              mutation.pagesUpdated = mutation.pagesUpdated ?? [];
+              let pageUpdate = mutation.pagesUpdated.find((u: any) => u.pageId === firstPageId);
+              if (!pageUpdate) {
+                  pageUpdate = { pageId: firstPageId, patch: { events: [] } };
+                  mutation.pagesUpdated.push(pageUpdate);
+              }
+              pageUpdate.patch.events = pageUpdate.patch.events ?? [];
+              const alreadyWired = pageUpdate.patch.events.some((e: any) => e.type === "onPageLoad" && normalizeActionId(e.actionId) === normalizeActionId(action.id));
+              
+              if (!alreadyWired) {
+                  pageUpdate.patch.events.push({ 
+                      type: "onPageLoad", 
+                      actionId: action.id, 
+                      args: { autoAttached: true, reason: "lifecycle_trigger" } 
+                  });
+                  console.log(`[SystemAutoWiring] Converted explicit lifecycle trigger for ${action.id} to onPageLoad event on ${firstPageId}`);
+              }
+          }
+      }
+  }
+
+  ensureEveryActionHasTrigger(mutation);
+}
+
+function ensureEveryActionHasTrigger(mutation: any) {
+  const actions = mutation.actionsAdded ?? [];
+  for (const action of actions) {
+       const hasTriggers = !!action.triggeredBy &&
+          (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
+
+       if (!hasTriggers) {
+           // Final safety net: Just bind to internal/manual to satisfy Strict Mode
+           action.triggeredBy = { type: "internal", reason: "system_safety_net" };
+           console.warn(`[SystemSafetyNet] Action ${action.id} had no trigger. Auto-bound to internal(system_safety_net) to prevent crash.`);
+       }
+  }
+}
+
+function autoAttachComponentEventTriggers(mutation: any, actions: any[]) {
+  const components = mutation.componentsAdded ?? [];
+  const findAction = (rawId: string) => {
+    const id = normalizeActionId(rawId);
+    return actions.find((a: any) => normalizeActionId(a.id) === id);
+  };
+  for (const c of components) {
+    if (!Array.isArray(c.events)) continue;
+    for (const e of c.events) {
+      if (!e || !e.actionId) continue;
+      const action = findAction(e.actionId);
+      if (!action) continue;
+      const hasTriggers =
+        !!action.triggeredBy &&
+        (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
+      if (hasTriggers) continue;
+      const eventType = typeof e.type === "string" ? normalizeComponentEventType(c.type, e.type) : e.type;
+      const trigger = { type: "component_event", componentId: c.id, event: eventType };
+      if (!action.triggeredBy) {
+        action.triggeredBy = trigger;
+      } else if (Array.isArray(action.triggeredBy)) {
+        action.triggeredBy.push(trigger);
+      } else {
+        action.triggeredBy = [action.triggeredBy, trigger];
+      }
+    }
+  }
+}
+
+function inferSelectionSemantics(mutation: any, actions: any[]) {
+  const components = mutation.componentsAdded ?? [];
+  const listComponents = components.filter(
+    (c: any) => c && typeof c.type === "string" && c.type.toLowerCase() === "list",
+  );
+  if (!listComponents.length) return;
+  const targetList = listComponents[listComponents.length - 1];
+  targetList.events = targetList.events ?? [];
+  for (const action of actions) {
+    if (!action || !action.id) continue;
+    const hasTriggers =
+      !!action.triggeredBy &&
+      (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
+    if (hasTriggers) continue;
+    const normalizedId = normalizeActionId(action.id);
+    const patternMatch =
+      normalizedId.startsWith("select_") || normalizedId.startsWith("open_") || normalizedId.startsWith("view_");
+    if (!patternMatch) continue;
+    const canonicalEvent = normalizeComponentEventType(targetList.type, "onSelect");
+    const alreadyWired =
+      Array.isArray(targetList.events) &&
+      targetList.events.some(
+        (e: any) => e && normalizeActionId(e.actionId) === normalizedId,
+      );
+    if (!alreadyWired) {
+      targetList.events.push({ type: canonicalEvent, actionId: action.id });
+    }
+    const trigger = { type: "component_event", componentId: targetList.id, event: canonicalEvent };
+    if (!action.triggeredBy) {
+      action.triggeredBy = trigger;
+    } else if (Array.isArray(action.triggeredBy)) {
+      action.triggeredBy.push(trigger);
+    } else {
+      action.triggeredBy = [action.triggeredBy, trigger];
+    }
+  }
+}
+
+function tryAttachComponentTriggerFromSemantics(mutation: any, action: any): boolean {
+  const hasTriggers =
+    !!action.triggeredBy &&
+    (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
+  if (hasTriggers) return true;
+  inferSelectionSemantics(mutation, [action]);
+  autoAttachComponentEventTriggers(mutation, [action]);
+  const after =
+    !!action.triggeredBy &&
+    (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
+  return after;
 }

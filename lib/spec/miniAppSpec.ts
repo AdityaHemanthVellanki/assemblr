@@ -10,7 +10,10 @@ export const miniAppEventSchema = z
       "onComponentLoad", 
       "onChange", 
       "onClick", 
-      "onSubmit"
+      "onSubmit",
+      "onSelect",
+      "onItemClick",
+      "onRowClick",
     ]),
     actionId: z.string().min(1),
     args: z.record(z.string(), z.any()).optional(),
@@ -32,20 +35,32 @@ export const miniAppActionSchema = z
     type: z.enum(["integration_call", "internal", "navigation", "workflow"]),
     config: z.record(z.string(), z.any()).optional(),
     steps: z.array(miniAppActionStepSchema).optional(),
-    triggeredBy: z.union([
-      z.discriminatedUnion("type", [
-        z.object({ type: z.literal("lifecycle"), event: z.string() }),
-        z.object({ type: z.literal("state_change"), stateKey: z.string() }),
-        z.object({ type: z.literal("internal"), reason: z.string().optional() }),
-      ]),
-      z.array(
+    triggeredBy: z
+      .union([
         z.discriminatedUnion("type", [
+          z.object({ type: z.literal("lifecycle"), event: z.string() }),
+          z.object({ type: z.literal("state_change"), stateKey: z.string() }),
+          z.object({ type: z.literal("internal"), reason: z.string().optional() }),
+          z.object({
+            type: z.literal("component_event"),
+            componentId: z.string(),
+            event: z.string(),
+          }),
+        ]),
+        z.array(
+          z.discriminatedUnion("type", [
             z.object({ type: z.literal("lifecycle"), event: z.string() }),
             z.object({ type: z.literal("state_change"), stateKey: z.string() }),
             z.object({ type: z.literal("internal"), reason: z.string().optional() }),
-        ])
-      )
-    ]).optional(),
+            z.object({
+              type: z.literal("component_event"),
+              componentId: z.string(),
+              event: z.string(),
+            }),
+          ]),
+        ),
+      ])
+      .optional(),
   })
   .passthrough();
 

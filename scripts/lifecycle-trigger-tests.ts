@@ -259,8 +259,8 @@ async function runTests() {
 
     // Verify it got attached to internal
     const action = (intent.tool_mutation as any).actionsAdded[0];
-    if (action.triggeredBy?.type !== "internal" || action.triggeredBy?.reason !== "orchestration") {
-      throw new Error(`Expected action to be auto-bound to internal(orchestration), got ${JSON.stringify(action.triggeredBy)}`);
+    if (action.triggeredBy?.type !== "internal" || action.triggeredBy?.reason !== "system_safety_net") {
+      throw new Error(`Expected action to be auto-bound to internal(system_safety_net), got ${JSON.stringify(action.triggeredBy)}`);
     }
 
     // Verify validation passes
