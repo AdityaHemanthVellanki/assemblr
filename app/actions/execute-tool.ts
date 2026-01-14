@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOrgMember } from "@/lib/auth/permissions";
+import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { executeDashboard } from "@/lib/execution/engine";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";

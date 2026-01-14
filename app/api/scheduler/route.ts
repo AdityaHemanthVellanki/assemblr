@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { globalEventLoop } from "@/lib/scheduler/loop";
 import { getServerEnv } from "@/lib/env";
-import { requireOrgMember } from "@/lib/auth/permissions";
+import { requireOrgMember } from "@/lib/auth/permissions.server";
 
 // This endpoint allows forcing a tick or managing the loop status
 // In a serverless environment (Vercel), "Long Running" loop is hard.

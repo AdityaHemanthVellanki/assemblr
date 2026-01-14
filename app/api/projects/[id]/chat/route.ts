@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions";
+import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { parseToolSpec } from "@/lib/spec/toolSpec";

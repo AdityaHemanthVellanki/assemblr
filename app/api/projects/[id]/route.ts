@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { PermissionError, requireOrgMember } from "@/lib/auth/permissions";
+import { PermissionError, requireOrgMember } from "@/lib/auth/permissions.server";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";

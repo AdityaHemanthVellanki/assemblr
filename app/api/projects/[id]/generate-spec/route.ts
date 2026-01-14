@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { generateDashboardSpec } from "@/lib/ai/generateDashboardSpec";
 import { getServerEnv } from "@/lib/env";
 import { checkRateLimit } from "@/lib/security/rate-limit";

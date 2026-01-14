@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOrgMember } from "@/lib/auth/permissions";
+import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { fetchAndPersistSchemas } from "@/lib/schema/store";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";

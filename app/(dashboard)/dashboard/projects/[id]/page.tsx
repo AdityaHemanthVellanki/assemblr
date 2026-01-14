@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
-import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/auth/permissions";
+import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";

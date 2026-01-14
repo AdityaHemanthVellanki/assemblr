@@ -14,7 +14,7 @@ import {
   getSessionContext,
   PermissionError,
   requireUserRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ToolsPage() {

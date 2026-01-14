@@ -1,6 +1,6 @@
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SignOutButton } from "@/components/auth/sign-out-button";
-import { roleLabel, type OrgRole } from "@/lib/auth/permissions";
+import { roleLabel, type OrgRole } from "@/lib/auth/permissions.client";
 
 export function Topbar({ role }: { role: OrgRole }) {
   return (

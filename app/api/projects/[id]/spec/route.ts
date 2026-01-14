@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";

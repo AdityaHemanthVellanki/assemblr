@@ -3,7 +3,7 @@ import Script from "next/script";
 
 import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions";
+import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions.server";
 
 export const dynamic = "force-dynamic";
 

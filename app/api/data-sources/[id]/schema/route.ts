@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { getPostgresPool } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";
 import { getServerEnv } from "@/lib/env";

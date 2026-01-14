@@ -22,7 +22,7 @@ export default async function Home() {
 
         <div className="mt-8 flex items-center gap-3">
           <Button asChild>
-            <Link href="/dashboard">Go to dashboard</Link>
+            <Link href="/app/chat">Go to app</Link>
           </Button>
           <Button asChild variant="outline">
             <Link href="/signup">Sign up</Link>

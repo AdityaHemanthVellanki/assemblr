@@ -5,7 +5,7 @@ import crypto from "crypto";
 import {
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { encryptJson, type EncryptedJson } from "@/lib/security/encryption";
 import { getPostgresPool, testPostgresConnection } from "@/lib/data/postgres";

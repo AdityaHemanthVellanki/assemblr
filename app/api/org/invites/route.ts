@@ -7,7 +7,7 @@ import {
   ORG_ROLES,
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions";
+} from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 

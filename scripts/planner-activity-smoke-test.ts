@@ -30,7 +30,7 @@ async function run() {
 
   const schemas: DiscoveredSchema[] = [];
   const metrics: Metric[] = [];
-  const policies = [];
+  const policies: Array<unknown> = [];
   const currentSpec: ToolSpec | undefined = undefined;
 
   const intent = await compileIntent(

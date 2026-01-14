@@ -3,23 +3,27 @@ import "server-only";
 import { cache } from "react";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-
-export const ORG_ROLES = ["owner", "editor", "viewer"] as const;
-export type OrgRole = (typeof ORG_ROLES)[number];
+import {
+  ORG_ROLES,
+  type OrgRole,
+  PermissionError,
+  canViewDashboards,
+  canEditProjects,
+  canGenerateSpec,
+  canManageDataSources,
+  canManageMembers,
+  canManageIntegrations,
+  canCreateWorkflows,
+  canApproveWorkflows,
+  requiresApproval,
+  roleLabel,
+} from "./permissions.client";
 
 const ORG_ROLE_ORDER: Record<OrgRole, number> = {
   viewer: 0,
   editor: 1,
   owner: 2,
 };
-
-export class PermissionError extends Error {
-  status: number;
-  constructor(message: string, status = 403) {
-    super(message);
-    this.status = status;
-  }
-}
 
 export type SessionContext = {
   userId: string;
@@ -52,32 +56,30 @@ export const getSessionContext = cache(async (): Promise<SessionContext> => {
   };
 
   let membership = await loadMembership();
-  
-  // Retry logic (Race condition handling)
+
   if (!membership.error && !membership.data) {
     await new Promise((r) => setTimeout(r, 500));
     membership = await loadMembership();
   }
 
-  // Phase 13: Auto-provision if still missing
   if (!membership.error && !membership.data) {
     console.warn("User has no organization. Attempting auto-provisioning...", { userId: user.id });
-    
-    // Create new org manually if trigger failed
-    const orgName = (user.user_metadata?.full_name || user.email?.split('@')[0] || "My Workspace") + "'s Workspace";
-    
-    // @ts-ignore
+
+    const orgName =
+      (user.user_metadata?.full_name || user.email?.split("@")[0] || "My Workspace") + "'s Workspace";
+
     const newOrg = await (supabase.from("organizations") as any)
       .insert({ name: orgName })
       .select()
       .single();
-      
+
     if (newOrg.data) {
-      // Add membership
-      await (supabase.from("memberships") as any)
-        .insert({ user_id: user.id, org_id: newOrg.data.id, role: "owner" });
-        
-      // Reload
+      await (supabase.from("memberships") as any).insert({
+        user_id: user.id,
+        org_id: newOrg.data.id,
+        role: "owner",
+      });
+
       membership = await loadMembership();
     }
   }
@@ -158,62 +160,6 @@ export async function requireRole(required: "owner" | "editor") {
   return { ctx, role };
 }
 
-export function canViewDashboards(role: OrgRole) {
-  return role === "owner" || role === "editor" || role === "viewer";
-}
-
-export function canEditProjects(role: OrgRole) {
-  return role === "owner" || role === "editor";
-}
-
-export function canGenerateSpec(role: OrgRole) {
-  return role === "owner" || role === "editor";
-}
-
-export function canManageDataSources(role: OrgRole) {
-  return role === "owner";
-}
-
-export function canManageMembers(role: OrgRole) {
-  return role === "owner";
-}
-
-export function canManageIntegrations(role: OrgRole) {
-  return role === "owner" || role === "editor";
-}
-
-// Phase 9: Governance
-export function canCreateWorkflows(role: OrgRole) {
-  // Editors can create workflows, but they might need approval
-  return role === "owner" || role === "editor";
-}
-
-export function canApproveWorkflows(role: OrgRole) {
-  // Only owners can approve workflows
-  return role === "owner";
-}
-
-export function requiresApproval(role: OrgRole, actions: any[]) {
-  // Owners bypass approval
-  if (role === "owner") return false;
-  
-  // Editors need approval if workflow has ANY write actions
-  if (role === "editor") {
-    // Check if actions list contains any side-effect actions
-    // For Phase 9, let's assume ALL configured actions are risky except maybe 'log'
-    // But our Engine only supports slack/email/github which are all risky.
-    return actions.length > 0; 
-  }
-  
-  return true;
-}
-
-export function roleLabel(role: OrgRole) {
-  if (role === "owner") return "Owner";
-  if (role === "editor") return "Editor";
-  return "Viewer";
-}
-
 export async function requireProjectOrgAccess(
   ctx: SessionContext,
   projectId: string,
@@ -242,3 +188,21 @@ export async function requireProjectOrgAccess(
     dataSourceId: null,
   };
 }
+
+export {
+  ORG_ROLES,
+  PermissionError,
+  canViewDashboards,
+  canEditProjects,
+  canGenerateSpec,
+  canManageDataSources,
+  canManageMembers,
+  canManageIntegrations,
+  canCreateWorkflows,
+  canApproveWorkflows,
+  requiresApproval,
+  roleLabel,
+};
+
+export type { OrgRole };
+

@@ -1,19 +1,19 @@
 "use client";
 
 import * as React from "react";
-
-import { ChatPanel } from "@/components/dashboard/chat-panel";
-import { ToolRenderer } from "@/components/dashboard/tool-renderer";
-import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import { Share, User } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { PromptBar } from "@/components/dashboard/prompt-bar";
+import { ZeroStateView } from "@/components/dashboard/zero-state";
+import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
-import { runToolExecution } from "@/app/actions/execute-tool";
-import type { ExecutionResult } from "@/lib/execution/types";
 
 interface ProjectWorkspaceProps {
-  project: {
+  project?: {
     id: string;
     spec: ToolSpec | null;
-  };
+  } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
     content: string;
@@ -28,71 +28,173 @@ export function ProjectWorkspace({
   project,
   initialMessages,
 }: ProjectWorkspaceProps) {
-  const [spec, setSpec] = React.useState<ToolSpec | null>(project.spec);
-  const [results, setResults] = React.useState<Record<string, ExecutionResult>>({});
+  // State
+  const [inputValue, setInputValue] = React.useState("");
+  const [messages, setMessages] = React.useState<any[]>(initialMessages || []);
+  const [executionSteps, setExecutionSteps] = React.useState<TimelineStep[]>([]);
   const [isExecuting, setIsExecuting] = React.useState(false);
 
-  // Re-execute whenever spec changes (debounced ideally, but strict for now)
-  React.useEffect(() => {
-    if (!spec) {
-      setResults({});
-      return;
-    }
+  // Derived state
+  const isZeroState = messages.length === 0;
 
-    // Mini apps manage their own execution via runtime
-    if (spec.kind === "mini_app") {
-      return;
-    }
+  // Dynamic Header Title
+  const headerTitle = project?.spec?.title || "New Chat";
 
-    if (spec.views.length === 0) {
-      setResults({});
-      return;
-    }
+  const handleSubmit = async () => {
+    if (!inputValue.trim()) return;
 
-    let isMounted = true;
+    // Add user message
+    const userMsg = { role: "user", content: inputValue };
+    setMessages((prev) => [...prev, userMsg]);
+    setInputValue("");
+    setIsExecuting(true);
 
-    async function execute() {
-      setIsExecuting(true);
-      try {
-        const res = await runToolExecution(project.id);
-        if (isMounted && res.success && res.results) {
-          setResults(res.results);
-        }
-      } catch (err) {
-        console.error("Execution error:", err);
-      } finally {
-        if (isMounted) setIsExecuting(false);
-      }
-    }
+    // Simulate execution start (Mock for now to demonstrate UI transition)
+    simulateExecution();
+  };
 
-    // Execute immediately on spec update
-    execute();
-
-    return () => {
-      isMounted = false;
+  const simulateExecution = async () => {
+    // Mock steps
+    const step1: TimelineStep = {
+      id: "1",
+      label: "Processing Read Data",
+      status: "running",
+      narrative:
+        "I'll help you create a chart to visualize the yearly sales data from your spreadsheet. Let me first read the data to understand its structure.",
     };
-  }, [spec, project.id]);
+    setExecutionSteps([step1]);
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    setExecutionSteps((prev) =>
+      prev.map((s) =>
+        s.id === "1" ? { ...s, status: "success", resultAvailable: true } : s
+      )
+    );
+
+    const step2: TimelineStep = {
+      id: "2",
+      label: "Processing Create Chart",
+      status: "running",
+      narrative:
+        "Perfect! I can see the monthly sales data from January to December. Now I'll create a line chart to visualize the yearly sales progression using the Month and Total Sales columns.",
+    };
+    setExecutionSteps((prev) => [...prev, step2]);
+
+    await new Promise((r) => setTimeout(r, 2500));
+
+    setExecutionSteps((prev) =>
+      prev.map((s) =>
+        s.id === "2" ? { ...s, status: "success", resultAvailable: true } : s
+      )
+    );
+    setIsExecuting(false);
+  };
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] overflow-hidden rounded-lg border bg-background shadow-sm">
-      <div className="w-[400px] min-w-[300px] max-w-[500px] shrink-0">
-        <ChatPanel
-          toolId={project.id}
-          initialMessages={initialMessages}
-          onSpecUpdate={setSpec}
-        />
-      </div>
-      <div className="flex-1 border-l">
-        {spec ? (
-          <ToolRenderer toolId={project.id} spec={spec} executionResults={results} isLoading={isExecuting} />
+    <div className="flex h-full flex-col bg-background text-foreground">
+      {/* Header */}
+      {!isZeroState && (
+        <header className="flex h-14 shrink-0 items-center justify-between px-6 border-b border-border/50 bg-background/50 backdrop-blur-sm z-10">
+          <div className="flex-1" />
+          <div className="font-semibold">{headerTitle}</div>
+          <div className="flex-1 flex justify-end items-center gap-4">
+            <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground hover:text-foreground">
+              <Share className="h-4 w-4" />
+              Share
+            </Button>
+            <div className="h-8 w-8 rounded-full bg-accent flex items-center justify-center ring-2 ring-background">
+              <User className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </div>
+        </header>
+      )}
+
+      <div className="flex-1 overflow-hidden relative">
+        {isZeroState ? (
+          <ZeroStateView
+            inputValue={inputValue}
+            onInputChange={setInputValue}
+            onSubmit={handleSubmit}
+            onSuggestionClick={(val) => {
+              setInputValue(val);
+              // Optional: auto-submit?
+            }}
+          />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-            <h3 className="text-lg font-semibold">Welcome to Assemblr</h3>
-            <p className="text-sm text-muted-foreground">
-              Describe the tool you want to build in the chat on the left.
-              <br />
-              For example: &quot;Show me my Linear issues&quot;
-            </p>
+          <div className="flex h-full flex-col">
+            <ScrollArea className="flex-1">
+              <div className="mx-auto max-w-3xl px-4 py-8">
+                {/* Render User Prompt */}
+                {messages
+                  .filter((m) => m.role === "user")
+                  .map((m, i) => (
+                    <div
+                      key={i}
+                      className="mb-8 p-6 rounded-2xl bg-muted/30 border border-border/50 shadow-sm"
+                    >
+                      <div className="font-medium text-lg mb-2">{m.content}</div>
+                      {/* Mock URL logic */}
+                      {m.content.toLowerCase().includes("spreadsheet") && (
+                         <div className="flex items-center gap-2 text-sm text-muted-foreground bg-background/50 p-2 rounded-md border border-border/50 w-fit max-w-full">
+                            <span className="truncate">https://docs.google.com/spreadsheets/d/1nTs3t8W9SWO0dcGYKvw...</span>
+                         </div>
+                      )}
+                    </div>
+                  ))}
+
+                {/* Execution Timeline */}
+                <ExecutionTimeline steps={executionSteps} />
+
+                {/* Final Output (Mock) */}
+                {!isExecuting && executionSteps.length > 1 &&
+                  executionSteps[1].status === "success" && (
+                    <div className="mt-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                      <div className="mb-4 text-lg leading-relaxed">
+                        Great! I&apos;ve successfully created a line chart to visualize
+                        your yearly sales data. The chart shows:
+                      </div>
+                      <ul className="list-disc pl-5 space-y-2 mb-6 text-muted-foreground">
+                        <li>
+                          <strong className="text-foreground">Monthly progression</strong> from January
+                          ($125,000) to December ($312,000)
+                        </li>
+                        <li>
+                          <strong className="text-foreground">Clear upward trend</strong> demonstrating strong
+                          sales growth throughout the year
+                        </li>
+                        <li>
+                          <strong className="text-foreground">2.5x growth</strong> from the beginning to the
+                          end of the year
+                        </li>
+                      </ul>
+                      <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
+                        The chart is now embedded in your spreadsheet at: <br />
+                        <span className="underline cursor-pointer hover:text-blue-300 transition-colors">
+                          https://docs.google.com/spreadsheets/d/1nTs3...
+                        </span>
+                      </div>
+                      
+                      <div className="mt-6 text-muted-foreground leading-relaxed">
+                        The visualization makes it easy to see your consistent month-over-month growth pattern, with total sales more than doubling from January to December. This is excellent performance data that clearly shows your business momentum throughout the year!
+                      </div>
+                    </div>
+                  )}
+
+                <div className="h-20" /> {/* Spacer */}
+              </div>
+            </ScrollArea>
+
+            {/* Persistent Prompt Bar */}
+            <div className="p-4 border-t border-border/50 bg-background/80 backdrop-blur-md">
+              <PromptBar
+                value={inputValue}
+                onChange={setInputValue}
+                onSubmit={handleSubmit}
+                className="shadow-lg"
+                isLoading={isExecuting}
+              />
+            </div>
           </div>
         )}
       </div>
