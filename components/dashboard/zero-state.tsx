@@ -3,6 +3,7 @@
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { Zap, Calendar, Mail } from "lucide-react";
 import { cn } from "@/lib/ui/cn";
+import { CHAT_HERO_SUBTITLE, CHAT_HERO_TITLE } from "@/lib/branding";
 
 const SUGGESTIONS = [
   {
@@ -41,20 +42,22 @@ export function ZeroStateView({
   onSubmit,
   onSuggestionClick,
 }: ZeroStateViewProps) {
+  const highlightWord = "seconds";
+  const [titlePrefix] = CHAT_HERO_TITLE.split(` ${highlightWord}`);
+
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
       <div className="flex w-full max-w-3xl flex-col items-center gap-8">
         
-        {/* Hero Section */}
         <div className="text-center space-y-4">
           <h1 className="text-4xl font-bold tracking-tight sm:text-6xl">
-            Words to actions in{" "}
+            {titlePrefix}{" "}
             <span className="bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
-              seconds
+              {highlightWord}
             </span>
           </h1>
           <p className="text-lg text-muted-foreground">
-            Assemblr is your AI agent for Gmail, Calendar, Notion, and more.
+            {CHAT_HERO_SUBTITLE}
           </p>
         </div>
 
