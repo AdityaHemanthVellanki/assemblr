@@ -340,13 +340,18 @@ function normalizeLegacyActions(actions: any[]) {
   if (!Array.isArray(actions)) return;
   for (const a of actions) {
     if (!a || typeof a !== "object") continue;
-    const legacyOps = new Set(["assign", "filter", "map", "derive_state", "derive", "update_state"]);
+    const legacyOps = new Set(["assign", "filter", "map", "derive_state", "derive", "update_state", "state_assign"]);
     if (typeof a.type === "string" && legacyOps.has(a.type)) {
       const op = a.type;
       a.type = ACTION_TYPES.INTERNAL;
       const cfg = a.config ?? {};
-      a.config = { operation: op, ...cfg };
-      if (op === "assign") {
+      // Preserve semantic intent for system-injected variants
+      const semantic =
+        op === "state_assign" || op === "update_state" ? "state_update" :
+        op === "derive_state" || op === "derive" ? "derive_state" :
+        op;
+      a.config = { operation: op === "state_assign" ? "assign" : op, __semantic: semantic, ...cfg };
+      if (op === "assign" || op === "state_assign") {
         const source = cfg.source ?? cfg.value ?? cfg.from;
         const target = cfg.target ?? cfg.key ?? cfg.to;
         if (source && target && !Array.isArray(a.steps)) {
@@ -374,7 +379,7 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
 
   // 2. CONVERT INVALID ACTION TYPES (Systemic Fix)
   for (const a of actions) {
-    if (a.type === "state_update" || a.type === "state_mutation") {
+    if (a.type === "state_update" || a.type === "state_mutation" || a.type === "state_assign") {
       const originalType = a.type;
       a.type = ACTION_TYPES.INTERNAL;
       const updates = a.config?.updates ?? a.config?.set;
@@ -388,6 +393,8 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
         delete a.config?.updates;
         delete a.config?.set;
       }
+      // Preserve semantic intent marker for diagnostics
+      a.config = { __semantic: (a.config && a.config.__semantic) || (originalType === "state_assign" ? "state_update" : originalType), ...(a.config ?? {}) };
       console.log(`[SystemAutoWiring] Converted action ${a.id} from '${originalType}' to 'internal'`);
     }
   }
@@ -520,6 +527,55 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
            delete c.properties.disabledKey;
            console.log(`[SystemAutoWiring] Removed illegal disabledKey from ${c.id}`);
       }
+  }
+
+  // 4b. FIX AUTO-WIRED FILTER ACTIONS (ensure internal type and explicit triggers)
+  {
+    const filterKeys = new Set<string>();
+    // Collect filters.* keys from stateAdded
+    for (const [k] of Object.entries(mutation.stateAdded ?? {})) {
+      if (typeof k === "string" && k.startsWith("filters.")) filterKeys.add(k);
+    }
+    // Collect bindKey on select/dropdown
+    for (const c of components) {
+      const bk = c?.properties?.bindKey;
+      if (typeof bk === "string" && bk.startsWith("filters.")) filterKeys.add(bk);
+    }
+    if (filterKeys.size) {
+      for (const a of actions) {
+        const idStr = String(a.id ?? "");
+        const looksLikeFilterUpdater = /filters/.test(idStr) || a.config?.__semantic === "state_update";
+        if (!looksLikeFilterUpdater) continue;
+        // Normalize type
+        const allowed = new Set<ActionType>([
+          ACTION_TYPES.INTEGRATION_CALL,
+          ACTION_TYPES.INTERNAL,
+          ACTION_TYPES.NAVIGATION,
+          ACTION_TYPES.WORKFLOW,
+        ]);
+        if (!allowed.has(a.type as ActionType)) {
+          const originalType = a.type;
+          a.type = ACTION_TYPES.INTERNAL;
+          a.config = { __semantic: "state_update", ...(a.config ?? {}) };
+          console.log(`[SystemAutoWiring] Corrected filter action ${a.id} from '${originalType}' to 'internal'`);
+        }
+        // Ensure explicit state_change triggers for each filter key
+        const existing = Array.isArray(a.triggeredBy) ? a.triggeredBy : a.triggeredBy ? [a.triggeredBy] : [];
+        const keysAlready = new Set<string>(
+          existing.filter((t: any) => t?.type === "state_change" && typeof t.stateKey === "string").map((t: any) => t.stateKey),
+        );
+        const additions: any[] = [];
+        for (const fk of filterKeys) {
+          if (!keysAlready.has(fk)) additions.push({ type: "state_change", stateKey: fk });
+        }
+        if (additions.length) {
+          if (!a.triggeredBy) a.triggeredBy = additions.length === 1 ? additions[0] : additions;
+          else if (Array.isArray(a.triggeredBy)) a.triggeredBy.push(...additions);
+          else a.triggeredBy = [a.triggeredBy, ...additions];
+          console.log(`[SystemAutoWiring] Auto-bound ${a.id} to filter state changes: ${Array.from(filterKeys).join(", ")}`);
+        }
+      }
+    }
   }
 
   autoAttachComponentEventTriggers(mutation, actions);

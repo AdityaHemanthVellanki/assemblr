@@ -267,6 +267,38 @@ async function runTests() {
   } as any;
   assertThrows(() => validateCompiledIntent(intentBadType), "Invalid action type");
 
+  // Test 6c: state_assign is normalized to internal and passes validation
+  {
+    const intentStateAssign: CompiledIntent = {
+      intent_type: "modify",
+      tool_mutation: {
+        actionsAdded: [{
+          id: "update_activity_filters",
+          type: "state_assign",
+          config: { source: "{{state.filters.integration_filter}}", target: "filters.integration_filter" }
+        }],
+        componentsAdded: [
+          { id: "integration_filter", type: "select", properties: { bindKey: "filters.integration_filter" } }
+        ],
+        stateAdded: { "filters.integration_filter": null }
+      },
+      outcome: "success"
+    } as any;
+    repairCompiledIntent(intentStateAssign);
+    try {
+      validateCompiledIntent(intentStateAssign);
+      console.log("✅ PASS: state_assign normalized and validated");
+    } catch (e: any) {
+      console.error(`❌ FAIL: state_assign normalization failed validation: ${e.message}`);
+      failures++;
+    }
+    const upd2 = intentStateAssign.tool_mutation!.actionsAdded![0] as any;
+    assert(upd2.type === "internal", "Converted state_assign to internal");
+    assert(Array.isArray(upd2.steps) && upd2.steps[0]?.type === "state_mutation", "Injected explicit state_mutation step");
+    const triggers = Array.isArray(upd2.triggeredBy) ? upd2.triggeredBy : (upd2.triggeredBy ? [upd2.triggeredBy] : []);
+    assert(triggers.some((t: any) => t.type === "state_change" && t.stateKey === "filters.integration_filter"), "Auto-attached state_change trigger for filter key");
+  }
+
   // Test 6b: state_update is repaired to internal
   const intentStateUpdate: CompiledIntent = {
       intent_type: "modify",
