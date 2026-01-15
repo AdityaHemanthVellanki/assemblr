@@ -132,8 +132,10 @@ export class MiniAppStore {
         if (!field) continue;
         const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
         const includesKey = typeof args.includesKey === "string" ? args.includesKey : undefined;
-        const equalsVal = equalsKey ? state[equalsKey] : args.equals;
-        const includesVal = includesKey ? state[includesKey] : args.includes;
+        const equalsValRaw = equalsKey ? state[equalsKey] : args.equals;
+        const includesValRaw = includesKey ? state[includesKey] : args.includes;
+        const equalsVal = equalsValRaw === "__all__" ? "" : equalsValRaw;
+        const includesVal = includesValRaw === "__all__" ? "" : includesValRaw;
         patch[target] = srcArr.filter((it: any) => {
           const v = it && typeof it === "object" ? (it as any)[field] : undefined;
           if (includesVal != null && includesVal !== "") return String(v ?? "").includes(String(includesVal));

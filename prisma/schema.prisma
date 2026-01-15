@@ -91,14 +91,28 @@ model Project {
   orgId     String
   dataSourceId String?
   spec      Json
+  compiled_intent Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   dataSource DataSource? @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
+  versions ToolVersion[]
 
   @@index([orgId])
   @@index([dataSourceId])
+}
+
+model ToolVersion {
+  id            String   @id @default(cuid())
+  toolId        String
+  mini_app_spec Json
+  status        String
+  createdAt     DateTime @default(now())
+  
+  project       Project  @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@index([toolId])
 }
 
 model DataSource {

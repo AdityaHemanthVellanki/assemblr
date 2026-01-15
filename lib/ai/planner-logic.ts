@@ -11,6 +11,8 @@ const COMPONENT_EVENT_ALIASES: Record<string, string[]> = {
   button: ["onClick"],
 };
 
+const SELECT_ALL_VALUE = "__all__";
+
 function normalizeComponentEventType(componentType: string, eventType: string): string {
   const typeKey = typeof componentType === "string" ? componentType.toLowerCase() : "";
   const aliases = COMPONENT_EVENT_ALIASES[typeKey];
@@ -38,28 +40,48 @@ export function flattenMiniAppComponents(mini: any): Array<{ pageId: string; com
   return out;
 }
 
-export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec): Set<string> {
+export function analyzeActionReachability(mutation: any, currentSpec?: ToolSpec): Set<string> {
   const triggered = new Set<string>();
+  const stateListeners = new Map<string, Set<string>>(); // stateKey -> Set<actionId>
+  
+  // Helper: Index action mutations and listeners
+  const allActions = (mutation.actionsAdded ?? []);
+  
+  // 1. Identify Roots (UI Events, Lifecycle, Explicit State Change)
   const addFromNode = (node: any) => {
     if (Array.isArray(node?.events)) {
       for (const e of node.events) {
-        if (e?.actionId) triggered.add(normalizeActionId(e.actionId));
+        if (e?.actionId) {
+            triggered.add(normalizeActionId(e.actionId));
+        }
       }
     }
   };
-  
-  // Check explicit triggeredBy (Any type: lifecycle, state_change, internal)
-  for (const a of (mutation.actionsAdded ?? [])) {
-    if (a.triggeredBy) {
-      if (Array.isArray(a.triggeredBy) && a.triggeredBy.length === 0) continue;
-      triggered.add(normalizeActionId(a.id));
-    }
+
+  // 2. Index Listeners & Explicit Triggers
+  for (const a of allActions) {
+      const id = normalizeActionId(a.id);
+      if (a.triggeredBy) {
+          const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : [a.triggeredBy];
+          if (triggers.length > 0) {
+              triggered.add(id); // Accept explicit triggers as valid roots
+              for (const t of triggers) {
+                  if (t.type === "state_change" && t.stateKey) {
+                      const k = t.stateKey;
+                      if (!stateListeners.has(k)) stateListeners.set(k, new Set());
+                      stateListeners.get(k)!.add(id);
+                  }
+              }
+          }
+      }
   }
 
+  // 3. Scan UI for roots
   for (const c of (mutation.componentsAdded ?? [])) addFromNode(c);
   for (const p of (mutation.pagesAdded ?? [])) addFromNode(p);
   for (const u of (mutation.componentsUpdated ?? [])) addFromNode(u.patch);
   for (const u of (mutation.pagesUpdated ?? [])) addFromNode(u.patch);
+  
   if (currentSpec && (currentSpec as any).kind === "mini_app") {
     const mini: any = currentSpec as any;
     for (const p of mini.pages ?? []) {
@@ -75,6 +97,53 @@ export function collectTriggeredActionIds(mutation: any, currentSpec?: ToolSpec)
       }
     }
   }
+
+  // 4. Causal Graph Traversal (BFS)
+  // Expand reachability: Action A (reachable) -> Mutates S -> Action B (triggered by S) -> Action B is reachable
+  const queue = Array.from(triggered);
+  const visited = new Set(queue);
+
+  const getMutatedKeys = (action: any): string[] => {
+      const keys: string[] = [];
+      if (action.type === "state_mutation" || action.type === "internal") {
+          const updates = action.config?.updates ?? action.config?.set ?? action.config?.assign;
+          if (updates && typeof updates === "object") {
+             keys.push(...Object.keys(updates));
+          } else if (typeof action.config?.assign === "string") {
+             keys.push(action.config.assign);
+          }
+          if (Array.isArray(action.steps)) {
+              for (const step of action.steps) {
+                  if (step.type === "state_mutation") {
+                      const u = step.config?.updates ?? step.config?.set;
+                      if (u) keys.push(...Object.keys(u));
+                  }
+              }
+          }
+      }
+      return keys;
+  };
+
+  while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      const action = allActions.find((a: any) => normalizeActionId(a.id) === currentId);
+      if (!action) continue; // Existing actions not in mutation payload are not traversed for mutation logic here (simplification)
+
+      const mutatedKeys = getMutatedKeys(action);
+      for (const key of mutatedKeys) {
+          const listeners = stateListeners.get(key);
+          if (listeners) {
+              for (const listenerId of listeners) {
+                  if (!visited.has(listenerId)) {
+                      visited.add(listenerId);
+                      triggered.add(listenerId);
+                      queue.push(listenerId);
+                  }
+              }
+          }
+      }
+  }
+
   return triggered;
 }
 
@@ -137,11 +206,13 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
                  console.warn(`[PlannerValidation] Warning: Select component ${c.id} binds to state but missing 'optionValueKey'. Ensure the data source contains 'value' or 'id' fields.`);
             }
         }
-        // Check for empty string values in static options
         if (Array.isArray(c.properties?.options)) {
              for (const opt of c.properties.options) {
-                  if (opt && typeof opt === "object" && opt.value === "") {
-                       throw new Error(`Select component ${c.id} has an option with empty string value. This is unsafe. Use '__all__' or similar.`);
+                  if (opt && typeof opt === "object") {
+                       if (opt.value === "" || opt.value === null || opt.value === undefined) {
+                            opt.value = SELECT_ALL_VALUE;
+                            console.warn(`[PlannerValidation] Normalized unsafe empty option value on Select ${c.id} to '${SELECT_ALL_VALUE}'.`);
+                       }
                   }
              }
         }
@@ -163,7 +234,7 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   }
 
   // A. Check for "Action defined but unreachable"
-  const triggeredActions = collectTriggeredActionIds(mutation, currentSpec);
+  const triggeredActions = analyzeActionReachability(mutation, currentSpec);
   const allActionIds = registry.getAllIds();
   
   for (const id of allActionIds) {
@@ -178,6 +249,8 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         }
       }
       if (!repaired) {
+        // Relaxed rule: If it's effect-only, we might allow it if it's implicitly triggered? 
+        // No, effect-only actions still need a trigger.
         if (options?.mode === "create" && intent.intent_type === "create") {
           console.warn(
             `[PlannerValidation] Warning: Action ${id} is defined but never triggered by any component, page event, or explicit trigger (state_change/internal).`,
@@ -219,16 +292,26 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
     if (c.properties?.bindKey) stateKeysRead.add(c.properties.bindKey);
     if (c.properties?.loadingKey) stateKeysRead.add(c.properties.loadingKey);
     if (c.properties?.errorKey) stateKeysRead.add(c.properties.errorKey);
-    if (c.properties?.data && typeof c.properties.data === "string" && c.properties.data.startsWith("{{state.")) {
-      const match = c.properties.data.match(/^{{state\.([a-zA-Z0-9_.$-]+)}}$/);
-      if (match) stateKeysRead.add(match[1]);
+    if (c.properties?.disabledKey) {
+        // Handle "derived boolean state" reference or simple key
+        stateKeysRead.add(c.properties.disabledKey.replace(/^!/, ""));
     }
-    if (c.type === "text" && typeof c.properties?.content === "string") {
-      const matches = c.properties.content.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
-      if (matches) {
-        matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
-      }
-    }
+    
+    // Deep scan properties for {{state.key}}
+    const scanObj = (obj: any) => {
+        if (!obj || typeof obj !== "object") return;
+        for (const val of Object.values(obj)) {
+            if (typeof val === "string") {
+                const matches = val.match(/{{state\.([a-zA-Z0-9_.$-]+)}}/g);
+                if (matches) {
+                    matches.forEach((m: string) => stateKeysRead.add(m.replace("{{state.", "").replace("}}", "")));
+                }
+            } else if (typeof val === "object") {
+                scanObj(val);
+            }
+        }
+    };
+    scanObj(c.properties);
   };
 
   for (const c of components) collectReadKeys(c);
@@ -259,8 +342,8 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
     if (a.type === "integration_call") {
       const isInternal = a.config?.ephemeral_internal === true;
       const assignKey = a.config?.assign;
-      const statusKey = assignKey ? `${assignKey}Status` : `${a.id}.status`;
-      const errorKey = assignKey ? `${assignKey}Error` : `${a.id}.error`;
+      const statusKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Status` : `${a.id}.status`);
+      const errorKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Error` : `${a.id}.error`);
 
       const internalConsumes = (key: string | undefined) => {
         if (!key) return false;
@@ -281,14 +364,14 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
       }
 
       const statusConsumed =
-        stateKeysRead.has(statusKey) ||
-        stateKeysRead.has(errorKey) ||
+        (!!statusKey && stateKeysRead.has(statusKey)) ||
+        (!!errorKey && stateKeysRead.has(errorKey)) ||
         internalConsumes(statusKey) ||
         internalConsumes(errorKey);
 
-      if (!dataConsumed && !statusConsumed && !isInternal) {
+      if (!dataConsumed && !statusConsumed && !isInternal && !a.effectOnly) {
         throw new Error(
-          `Integration action ${a.id} is unused: neither data nor status/error are consumed`,
+          `Integration action ${a.id} appears to be effect-only. If intentional, mark it as effectOnly: true.`,
         );
       }
     }
@@ -368,6 +451,33 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   const actions = mutation.actionsAdded ?? [];
   const components = mutation.componentsAdded || [];
 
+  if (Array.isArray(components)) {
+    for (const c of components) {
+      if (!c || typeof c !== "object") continue;
+      if (c.type === "select" || c.type === "dropdown") {
+        if (c.properties && Array.isArray(c.properties.options)) {
+          c.properties.options = c.properties.options.map((opt: any) => {
+            if (!opt || typeof opt !== "object") return opt;
+            if (opt.value === "" || opt.value === null || opt.value === undefined) {
+              return { ...opt, value: SELECT_ALL_VALUE };
+            }
+            return opt;
+          });
+        }
+      }
+    }
+  }
+
+  if (mutation.stateAdded && typeof mutation.stateAdded === "object") {
+    for (const [k, v] of Object.entries(mutation.stateAdded)) {
+      if (typeof k === "string" && k.startsWith("filters.") && (v === "" || v === null || v === undefined)) {
+        mutation.stateAdded[k] = SELECT_ALL_VALUE;
+      }
+    }
+  }
+
+  applyContainerPatchesToNewComponents(mutation);
+
   // 1. NORMALIZE ALL ACTION IDs IMMEDIATELY (Strict Mode)
   for (const a of actions) {
       if (a.id) {
@@ -393,106 +503,23 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
         delete a.config?.updates;
         delete a.config?.set;
       }
-      // Preserve semantic intent marker for diagnostics
       a.config = { __semantic: (a.config && a.config.__semantic) || (originalType === "state_assign" ? "state_update" : originalType), ...(a.config ?? {}) };
       console.log(`[SystemAutoWiring] Converted action ${a.id} from '${originalType}' to 'internal'`);
     }
   }
 
-  if (!actions.length) return;
-
-  // 3. ENFORCE CANONICAL PIPELINE & FEEDBACK LOOPS
-  // "Every integration_call must terminate in UI binding or internal consumer"
-  for (const a of actions) {
-      if (a.type === "integration_call" && a.config?.assign && a.config?.ephemeral_internal !== true) {
-          const rawKey = a.config.assign;
-          const statusKey = `${rawKey}Status`;
-          const errorKey = `${rawKey}Error`;
-          
-          // A. Canonical Normalization Action (Required)
-          // "Integration Call -> Normalizer -> Filter -> UI"
-          // We check if a normalizer exists. If not, we inject one.
-          // We look for any internal action that takes rawKey as input.
-          const hasConsumer = actions.some((x: any) => 
-              x.id !== a.id && 
-              x.type === "internal" && 
-              (x.inputs?.includes(rawKey) || extractStateDependencies(x).includes(rawKey))
-          );
-
-          if (!hasConsumer) {
-               const normalizeId = `normalize_${a.id.replace(/^fetch_|^get_/, "")}`;
-               // Check collision
-               if (!actions.some((x: any) => x.id === normalizeId)) {
-                   const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
-                   actions.push({
-                       id: normalizeId,
-                       type: "internal",
-                       inputs: [rawKey],
-                       config: {
-                           code: `return ${rawKey}; // System auto-normalization`,
-                           assign: normalizedKey
-                       },
-                       triggeredBy: { type: "state_change", stateKey: rawKey }
-                   });
-                   console.log(`[SystemAutoWiring] Injected canonical normalizer: ${normalizeId}`);
-               }
-          }
-
-          // B. Mandatory Feedback Loop (Status/Error)
-          // We inject a "Mirroring" action to ensure status is available to shared UI state if needed.
-          
-          // Check if status/error is consumed by UI or other actions
-          let statusConsumed = false;
-          
-          // Check UI Components
-          for (const c of components) {
-              if (c.properties?.loadingKey === statusKey || c.properties?.errorKey === errorKey) statusConsumed = true;
-              if (c.dataSource?.type === "state" && (c.dataSource.value === statusKey || c.dataSource.value === errorKey)) statusConsumed = true;
-              // Check content strings for {{state.key}}
-              const propsStr = JSON.stringify(c.properties || {});
-              if (propsStr.includes(`{{state.${statusKey}}}`) || propsStr.includes(`{{state.${errorKey}}}`)) statusConsumed = true;
-          }
-
-          // Check Internal Actions
-          if (!statusConsumed) {
-              statusConsumed = actions.some((x: any) => 
-                  x.id !== a.id && 
-                  (x.inputs?.includes(statusKey) || x.inputs?.includes(errorKey) || 
-                   extractStateDependencies(x).includes(statusKey) || extractStateDependencies(x).includes(errorKey))
-              );
-          }
-
-          if (!statusConsumed) {
-               const mirrorId = `mirror_status_${a.id.replace(/^fetch_|^get_/, "")}`;
-               // Check collision
-               if (!actions.some((x: any) => x.id === mirrorId)) {
-                   actions.push({
-                       id: mirrorId,
-                       type: "workflow", 
-                       triggeredBy: [
-                           { type: "state_change", stateKey: statusKey },
-                           { type: "state_change", stateKey: errorKey }
-                       ],
-                       steps: [
-                           {
-                               type: "state_mutation",
-                               config: { 
-                                   updates: { 
-                                       [`debug.${a.id}.status`]: `{{state.${statusKey}}}`,
-                                       [`debug.${a.id}.error`]: `{{state.${errorKey}}}`
-                                   } 
-                               }
-                           }
-                       ]
-                   });
-                   console.log(`[SystemAutoWiring] Injected status mirroring action: ${mirrorId}`);
-               }
-          }
-      }
-  }
-
-  // 4. FIX COMPONENTS & CHILDREN
   for (const c of components) {
+      if (c.properties) {
+           for (const [key, val] of Object.entries(c.properties)) {
+               if (typeof val === "string" && val.startsWith("state.")) {
+                   c.properties[key] = val.replace(/^state\./, "");
+               }
+           }
+      }
+      if (c.dataSource?.type === "state" && c.dataSource.value?.startsWith("state.")) {
+           c.dataSource.value = c.dataSource.value.replace(/^state\./, "");
+      }
+
       if (Array.isArray(c.events)) {
         c.events = c.events.map((e: any) => {
           if (!e || typeof e !== "object") return e;
@@ -519,13 +546,127 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           c.properties = c.properties || {};
           c.properties.bindKey = key;
           mutation.stateAdded = mutation.stateAdded || {};
-          if (!mutation.stateAdded[key]) mutation.stateAdded[key] = null;
+          if (!mutation.stateAdded[key]) mutation.stateAdded[key] = SELECT_ALL_VALUE;
           console.log(`[SystemAutoWiring] Auto-bound select ${c.id} to ${key}`);
       }
       
       if (c.properties?.disabledKey && c.properties.disabledKey.startsWith("!")) {
            delete c.properties.disabledKey;
            console.log(`[SystemAutoWiring] Removed illegal disabledKey from ${c.id}`);
+      }
+  }
+
+  if (!actions.length) return;
+
+  // 2b. CLASSIFY EFFECT-ONLY ACTIONS (Auto-detect)
+  for (const a of actions) {
+    const id = String(a.id || "").toLowerCase();
+    const semantic = String(a.config?.__semantic || "").toLowerCase();
+    const isNavigationType = a.type === ACTION_TYPES.NAVIGATION;
+    const effectPatterns = [/^open(_in_.+)?/, /navigate/, /launch/, /^redirect/, /open_in_/, /open$/];
+    const matchesEffect =
+      isNavigationType ||
+      effectPatterns.some((re) => re.test(id)) ||
+      effectPatterns.some((re) => re.test(semantic));
+    if (a.type === ACTION_TYPES.INTEGRATION_CALL && matchesEffect) {
+      a.effectOnly = true;
+    }
+  }
+
+  for (const a of actions) {
+      if (a.type === "integration_call" && !a.effectOnly && a.config?.assign && a.config?.ephemeral_internal !== true) {
+          const rawKey = a.config.assign;
+          const statusKey = `${rawKey}Status`;
+          const errorKey = `${rawKey}Error`;
+          
+          const hasConsumer = actions.some((x: any) => 
+              x.id !== a.id && 
+              x.type === "internal" && 
+              (x.inputs?.includes(rawKey) || extractStateDependencies(x).includes(rawKey))
+          );
+
+          if (!hasConsumer) {
+               const normalizeId = `normalize_${a.id.replace(/^fetch_|^get_/, "")}`;
+               if (!actions.some((x: any) => x.id === normalizeId)) {
+                   const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
+                   actions.push({
+                       id: normalizeId,
+                       type: "internal",
+                       inputs: [rawKey],
+                       config: {
+                           code: `return ${rawKey}; // System auto-normalization`,
+                           assign: normalizedKey
+                       },
+                       triggeredBy: { type: "state_change", stateKey: rawKey }
+                   });
+                   console.log(`[SystemAutoWiring] Injected canonical normalizer: ${normalizeId}`);
+               }
+          }
+
+          let statusConsumed = false;
+          
+          for (const c of components) {
+              if (c.properties?.loadingKey === statusKey || c.properties?.errorKey === errorKey) statusConsumed = true;
+              if (c.dataSource?.type === "state" && (c.dataSource.value === statusKey || c.dataSource.value === errorKey)) statusConsumed = true;
+              const propsStr = JSON.stringify(c.properties || {});
+              if (propsStr.includes(`{{state.${statusKey}}}`) || propsStr.includes(`{{state.${errorKey}}}`)) statusConsumed = true;
+          }
+
+          if (!statusConsumed) {
+              statusConsumed = actions.some((x: any) => 
+                  x.id !== a.id && 
+                  (x.inputs?.includes(statusKey) || x.inputs?.includes(errorKey) || 
+                   extractStateDependencies(x).includes(statusKey) || extractStateDependencies(x).includes(errorKey))
+              );
+          }
+          
+          if (!statusConsumed) {
+               const mirrorId = `mirror_status_${a.id.replace(/^fetch_|^get_/, "")}`;
+               if (!actions.some((x: any) => x.id === mirrorId)) {
+                   actions.push({
+                       id: mirrorId,
+                       type: "internal",
+                       inputs: [statusKey, errorKey],
+                       config: {
+                           code: `// System auto-mirroring of status\nreturn { status: ${statusKey}, error: ${errorKey} };`,
+                           __semantic: "status_mirror"
+                       },
+                       triggeredBy: { type: "state_change", stateKey: statusKey }
+                   });
+                   console.log(`[SystemAutoWiring] Injected status mirroring action: ${mirrorId}`);
+               }
+          }
+      }
+  }
+
+  const triggeredIds = analyzeActionReachability(mutation, currentSpec);
+  
+  for (const a of actions) {
+      if (a.type === "integration_call" && !triggeredIds.has(normalizeActionId(a.id))) {
+           const inputs = a.inputs ?? [];
+           if (inputs.length === 1) {
+               const inputKey = inputs[0];
+               const mutator = actions.find((x: any) => {
+                   const m = x.config?.updates ?? x.config?.set ?? x.config?.assign;
+                   if (m && typeof m === "object") return Object.keys(m).includes(inputKey);
+                   if (x.config?.assign === inputKey) return true;
+                   if (Array.isArray(x.steps)) {
+                        return x.steps.some((s: any) => {
+                             const u = s.config?.updates ?? s.config?.set;
+                             return u && Object.keys(u).includes(inputKey);
+                        });
+                   }
+                   return false;
+               });
+               
+               if (mutator) {
+                   if (!a.triggeredBy) {
+                        a.triggeredBy = { type: "state_change", stateKey: inputKey };
+                        console.log(`[SystemAutoWiring] Auto-wired action ${a.id} to trigger on state_change: ${inputKey}`);
+                        triggeredIds.add(normalizeActionId(a.id));
+                   }
+               }
+           }
       }
   }
 
@@ -617,7 +758,7 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
     firstPageId = ((currentSpec as any).pages ?? [])[0]?.id;
   }
 
-  const allTriggered = collectTriggeredActionIds(mutation, currentSpec);
+  const allTriggered = analyzeActionReachability(mutation, currentSpec);
   const orphanActions = actions.filter((a: any) => !allTriggered.has(a.id));
 
   for (const action of orphanActions) {
@@ -671,6 +812,72 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   }
 
   ensureEveryActionHasTrigger(mutation);
+}
+
+function applyContainerPatchesToNewComponents(mutation: any) {
+  const updates = Array.isArray(mutation.containerPropsUpdated) ? mutation.containerPropsUpdated : [];
+  if (!updates.length) return;
+
+  const remaining: any[] = [];
+  const components = mutation.componentsAdded ?? [];
+  const pages = mutation.pagesAdded ?? [];
+
+  const byId = new Map<string, any>();
+  for (const c of components) {
+    if (c && typeof c.id === "string") {
+      byId.set(c.id, c);
+    }
+  }
+
+  const applyPatchToTree = (node: any, targetId: string, patch: any): boolean => {
+    if (!node || typeof node !== "object") return false;
+    if (node.id === targetId) {
+      node.properties = { ...(node.properties || {}), ...(patch || {}) };
+      return true;
+    }
+    if (Array.isArray(node.children)) {
+      for (const ch of node.children) {
+        if (applyPatchToTree(ch, targetId, patch)) return true;
+      }
+    }
+    return false;
+  };
+
+  for (const upd of updates) {
+    if (!upd) continue;
+    const id = typeof upd.id === "string" ? upd.id : undefined;
+    const patch = upd.propertiesPatch || {};
+    if (!id) {
+      remaining.push(upd);
+      continue;
+    }
+    let inlined = false;
+    const direct = byId.get(id);
+    if (direct) {
+      direct.properties = { ...(direct.properties || {}), ...(patch) };
+      inlined = true;
+    } else {
+      for (const p of pages) {
+        if (!p || !Array.isArray(p.components)) continue;
+        for (const root of p.components) {
+          if (applyPatchToTree(root, id, patch)) {
+            inlined = true;
+            break;
+          }
+        }
+        if (inlined) break;
+      }
+    }
+    if (!inlined) {
+      remaining.push(upd);
+    }
+  }
+
+  if (remaining.length) {
+    mutation.containerPropsUpdated = remaining;
+  } else {
+    delete mutation.containerPropsUpdated;
+  }
 }
 
 function ensureEveryActionHasTrigger(mutation: any) {

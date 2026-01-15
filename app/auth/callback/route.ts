@@ -1,6 +1,31 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getServerEnv } from "@/lib/env";
+import type { Database } from "@/lib/supabase/database.types";
+
+async function createRouteHandlerSupabaseClient() {
+  const env = getServerEnv();
+  const cookieStore = await cookies();
+
+  return createServerClient<Database>(
+    env.SUPABASE_URL,
+    env.SUPABASE_SECRET_KEY,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          for (const c of cookiesToSet) {
+            cookieStore.set(c.name, c.value, c.options);
+          }
+        },
+      },
+    },
+  );
+}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -11,7 +36,7 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL("/login", url.origin));
   }
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = await createRouteHandlerSupabaseClient();
   const { error } = await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {

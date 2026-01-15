@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
-import type { ToolSpec } from "@/lib/spec/toolSpec";
+import { sendChatMessage } from "@/app/actions/chat";
+import { ToolSpec } from "@/lib/spec/toolSpec";
 
 interface ProjectWorkspaceProps {
   project?: {
@@ -33,62 +34,129 @@ export function ProjectWorkspace({
   const [messages, setMessages] = React.useState<any[]>(initialMessages || []);
   const [executionSteps, setExecutionSteps] = React.useState<TimelineStep[]>([]);
   const [isExecuting, setIsExecuting] = React.useState(false);
+  const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
+  const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
 
   // Derived state
   const isZeroState = messages.length === 0;
 
   // Dynamic Header Title
-  const headerTitle = project?.spec?.title || "New Chat";
+  const headerTitle = currentSpec?.title || "New Chat";
+
+  const handleShare = React.useCallback(async () => {
+    try {
+      const url = window.location.href;
+      if (navigator.share) {
+        await navigator.share({ title: headerTitle, url });
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+        alert("Link copied to clipboard");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [headerTitle]);
 
   const handleSubmit = async () => {
     if (!inputValue.trim()) return;
 
-    // Add user message
     const userMsg = { role: "user", content: inputValue };
-    setMessages((prev) => [...prev, userMsg]);
+    const newHistory = [...messages, userMsg];
+    setMessages(newHistory);
     setInputValue("");
     setIsExecuting(true);
+    setExecutionSteps([{ id: "init", label: "Analyzing Request...", status: "running" }]);
 
-    // Simulate execution start (Mock for now to demonstrate UI transition)
-    simulateExecution();
-  };
+    try {
+        const response = await sendChatMessage(
+            toolId, 
+            inputValue, 
+            newHistory.map(m => ({ role: m.role, content: m.content })), 
+            currentSpec
+        );
 
-  const simulateExecution = async () => {
-    // Mock steps
-    const step1: TimelineStep = {
-      id: "1",
-      label: "Processing Read Data",
-      status: "running",
-      narrative:
-        "I'll help you create a chart to visualize the yearly sales data from your spreadsheet. Let me first read the data to understand its structure.",
-    };
-    setExecutionSteps([step1]);
+        // Update ID if created
+        if (response.toolId && !toolId) {
+            setToolId(response.toolId);
+        }
 
-    await new Promise((r) => setTimeout(r, 2000));
+        // Process Trace for Timeline
+        const trace = response.metadata?.trace;
+        if (trace) {
+            const steps: TimelineStep[] = [];
+            
+            // 1. Planner/Agent
+            if (trace.agents_invoked?.length) {
+                trace.agents_invoked.forEach((a: any, i: number) => {
+                    steps.push({
+                        id: `agent-${i}`,
+                        label: `Agent: ${a.task}`,
+                        status: "success",
+                        narrative: `Invoked agent ${a.agentId} for ${a.task}`
+                    });
+                });
+            }
 
-    setExecutionSteps((prev) =>
-      prev.map((s) =>
-        s.id === "1" ? { ...s, status: "success", resultAvailable: true } : s
-      )
-    );
+            // 2. Integrations
+            if (trace.integrations_accessed?.length) {
+                trace.integrations_accessed.forEach((acc: any, i: number) => {
+                    steps.push({
+                        id: `int-${i}`,
+                        label: `Integration: ${acc.capabilityId}`,
+                        status: acc.status,
+                        narrative: `Called ${acc.integrationId} (${acc.latency_ms}ms)`
+                    });
+                });
+            }
 
-    const step2: TimelineStep = {
-      id: "2",
-      label: "Processing Create Chart",
-      status: "running",
-      narrative:
-        "Perfect! I can see the monthly sales data from January to December. Now I'll create a line chart to visualize the yearly sales progression using the Month and Total Sales columns.",
-    };
-    setExecutionSteps((prev) => [...prev, step2]);
+            // 3. Mutations
+            if (trace.ui_mutations?.length) {
+                steps.push({
+                    id: "ui-gen",
+                    label: "Generating UI",
+                    status: "success",
+                    narrative: `Created ${trace.ui_mutations.length} components`,
+                    resultAvailable: true
+                });
+            }
 
-    await new Promise((r) => setTimeout(r, 2500));
+            if (trace.outcome === "failure") {
+                steps.push({
+                    id: "fail",
+                    label: "Execution Failed",
+                    status: "error",
+                    narrative: trace.failure_reason
+                });
+            } else {
+                steps.push({
+                    id: "done",
+                    label: "Complete",
+                    status: "success"
+                });
+            }
+            setExecutionSteps(steps);
+        }
 
-    setExecutionSteps((prev) =>
-      prev.map((s) =>
-        s.id === "2" ? { ...s, status: "success", resultAvailable: true } : s
-      )
-    );
-    setIsExecuting(false);
+        // Update Spec
+        if (response.spec) {
+            setCurrentSpec(response.spec);
+        }
+
+        // Add Assistant Message
+        const assistantMsg = { 
+            role: "assistant", 
+            content: response.message.content 
+        };
+        setMessages(prev => [...prev, assistantMsg]);
+
+    } catch (e) {
+        console.error(e);
+        const errorMsg = { role: "assistant", content: "Something went wrong. Please try again." };
+        setMessages(prev => [...prev, errorMsg]);
+        setExecutionSteps(prev => [...prev, { id: "err", label: "System Error", status: "error", narrative: String(e) }]);
+    } finally {
+        setIsExecuting(false);
+    }
   };
 
   return (
@@ -99,7 +167,12 @@ export function ProjectWorkspace({
           <div className="flex-1" />
           <div className="font-semibold">{headerTitle}</div>
           <div className="flex-1 flex justify-end items-center gap-4">
-            <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground hover:text-foreground">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={handleShare}
+            >
               <Share className="h-4 w-4" />
               Share
             </Button>
@@ -126,60 +199,27 @@ export function ProjectWorkspace({
             <ScrollArea className="flex-1">
               <div className="mx-auto max-w-3xl px-4 py-8">
                 {/* Render User Prompt */}
-                {messages
-                  .filter((m) => m.role === "user")
-                  .map((m, i) => (
+                {messages.map((m, i) => (
+                  <div
+                    key={i}
+                    className="mb-4 flex w-full justify-start"
+                  >
                     <div
-                      key={i}
-                      className="mb-8 p-6 rounded-2xl bg-muted/30 border border-border/50 shadow-sm"
+                      className={
+                        m.role === "user"
+                          ? "ml-auto max-w-[80%] rounded-2xl bg-primary text-primary-foreground px-4 py-3"
+                          : "mr-auto max-w-[80%] rounded-2xl bg-muted/40 border border-border/50 px-4 py-3"
+                      }
                     >
-                      <div className="font-medium text-lg mb-2">{m.content}</div>
-                      {/* Mock URL logic */}
-                      {m.content.toLowerCase().includes("spreadsheet") && (
-                         <div className="flex items-center gap-2 text-sm text-muted-foreground bg-background/50 p-2 rounded-md border border-border/50 w-fit max-w-full">
-                            <span className="truncate">https://docs.google.com/spreadsheets/d/1nTs3t8W9SWO0dcGYKvw...</span>
-                         </div>
-                      )}
+                      <div className="text-sm whitespace-pre-wrap">
+                        {m.content}
+                      </div>
                     </div>
-                  ))}
+                  </div>
+                ))}
 
                 {/* Execution Timeline */}
                 <ExecutionTimeline steps={executionSteps} />
-
-                {/* Final Output (Mock) */}
-                {!isExecuting && executionSteps.length > 1 &&
-                  executionSteps[1].status === "success" && (
-                    <div className="mt-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                      <div className="mb-4 text-lg leading-relaxed">
-                        Great! I&apos;ve successfully created a line chart to visualize
-                        your yearly sales data. The chart shows:
-                      </div>
-                      <ul className="list-disc pl-5 space-y-2 mb-6 text-muted-foreground">
-                        <li>
-                          <strong className="text-foreground">Monthly progression</strong> from January
-                          ($125,000) to December ($312,000)
-                        </li>
-                        <li>
-                          <strong className="text-foreground">Clear upward trend</strong> demonstrating strong
-                          sales growth throughout the year
-                        </li>
-                        <li>
-                          <strong className="text-foreground">2.5x growth</strong> from the beginning to the
-                          end of the year
-                        </li>
-                      </ul>
-                      <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
-                        The chart is now embedded in your spreadsheet at: <br />
-                        <span className="underline cursor-pointer hover:text-blue-300 transition-colors">
-                          https://docs.google.com/spreadsheets/d/1nTs3...
-                        </span>
-                      </div>
-                      
-                      <div className="mt-6 text-muted-foreground leading-relaxed">
-                        The visualization makes it easy to see your consistent month-over-month growth pattern, with total sales more than doubling from January to December. This is excellent performance data that clearly shows your business momentum throughout the year!
-                      </div>
-                    </div>
-                  )}
 
                 <div className="h-20" /> {/* Spacer */}
               </div>

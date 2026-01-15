@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 import { z } from "zod";
 
 import { getServerEnv } from "@/lib/env";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/supabase/database.types";
 
 const bodySchema = z
   .object({
@@ -10,6 +12,28 @@ const bodySchema = z
     password: z.string().min(8).max(200),
   })
   .strict();
+
+async function createRouteHandlerSupabaseClient() {
+  const env = getServerEnv();
+  const cookieStore = await cookies();
+
+  return createServerClient<Database>(
+    env.SUPABASE_URL,
+    env.SUPABASE_SECRET_KEY,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          for (const c of cookiesToSet) {
+            cookieStore.set(c.name, c.value, c.options);
+          }
+        },
+      },
+    },
+  );
+}
 
 export async function POST(req: Request) {
   getServerEnv();
@@ -23,7 +47,7 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const emailRedirectTo = new URL("/auth/callback?next=%2Fdashboard", url.origin).toString();
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = await createRouteHandlerSupabaseClient();
 
   const { data, error } = await supabase.auth.signUp({
     email: parsed.data.email.trim().toLowerCase(),

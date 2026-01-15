@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Send, Plus, Link as LinkIcon } from "lucide-react";
+import { Send } from "lucide-react";
 import { cn } from "@/lib/ui/cn";
 import { Button } from "@/components/ui/button";
 
@@ -33,7 +33,7 @@ export function PromptBar({
     <div
       className={cn(
         "relative w-full max-w-3xl mx-auto transition-all duration-500 ease-in-out",
-        className
+        className,
       )}
     >
       <div className="relative flex flex-col gap-2 rounded-2xl border bg-background/50 p-2 shadow-sm backdrop-blur-xl ring-1 ring-white/10 focus-within:ring-primary/50 transition-shadow">
@@ -52,24 +52,15 @@ export function PromptBar({
             target.style.height = `${target.scrollHeight}px`;
           }}
         />
-        
-        <div className="flex items-center justify-between px-2 pb-1">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 rounded-full gap-1.5 text-xs font-normal text-muted-foreground hover:text-foreground"
-            >
-              <Plus className="h-3 w-3" />
-              Add integration
-            </Button>
-          </div>
 
+        <div className="flex items-center justify-end px-2 pb-1">
           <Button
             size="icon"
             className={cn(
-                "h-8 w-8 rounded-full transition-all duration-200",
-                value.trim() ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted"
+              "h-8 w-8 rounded-full transition-all duration-200",
+              value.trim()
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-muted",
             )}
             onClick={onSubmit}
             disabled={!value.trim() || isLoading}
@@ -78,8 +69,7 @@ export function PromptBar({
           </Button>
         </div>
       </div>
-      
-      {/* Decorative gradient glow behind the input in zero state */}
+
       {variant === "centered" && (
         <div className="absolute -inset-0.5 -z-10 rounded-2xl bg-gradient-to-r from-primary/20 via-purple-500/20 to-blue-500/20 opacity-50 blur-xl" />
       )}

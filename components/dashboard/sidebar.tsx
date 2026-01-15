@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { 
@@ -38,6 +39,11 @@ const HISTORY = [
   { label: "Slack Capybara Prank" },
 ];
 
+const PREVIOUS_HISTORY = [
+  { label: "Competitor Analysis" },
+  { label: "Q3 Roadmap Draft" },
+];
+
 export function Sidebar({
   className,
   role,
@@ -48,6 +54,7 @@ export function Sidebar({
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeToolId = searchParams?.get("tool_context");
+   const [searchQuery, setSearchQuery] = React.useState("");
 
   const handleToolClick = (toolId: string) => {
     // In a real app, this might use a Global Context or URL state
@@ -61,6 +68,18 @@ export function Sidebar({
     // Push new params (shallow routing if supported, or just nav)
     router.push(`?${params.toString()}`);
   };
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleToday = normalizedQuery
+    ? HISTORY.filter((item) =>
+        item.label.toLowerCase().includes(normalizedQuery),
+      )
+    : HISTORY;
+  const visiblePrevious = normalizedQuery
+    ? PREVIOUS_HISTORY.filter((item) =>
+        item.label.toLowerCase().includes(normalizedQuery),
+      )
+    : PREVIOUS_HISTORY;
 
   return (
     <aside
@@ -82,7 +101,9 @@ export function Sidebar({
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input 
             placeholder="Search threads..." 
-            className="pl-8 h-9 bg-muted/50 border-none" 
+            className="pl-8 h-9 bg-muted/50 border-none"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
 
@@ -111,29 +132,31 @@ export function Sidebar({
          <div className="flex flex-col gap-2 py-2">
             <div className="px-3 text-xs font-semibold text-muted-foreground">TODAY</div>
             <div className="flex flex-col gap-1">
-                {HISTORY.map((item) => (
-                    <button
-                        key={item.label}
-                        className={cn(
-                            "truncate rounded-md px-3 py-2 text-sm text-left transition-colors",
-                            item.active 
-                                ? "bg-accent text-accent-foreground font-medium" 
-                                : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
-                        )}
-                    >
-                        {item.label}
-                    </button>
+                {visibleToday.map((item) => (
+                  <div
+                    key={item.label}
+                    className={cn(
+                      "truncate rounded-md px-3 py-2 text-sm",
+                      item.active
+                        ? "bg-accent text-accent-foreground font-medium"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {item.label}
+                  </div>
                 ))}
             </div>
             
             <div className="mt-4 px-3 text-xs font-semibold text-muted-foreground">PREVIOUS 7 DAYS</div>
             <div className="flex flex-col gap-1">
-                 <button className="truncate rounded-md px-3 py-2 text-sm text-left text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground transition-colors">
-                    Competitor Analysis
-                 </button>
-                 <button className="truncate rounded-md px-3 py-2 text-sm text-left text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground transition-colors">
-                    Q3 Roadmap Draft
-                 </button>
+                 {visiblePrevious.map((item) => (
+                   <div
+                     key={item.label}
+                     className="truncate rounded-md px-3 py-2 text-sm text-muted-foreground"
+                   >
+                     {item.label}
+                   </div>
+                 ))}
             </div>
          </div>
 

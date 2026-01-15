@@ -101,15 +101,118 @@ async function runTests() {
       }]
   };
   // We need a base spec with page p1
-  const specWithPage: any = { 
-      kind: "mini_app", title: "Test", 
-      pages: [{ id: "p1", name: "Home", components: [] }], 
-      actions: [], 
-      state: {} 
+  const specWithPage: any = {
+      kind: "mini_app", title: "Test",
+      pages: [{ id: "p1", name: "Home", components: [] }],
+      actions: [],
+      state: {}
   };
-  
+
   const materializer = await import("../lib/spec/materializer");
   assertThrows(() => materializer.materializeSpec(specWithPage, badPageUpdate), "Page update references missing action");
+
+  console.log("\n--- Test 2d: containerPropsUpdated for newly added root container ---");
+  {
+    const baseSpec2: any = { kind: "mini_app", title: "Test", pages: [], actions: [], state: {} };
+    const mutationContainerInline: any = {
+      pagesAdded: [
+        {
+          id: "p_root",
+          name: "Home",
+          components: [
+            {
+              id: "main_layout",
+              type: "container",
+              properties: { layout: "column", gap: 1 }
+            }
+          ]
+        }
+      ],
+      containerPropsUpdated: [
+        { id: "main_layout", propertiesPatch: { gap: 3 } }
+      ]
+    };
+    try {
+      const next: any = materializer.materializeSpec(baseSpec2 as any, mutationContainerInline);
+      const page = next.pages[0];
+      const container = page.components.find((c: any) => c.id === "main_layout");
+      assert(!!container, "main_layout container exists after materialization");
+      assert(container.properties.layout === "column", "preserves existing layout property on main_layout");
+      assert(container.properties.gap === 3, "applies containerPropsUpdated patch to main_layout");
+      console.log("✅ PASS: containerPropsUpdated applied to newly added root container");
+    } catch (e: any) {
+      console.error(`❌ FAIL: containerPropsUpdated for new root container: ${e.message}`);
+      failures++;
+    }
+  }
+
+  console.log("\n--- Test 2e: containerPropsUpdated for nested container ---");
+  {
+    const baseSpecNested: any = {
+      kind: "mini_app",
+      title: "Test",
+      pages: [
+        {
+          id: "p_nested",
+          name: "Nested",
+          components: [
+            {
+              id: "outer_container",
+              type: "container",
+              properties: { layout: "row", gap: 1 },
+              children: [
+                {
+                  id: "inner_container",
+                  type: "container",
+                  properties: { layout: "column", gap: 2 }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      actions: [],
+      state: {}
+    };
+    const mutationNested: any = {
+      containerPropsUpdated: [
+        { id: "inner_container", propertiesPatch: { gap: 5 } }
+      ]
+    };
+    try {
+      const next: any = materializer.materializeSpec(baseSpecNested as any, mutationNested);
+      const page = next.pages.find((p: any) => p.id === "p_nested");
+      const outer = page.components.find((c: any) => c.id === "outer_container");
+      const inner = (outer.children || []).find((c: any) => c.id === "inner_container");
+      assert(!!inner, "inner_container exists after nested materialization");
+      assert(inner.properties.layout === "column", "preserves existing layout on inner_container");
+      assert(inner.properties.gap === 5, "applies containerPropsUpdated patch to nested container");
+      console.log("✅ PASS: containerPropsUpdated applied to nested container");
+    } catch (e: any) {
+      console.error(`❌ FAIL: containerPropsUpdated for nested container: ${e.message}`);
+      failures++;
+    }
+  }
+
+  console.log("\n--- Test 2f: containerPropsUpdated unknown component preflight ---");
+  {
+    const baseSpecBad: any = {
+      kind: "mini_app",
+      title: "Test",
+      pages: [{ id: "p_unknown", name: "Page", components: [] }],
+      actions: [],
+      state: {}
+    };
+    const mutationBad: any = {
+      containerPropsUpdated: [
+        { id: "missing_container", propertiesPatch: { gap: 1 } }
+      ]
+    };
+    assertThrows(
+      () => materializer.materializeSpec(baseSpecBad, mutationBad),
+      "Spec inconsistency: containerPropsUpdated references unknown component",
+    );
+  }
 
   // Test 3: Unreachable Action
   const intentUnreachable: CompiledIntent = {

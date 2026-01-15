@@ -23,6 +23,8 @@ export function materializeSpec(baseSpec: ToolSpec, mutation: ToolMutation): Too
     if (!spec.actions) spec.actions = [];
     if (!spec.state) spec.state = {};
 
+    preflightValidateMutation(spec, mutation);
+
     return materializeMiniApp(spec, mutation) as ToolSpec;
 }
 
@@ -179,25 +181,6 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
         }
     }
 
-    if (mutation.componentsUpdated && mutation.componentsUpdated.length) {
-        for (const upd of mutation.componentsUpdated) {
-            const target = findComponent(spec, upd.pageId, upd.id, upd.componentRef);
-            if (!target) {
-                throw new Error(`Update failed: component not found (${upd.id || upd.componentRef})`);
-            }
-            const { component } = target;
-            const patch = (upd.patch || {}) as any;
-            if (patch.type && patch.type !== component.type) {
-                throw new Error(`Update failed: type change from ${component.type} to ${patch.type} is not allowed in componentsUpdated`);
-            }
-            if (patch.label !== undefined) component.label = patch.label;
-            if (patch.properties) component.properties = { ...(component.properties || {}), ...(patch.properties || {}) };
-            if (patch.dataSource !== undefined) component.dataSource = patch.dataSource;
-            if (patch.events !== undefined) component.events = patch.events;
-            if (patch.layout !== undefined) component.layout = { ...(component.layout || {}), ...(patch.layout || {}) };
-        }
-    }
-
     if (mutation.componentsRemoved && mutation.componentsRemoved.length) {
         for (const rem of mutation.componentsRemoved) {
             const target = findComponent(spec, rem.pageId, rem.id, rem.componentRef);
@@ -210,6 +193,27 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
             } else {
                 page.components.splice(index, 1);
             }
+        }
+    }
+
+    const componentRegistry = buildComponentRegistry(spec);
+
+    if (mutation.componentsUpdated && mutation.componentsUpdated.length) {
+        for (const upd of mutation.componentsUpdated) {
+            const targetId = (upd.id ?? upd.componentRef) as string | undefined;
+            const component = targetId ? componentRegistry.get(targetId) : undefined;
+            if (!component) {
+                throw new Error(`Update failed: component not found (${upd.id || upd.componentRef})`);
+            }
+            const patch = (upd.patch || {}) as any;
+            if (patch.type && patch.type !== component.type) {
+                throw new Error(`Update failed: type change from ${component.type} to ${patch.type} is not allowed in componentsUpdated`);
+            }
+            if (patch.label !== undefined) component.label = patch.label;
+            if (patch.properties) component.properties = { ...(component.properties || {}), ...(patch.properties || {}) };
+            if (patch.dataSource !== undefined) component.dataSource = patch.dataSource;
+            if (patch.events !== undefined) component.events = patch.events;
+            if (patch.layout !== undefined) component.layout = { ...(component.layout || {}), ...(patch.layout || {}) };
         }
     }
 
@@ -249,11 +253,13 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
 
     if (mutation.containerPropsUpdated && mutation.containerPropsUpdated.length) {
         for (const upd of mutation.containerPropsUpdated) {
-            const target = findComponent(spec, upd.pageId, upd.id, upd.componentRef);
-            if (!target) {
-                throw new Error(`Container update failed: component not found (${upd.id || upd.componentRef})`);
+            const targetId = (upd.id ?? upd.componentRef) as string | undefined;
+            const component = targetId ? componentRegistry.get(targetId) : undefined;
+            if (!component) {
+                throw new Error(
+                    `Materialization error: attempted to update container '${upd.id || upd.componentRef}' before it was materialized. This indicates a planner or framework ordering bug, not a user error.`,
+                );
             }
-            const { component } = target;
             if (String(component.type).toLowerCase() !== "container") {
                 throw new Error(`Container update failed: target is not a container (type=${component.type})`);
             }
@@ -299,6 +305,70 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
     validateSpec(spec);
 
     return spec;
+}
+
+function buildComponentRegistry(spec: any): Map<string, any> {
+    const registry = new Map<string, any>();
+    for (const page of spec.pages ?? []) {
+        for (const comp of page.components ?? []) {
+            registerComponentTree(comp, registry);
+        }
+    }
+    return registry;
+}
+
+function registerComponentTree(node: any, registry: Map<string, any>) {
+    if (!node || typeof node !== "object") return;
+    if (node.id && !registry.has(node.id)) {
+        registry.set(node.id, node);
+    }
+    if (Array.isArray(node.children)) {
+        for (const ch of node.children) registerComponentTree(ch, registry);
+    }
+}
+
+function preflightValidateMutation(spec: any, mutation: ToolMutation) {
+    if (!mutation || !mutation.containerPropsUpdated || !mutation.containerPropsUpdated.length) return;
+
+    const declared = new Set<string>();
+
+    for (const page of spec.pages ?? []) {
+        for (const comp of page.components ?? []) {
+            collectComponentIds(comp, declared);
+        }
+    }
+
+    if (mutation.pagesAdded) {
+        for (const rawPage of mutation.pagesAdded) {
+            const comps = (rawPage as any).components || [];
+            for (const c of comps) collectComponentIds(c, declared);
+        }
+    }
+
+    if (mutation.componentsAdded) {
+        for (const rawComp of mutation.componentsAdded) {
+            const id = (rawComp as any).componentId ?? (rawComp as any).id;
+            if (id) declared.add(String(id));
+        }
+    }
+
+    for (const upd of mutation.containerPropsUpdated) {
+        const refId = (upd.id ?? upd.componentRef) as string | undefined;
+        if (!refId) continue;
+        if (!declared.has(refId)) {
+            throw new Error(
+                `Spec inconsistency: containerPropsUpdated references unknown component '${refId}'. This should be fixed in the planner, not by the user.`,
+            );
+        }
+    }
+}
+
+function collectComponentIds(node: any, set: Set<string>) {
+    if (!node || typeof node !== "object") return;
+    if (node.id) set.add(String(node.id));
+    if (Array.isArray(node.children)) {
+        for (const ch of node.children) collectComponentIds(ch, set);
+    }
 }
 
 function findPage(spec: any, id?: string, pageRef?: string): any | null {

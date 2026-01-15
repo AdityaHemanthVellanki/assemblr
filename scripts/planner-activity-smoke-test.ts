@@ -2,18 +2,22 @@
 // We avoid importing the server-only wrapper to keep tests runnable.
 // Try to import the server-side planner. If this environment cannot load it
 // (e.g. server-only guard), skip this smoke test without failing the suite.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-let compileIntent: typeof import("../lib/ai/planner").compileIntent;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  ({ compileIntent } = require("../lib/ai/planner"));
-} catch (err) {
-  console.log("skipping planner-activity-smoke-test: unable to import server-side planner", err);
-  process.exit(0);
+async function loadCompileIntent() {
+  try {
+    const mod = await import("../lib/ai/planner");
+    return mod.compileIntent;
+  } catch (err) {
+    console.log(
+      "skipping planner-activity-smoke-test: unable to import server-side planner",
+      err,
+    );
+    process.exit(0);
+  }
 }
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 import type { DiscoveredSchema } from "@/lib/schema/types";
 import type { Metric } from "@/lib/metrics/store";
+import type { OrgPolicy } from "@/lib/core/governance";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -22,6 +26,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 async function run() {
+  const compileIntent = await loadCompileIntent();
   const prompt = "Build a tool to explore activity across my tools";
 
   const history: Array<{ role: "user" | "assistant"; content: string }> = [];
@@ -30,7 +35,7 @@ async function run() {
 
   const schemas: DiscoveredSchema[] = [];
   const metrics: Metric[] = [];
-  const policies: Array<unknown> = [];
+  const policies: OrgPolicy[] = [];
   const currentSpec: ToolSpec | undefined = undefined;
 
   const intent = await compileIntent(
