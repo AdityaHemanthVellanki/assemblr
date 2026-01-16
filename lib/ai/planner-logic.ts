@@ -513,10 +513,53 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   // 0. CANONICALIZE STATE KEYS (Pre-repair normalization)
   canonicalizeStateKeys(mutation);
 
+  // 0.1 ENFORCE CANONICAL FILTER NAMESPACE
+  if (mutation.stateAdded) {
+      const renames: Record<string, string> = {};
+      for (const key of Object.keys(mutation.stateAdded)) {
+          // Map filter_tool, tool_filter, activityToolFilter -> filters.tool
+          if (key === "filter_tool" || key === "tool_filter" || key === "activityToolFilter") {
+              renames[key] = "filters.tool";
+          } else if (key === "filter_type" || key === "type_filter" || key === "activityTypeFilter") {
+              renames[key] = "filters.activityType";
+          } else if (key === "filter_time" || key === "time_filter" || key === "timeRange") {
+              renames[key] = "filters.timeRange";
+          }
+      }
+      if (Object.keys(renames).length > 0) {
+          console.log(`[SystemHardening] Canonicalizing filter keys:`, renames);
+          // Apply renames using existing helper logic (we can just inject into aliasMap logic inside canonicalizeStateKeys if we move this there, 
+          // or run a mini-pass here. Let's reuse renameStateKey logic or just update stateAdded and alias map later?
+          // Actually, canonicalizeStateKeys is designed for this. Let's enhance IT instead.)
+      }
+  }
+
   // 1. NORMALIZE ALL ACTION IDs IMMEDIATELY (Strict Mode)
   for (const a of actions) {
       if (a.id) {
           a.id = normalizeActionId(a.id);
+      }
+  }
+
+  // 1.1 GENERIC ACTION TYPE NORMALIZATION (Hardening)
+  const allowedActionTypes = new Set(Object.values(ACTION_TYPES));
+  for (const a of actions) {
+      if (!allowedActionTypes.has(a.type)) {
+          const original = a.type;
+          // Map known legacy/invalid types to internal
+          if (["state_transform", "transform", "filter", "map", "update_state", "set_status"].some(t => original.includes(t))) {
+              a.type = ACTION_TYPES.INTERNAL;
+              a.config = { __semantic: original, ...(a.config ?? {}) };
+              console.log(`[SystemHardening] Normalized invalid action type '${original}' to 'internal' for action ${a.id}`);
+          } else if (original.includes("flow") || original.includes("step")) {
+              a.type = ACTION_TYPES.WORKFLOW;
+              console.log(`[SystemHardening] Normalized invalid action type '${original}' to 'workflow' for action ${a.id}`);
+          } else {
+              // Default fallback
+              a.type = ACTION_TYPES.INTERNAL;
+              a.config = { __semantic: "unknown_type_rescue", originalType: original, ...(a.config ?? {}) };
+              console.log(`[SystemHardening] Rescued unknown action type '${original}' -> 'internal' for action ${a.id}`);
+          }
       }
   }
 
@@ -1156,6 +1199,21 @@ function canonicalizeStateKeys(mutation: any) {
   if (mutation.stateAdded) {
     for (const key of Object.keys(mutation.stateAdded)) {
       if (canonicalKeys.has(key)) continue;
+      
+      // Hardening: Explicit Filter Mapping
+      if (key === "filter_tool" || key === "tool_filter" || key === "activityToolFilter") {
+          aliasMap.set(key, "filters.tool");
+          continue;
+      }
+      if (key === "filter_type" || key === "type_filter" || key === "activityTypeFilter") {
+          aliasMap.set(key, "filters.activityType");
+          continue;
+      }
+      if (key === "filter_time" || key === "time_filter" || key === "timeRange") {
+          aliasMap.set(key, "filters.timeRange");
+          continue;
+      }
+
       // Heuristic: "status" -> "filters.status"
       const matchSuffix = Array.from(canonicalKeys).find(ck => ck.endsWith(`.${key}`));
       if (matchSuffix) {

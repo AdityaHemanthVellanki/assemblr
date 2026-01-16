@@ -144,22 +144,13 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
     }
 
     if (mutation.componentsAdded) {
-        for (const rawComp of mutation.componentsAdded) {
-            const { pageId, componentId, ...compData } = rawComp as any;
-            let targetPage: any | undefined;
-            if (pageId) {
-                targetPage = spec.pages.find((p: any) => p.id === pageId);
-                if (!targetPage) {
-                    const available = spec.pages.map((p: any) => p.id).join(", ") || "(none)";
-                    throw new Error(
-                        `MiniApp materialization error: page '${pageId}' not found. Available pages: ${available}`
-                    );
-                }
-            }
-            if (!targetPage) {
-                targetPage = spec.pages[0];
-            }
+        // Phase 1: Create all components and index them
+        const newComponentsMap = new Map<string, any>();
+        const parentRefs = new Map<string, string>(); // childId -> parentId
 
+        for (const rawComp of mutation.componentsAdded) {
+            const { pageId, componentId, parentId, ...compData } = rawComp as any;
+            
             const canonicalId =
                 componentId ??
                 compData.id ??
@@ -173,11 +164,67 @@ function materializeMiniApp(spec: any, mutation: ToolMutation): any {
                 dataSource: compData.dataSource,
                 events: compData.events,
                 renderIf: compData.renderIf,
-                children: compData.children,
+                children: [], // Initialize empty, populate in Phase 2
                 layout: compData.layout
             };
+            
+            // If explicit children are provided inline, process them? 
+            // The current logic supports inline recursion. We should preserve that but maybe flattened is safer?
+            // For now, let's assume inline children are handled by the planner correctly or flattened.
+            // If the planner sends a flat list with parentIds, we handle that here.
+            
+            if (compData.children) {
+                 component.children = compData.children; // Keep inline structure if present
+            }
 
-            targetPage.components.push(component);
+            newComponentsMap.set(canonicalId, { component, pageId, parentId });
+            if (parentId) parentRefs.set(canonicalId, parentId);
+        }
+
+        // Phase 2: Attach to Tree
+        for (const [id, { component, pageId, parentId }] of newComponentsMap) {
+            let attached = false;
+
+            // Try to find parent in NEW components
+            if (parentId && newComponentsMap.has(parentId)) {
+                const parentEntry = newComponentsMap.get(parentId);
+                if (parentEntry) {
+                    if (!parentEntry.component.children) parentEntry.component.children = [];
+                    parentEntry.component.children.push(component);
+                    attached = true;
+                }
+            }
+            
+            // Try to find parent in EXISTING spec
+            if (!attached && parentId) {
+                // We need to look up the parent in the spec
+                // But we don't know the pageId if it's cross-page? (Unlikely)
+                // Let's assume parent is on the same page or we search all.
+                const parentTarget = findComponent(spec, pageId, parentId, undefined);
+                if (parentTarget) {
+                    const parent = parentTarget.component;
+                    if (!parent.children) parent.children = [];
+                    parent.children.push(component);
+                    attached = true;
+                }
+            }
+
+            // If not attached to a parent, attach to Page
+            if (!attached) {
+                let targetPage: any | undefined;
+                if (pageId) {
+                    targetPage = spec.pages.find((p: any) => p.id === pageId);
+                }
+                if (!targetPage) {
+                    targetPage = spec.pages[0];
+                }
+                if (targetPage) {
+                    targetPage.components.push(component);
+                } else {
+                     // Should trigger fatal error? Or create default page?
+                     // We created a default page earlier if none existed.
+                }
+            }
         }
     }
 

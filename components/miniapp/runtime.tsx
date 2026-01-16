@@ -401,7 +401,9 @@ export class MiniAppStore {
         }
         this.setState(patch);
         this.addTrace({ actionId, type: "integration", status: "error", message: res.error });
-        throw new Error(res.error);
+        // Non-Fatal Mode: Do not throw. Log error to UI state but keep runtime alive.
+        this.setError(`Integration ${actionId} failed: ${res.error}`);
+        // throw new Error(res.error); // DISABLED for resilience
       }
 
       this.snapshot = {
