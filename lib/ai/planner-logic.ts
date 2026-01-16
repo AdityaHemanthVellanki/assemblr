@@ -103,27 +103,6 @@ export function analyzeActionReachability(mutation: any, currentSpec?: ToolSpec)
   const queue = Array.from(triggered);
   const visited = new Set(queue);
 
-  const getMutatedKeys = (action: any): string[] => {
-      const keys: string[] = [];
-      if (action.type === "state_mutation" || action.type === "internal") {
-          const updates = action.config?.updates ?? action.config?.set ?? action.config?.assign;
-          if (updates && typeof updates === "object") {
-             keys.push(...Object.keys(updates));
-          } else if (typeof action.config?.assign === "string") {
-             keys.push(action.config.assign);
-          }
-          if (Array.isArray(action.steps)) {
-              for (const step of action.steps) {
-                  if (step.type === "state_mutation") {
-                      const u = step.config?.updates ?? step.config?.set;
-                      if (u) keys.push(...Object.keys(u));
-                  }
-              }
-          }
-      }
-      return keys;
-  };
-
   while (queue.length > 0) {
       const currentId = queue.shift()!;
       const action = allActions.find((a: any) => normalizeActionId(a.id) === currentId);
@@ -147,8 +126,269 @@ export function analyzeActionReachability(mutation: any, currentSpec?: ToolSpec)
   return triggered;
 }
 
+export function getMutatedKeys(action: any): string[] {
+    const keys: string[] = [];
+    if (action.type === "state_mutation" || action.type === "internal") {
+        const updates = action.config?.updates ?? action.config?.set ?? action.config?.assign;
+        if (updates && typeof updates === "object") {
+           keys.push(...Object.keys(updates));
+        } else if (typeof action.config?.assign === "string") {
+           keys.push(action.config.assign);
+        }
+        if (Array.isArray(action.steps)) {
+            for (const step of action.steps) {
+                if (step.type === "state_mutation") {
+                    const u = step.config?.updates ?? step.config?.set;
+                    if (u) keys.push(...Object.keys(u));
+                }
+            }
+        }
+    }
+    return keys;
+}
+
+export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSpec) {
+  const mutation = intent.tool_mutation;
+  if (!mutation) return;
+
+  const actions = mutation.actionsAdded ?? [];
+  const components = mutation.componentsAdded ?? [];
+  const pages = mutation.pagesAdded ?? [];
+
+  // 1. Build Graph Nodes
+  const nodes = new Map<string, { id: string; type: string; triggers: any[]; dependencies: string[] }>();
+  
+  for (const a of actions) {
+    const id = normalizeActionId(a.id);
+    nodes.set(id, {
+      id,
+      type: a.type,
+      triggers: Array.isArray(a.triggeredBy) ? a.triggeredBy : (a.triggeredBy ? [a.triggeredBy] : []),
+      dependencies: extractStateDependencies(a)
+    });
+  }
+
+  // 2. Enforce Invariants & Auto-Heal
+  let madeChanges = false;
+  
+  // 2.1 Reachability & Triggers
+  const reachable = new Set<string>();
+  const queue: string[] = [];
+
+  // Find Roots
+  // A. Lifecycle Events
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          if (p.events) {
+              for (const e of p.events) {
+                  if (e.actionId) {
+                      const aid = normalizeActionId(e.actionId);
+                      if (nodes.has(aid)) {
+                          reachable.add(aid);
+                          queue.push(aid);
+                      }
+                  }
+              }
+          }
+      }
+  }
+  // B. Component Events
+  for (const c of components) {
+      if (c.events) {
+          for (const e of c.events) {
+              if (e.actionId) {
+                  const aid = normalizeActionId(e.actionId);
+                  if (nodes.has(aid)) {
+                      reachable.add(aid);
+                      queue.push(aid);
+                  }
+              }
+          }
+      }
+  }
+  // C. Explicit Triggers (State Change)
+  for (const [id, node] of nodes) {
+      for (const t of node.triggers) {
+          if (t.type === "state_change" || t.type === "lifecycle") {
+              reachable.add(id);
+              queue.push(id);
+          }
+      }
+  }
+
+  // Traverse
+  while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const node = nodes.get(curr);
+      if (!node) continue;
+
+      // Find actions triggered by this action's output (state mutation)
+      // This requires knowing what state keys this action mutates
+      const actionDef = actions.find((a: any) => normalizeActionId(a.id) === curr);
+      if (actionDef) {
+          const mutatedKeys = getMutatedKeys(actionDef);
+          for (const key of mutatedKeys) {
+              // Find actions triggered by this state key
+              for (const [otherId, otherNode] of nodes) {
+                  if (otherId === curr) continue;
+                  if (otherNode.triggers.some((t: any) => t.type === "state_change" && t.stateKey === key)) {
+                      if (!reachable.has(otherId)) {
+                          reachable.add(otherId);
+                          queue.push(otherId);
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  // Heal Unreachable
+  for (const [id, node] of nodes) {
+      if (!reachable.has(id)) {
+          // Auto-bind to onPageLoad of first page
+          const firstPage = pages[0] || (currentSpec as any)?.pages?.[0];
+          if (firstPage) {
+              const actionDef = actions.find((a: any) => normalizeActionId(a.id) === id);
+              if (actionDef) {
+                  console.warn(`[ActionGraph] Healing unreachable action ${id} -> Bind to ${firstPage.id || firstPage.pageId}.onPageLoad`);
+                  
+                  // Add to page events
+                  mutation.pagesUpdated = mutation.pagesUpdated ?? [];
+                  let pageUpdate = mutation.pagesUpdated.find((u: any) => u.pageId === (firstPage.id || firstPage.pageId));
+                  if (!pageUpdate) {
+                      pageUpdate = { pageId: (firstPage.id || firstPage.pageId), patch: { events: [] } };
+                      mutation.pagesUpdated.push(pageUpdate);
+                  }
+                  pageUpdate.patch.events = pageUpdate.patch.events ?? [];
+                  pageUpdate.patch.events.push({
+                      type: "onPageLoad",
+                      actionId: actionDef.id,
+                      args: { autoAttached: true, reason: "graph_healing" }
+                  });
+                  
+                  // Update action trigger info for consistency
+                  actionDef.triggeredBy = actionDef.triggeredBy || [];
+                  if (!Array.isArray(actionDef.triggeredBy)) actionDef.triggeredBy = [actionDef.triggeredBy];
+                  actionDef.triggeredBy.push({ type: "lifecycle", event: "onPageLoad" });
+                  
+                  madeChanges = true;
+              }
+          }
+      }
+  }
+}
+
+export function simulateExecution(intent: CompiledIntent): { success: boolean; logs: string[] } {
+  const logs: string[] = [];
+  const mutation = intent.tool_mutation;
+  if (!mutation) return { success: true, logs };
+
+  const actions = mutation.actionsAdded ?? [];
+  const state = { ...mutation.stateAdded }; // Simulation state
+
+  // Simple simulation of "onPageLoad"
+  logs.push("--- Dry Run Start: onPageLoad ---");
+  
+  // 1. Identify onPageLoad actions
+  const queue: string[] = [];
+  
+  // From pagesAdded
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          if (p.events) {
+              for (const e of p.events) {
+                  if (e.type === "onPageLoad" && e.actionId) {
+                      queue.push(normalizeActionId(e.actionId));
+                  }
+              }
+          }
+      }
+  }
+  // From pagesUpdated
+  if (mutation.pagesUpdated) {
+      for (const u of mutation.pagesUpdated) {
+          if (u.patch?.events) {
+              for (const e of u.patch.events) {
+                  if (e.type === "onPageLoad" && e.actionId) {
+                      queue.push(normalizeActionId(e.actionId));
+                  }
+              }
+          }
+      }
+  }
+
+  const visited = new Set<string>();
+  const MAX_STEPS = 100;
+  let steps = 0;
+
+  while (queue.length > 0 && steps < MAX_STEPS) {
+      const currId = queue.shift()!;
+      if (visited.has(currId)) {
+          logs.push(`Loop detected at ${currId}. Skipping.`);
+          continue;
+      }
+      visited.add(currId);
+      steps++;
+
+      const action = actions.find((a: any) => normalizeActionId(a.id) === currId);
+      if (!action) {
+          logs.push(`Action ${currId} not found in definition.`);
+          continue;
+      }
+
+      logs.push(`Executing ${action.id} (${action.type})`);
+
+      // Apply effects
+      if (action.type === "state_mutation" || action.type === "internal") {
+          const updates = action.config?.updates ?? action.config?.set ?? action.config?.assign;
+          if (updates) {
+              for (const key of Object.keys(updates)) {
+                  state[key] = "SIMULATED_VALUE";
+                  logs.push(`  -> Mutated ${key}`);
+                  
+                  // Trigger downstream
+                  const downstream = actions.filter((a: any) => {
+                      const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : (a.triggeredBy ? [a.triggeredBy] : []);
+                      return triggers.some((t: any) => t.type === "state_change" && t.stateKey === key);
+                  });
+                  
+                  for (const ds of downstream) {
+                      const dsId = normalizeActionId(ds.id);
+                      if (!visited.has(dsId) && !queue.includes(dsId)) {
+                          queue.push(dsId);
+                          logs.push(`    -> Triggered ${ds.id}`);
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  if (steps >= MAX_STEPS) {
+      logs.push("WARNING: Simulation hit step limit. Possible infinite loop.");
+      return { success: false, logs };
+  }
+
+  logs.push("--- Dry Run Complete ---");
+  return { success: true, logs };
+}
+
 export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec, options?: { mode?: "create" | "chat" | "modify" }) {
   if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
+
+  // 0. SYSTEMIC FIX: Graph Validation & Healing (Part 1)
+  // This runs before standard validation to ensure the graph is connected and valid.
+  validateActionGraph(intent, currentSpec);
+
+  // 0.1 PRE-EXECUTION DRY RUN (Part 6)
+  // Simulate execution to detect deadlocks or logic errors.
+  const simulation = simulateExecution(intent);
+  if (!simulation.success) {
+      console.warn("[DryRun] Simulation completed with warnings:", simulation.logs);
+      // In Non-Fatal Mode, we log but proceed. 
+      // Ideally we could attach these logs to the intent for the runtime to display in a debug panel.
+  }
+
   const mutation = intent.tool_mutation;
   if (!mutation) return;
 

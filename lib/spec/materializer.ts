@@ -1,6 +1,6 @@
 
-import type { ToolSpec } from "@/lib/spec/toolSpec";
-import { normalizeActionId } from "@/lib/spec/action-id";
+import type { ToolSpec } from "./toolSpec";
+import { normalizeActionId } from "./action-id";
 
 export interface ToolMutation {
     toolPropsUpdated?: { title?: string; description?: string };

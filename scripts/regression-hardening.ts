@@ -21,7 +21,7 @@ function testMaterializerTwoPhase() {
     };
     
     try {
-        const result = materializeSpec(baseSpec as any, mutation);
+        const result = materializeSpec(baseSpec as any, mutation) as any;
         const p1 = result.pages[0];
         const parent = p1.components.find((c: any) => c.id === "parent1");
         assert(parent, "Parent created");
@@ -87,10 +87,46 @@ function testCanonicalFilterState() {
     assert(state["filter_tool"] === undefined, "Old key removed");
 }
 
+function testGraphHealing() {
+    console.log("\n--- Test: Action Graph Healing ---");
+    const intent: any = {
+        intent_type: "create",
+        tool_mutation: {
+            pagesAdded: [{ pageId: "home", events: [] }],
+            actionsAdded: [
+                { id: "orphaned_action", type: "internal", config: { code: "console.log('orphan')" } }
+            ],
+            pagesUpdated: []
+        }
+    };
+
+    // We need to import validateActionGraph. 
+    // Since we can't easily import it if it's not exported or if we want to avoid modifying imports too much,
+    // we can use validateCompiledIntent which calls it.
+    // However, validateCompiledIntent is what we want to test anyway.
+    
+    // Note: validateCompiledIntent expects a CompiledIntent structure.
+    const { validateCompiledIntent } = require("../lib/ai/planner-logic");
+    
+    validateCompiledIntent(intent, undefined, { mode: "create" });
+    
+    const action = intent.tool_mutation.actionsAdded[0];
+    const pageUpdate = intent.tool_mutation.pagesUpdated[0];
+    
+    assert(action.triggeredBy, "Orphan action was auto-triggered");
+    assert(Array.isArray(action.triggeredBy) && action.triggeredBy[0].type === "lifecycle", "Trigger type is lifecycle");
+    
+    assert(pageUpdate, "Page update was created");
+    const event = pageUpdate.patch.events.find((e: any) => e.actionId === "orphaned_action");
+    assert(event, "Page event was bound to action");
+    assert(event.type === "onPageLoad", "Event is onPageLoad");
+}
+
 function main() {
     testMaterializerTwoPhase();
     testPlannerNormalization();
     testCanonicalFilterState();
+    testGraphHealing();
     console.log("\n🎉 ALL HARDENING TESTS PASSED");
 }
 
