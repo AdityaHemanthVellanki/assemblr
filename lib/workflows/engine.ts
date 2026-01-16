@@ -44,7 +44,7 @@ export async function runWorkflow(workflow: Workflow, runId: string, context: an
             
             // Log Audit for successful action execution
             await logAudit(workflow.orgId, "workflow.action.execute", "workflow", workflow.id, { 
-              action: action.type, 
+              action: action.type,
               runId,
               traceId
             });

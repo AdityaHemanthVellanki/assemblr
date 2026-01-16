@@ -23,7 +23,7 @@ type RuntimeSnapshot = {
   lastError: string | null;
 };
 
-function resolvePath(obj: any, path: string) {
+export function resolvePath(obj: any, path: string) {
   if (obj == null) return undefined;
   if (!path.includes(".")) return obj[path];
   
@@ -274,11 +274,9 @@ export class MiniAppStore {
     const actionId = normalizeActionId(rawActionId);
     const action = this.registry.get(actionId);
     if (!action) {
-        // STRICT MODE: Runtime must only execute actions from the registry.
-        const msg = `[MiniAppRuntime] dispatch: Action not found: ${rawActionId} (normalized: ${actionId}). Execution blocked.`;
-        console.error(msg);
-        this.setError(msg);
-        throw new Error(msg);
+        // LOOSE BINDING: Warn but do not crash
+        console.warn(`[MiniAppRuntime] dispatch: Action not found: ${rawActionId} (normalized: ${actionId}). Skipping.`);
+        return;
     }
 
     // Fix 7: Action Graph Ordering (Conditionals)

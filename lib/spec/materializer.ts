@@ -349,6 +349,9 @@ function preflightValidateMutation(spec: any, mutation: ToolMutation) {
         for (const rawComp of mutation.componentsAdded) {
             const id = (rawComp as any).componentId ?? (rawComp as any).id;
             if (id) declared.add(String(id));
+            if (rawComp.children && Array.isArray(rawComp.children)) {
+                for (const ch of rawComp.children) collectComponentIds(ch, declared);
+            }
         }
     }
 

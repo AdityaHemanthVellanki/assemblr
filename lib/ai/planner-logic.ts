@@ -225,6 +225,26 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
 
   // 2. Validate Event Wiring (STRICT MODE)
   const actions = mutation.actionsAdded || [];
+
+  // 0. Planner Invariant Check (Action Types & Banned Keys)
+  const allowedActionTypes = new Set(Object.values(ACTION_TYPES));
+  const bannedKeys = ["__derivation", "__from", "__fromTableSelection"];
+
+  for (const a of actions) {
+    if (!allowedActionTypes.has(a.type)) {
+      throw new Error(`PlannerInvariantError: Invalid action type '${a.type}' for action '${a.id}'. Allowed: ${Array.from(allowedActionTypes).join(", ")}`);
+    }
+    if (a.config) {
+        // Deep check for banned keys
+        const str = JSON.stringify(a.config);
+        for (const ban of bannedKeys) {
+            if (str.includes(`"${ban}"`)) {
+                 throw new Error(`PlannerInvariantError: Action '${a.id}' uses banned key '${ban}'. Derived state must be declarative in components.`);
+            }
+        }
+    }
+  }
+
   const registry = new ActionRegistry(actions);
 
   normalizeLegacyActions(actions);
@@ -279,6 +299,18 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   for (const u of (mutation.pagesUpdated ?? [])) {
       if (u.patch?.events) u.patch.events.forEach((e: any) => checkTrigger(`Page Update ${u.pageId}`, e));
   }
+
+  // C. Check for Single Lifecycle Entrypoint
+  const checkLifecycle = (events: any[], context: string) => {
+      if (!events) return;
+      const loads = events.filter((e: any) => e.type === "onPageLoad");
+      if (loads.length > 1) {
+          throw new Error(`${context} has multiple onPageLoad triggers. Only one entrypoint allowed.`);
+      }
+  };
+  for (const p of (mutation.pagesAdded ?? [])) checkLifecycle(p.events, `Page ${p.id}`);
+  for (const u of (mutation.pagesUpdated ?? [])) checkLifecycle(u.patch?.events, `Page Update ${u.pageId}`);
+
   // Check triggers in existing app components if they were not modified? 
   // We only check new/modified parts to be safe, but Strict Mode implies we shouldn't allow broken refs.
   // For now, focus on the mutation payload.
@@ -478,6 +510,9 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
 
   applyContainerPatchesToNewComponents(mutation);
 
+  // 0. CANONICALIZE STATE KEYS (Pre-repair normalization)
+  canonicalizeStateKeys(mutation);
+
   // 1. NORMALIZE ALL ACTION IDs IMMEDIATELY (Strict Mode)
   for (const a of actions) {
       if (a.id) {
@@ -487,22 +522,138 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
 
   normalizeLegacyActions(actions);
 
+  // 1.5 REMOVE EXPLICIT STATUS ACTIONS (Systemic Fix: Status is runtime-managed)
+  const actionsToRemove = new Set<string>();
+  for (const a of actions) {
+      const isStatusAction = 
+          a.id.includes("set_status") || 
+          a.id.includes("mirror_status") ||
+          (a.config?.__semantic === "status_mirror");
+      
+      if (isStatusAction) {
+          actionsToRemove.add(a.id);
+          console.log(`[SystemAutoWiring] Removed explicit status action ${a.id} (handled by runtime)`);
+          continue;
+      }
+
+      if (a.type === "state_mutation" || a.type === "internal") {
+          const updates = a.config?.updates ?? a.config?.set ?? a.config?.assign;
+          if (updates && typeof updates === "object") {
+              const keys = Object.keys(updates);
+              const allStatus = keys.length > 0 && keys.every(k => k.endsWith("Status") || k.endsWith("Error"));
+              if (allStatus) {
+                  actionsToRemove.add(a.id);
+                  console.log(`[SystemAutoWiring] Removed explicit status action ${a.id} (handled by runtime)`);
+              }
+          }
+      }
+  }
+
+  // 1.6 REPAIR FILTER ACTIONS -> DECLARATIVE COMPONENT SOURCE
+  for (const a of actions) {
+     if (actionsToRemove.has(a.id)) continue;
+     
+     // Detect filter logic
+     if (a.type === "internal" && a.config?.operation === "assign" && a.config?.assign) {
+         for (const [targetKey, def] of Object.entries(a.config.assign)) {
+             if (def && typeof def === "object" && ((def as any).logic === "filter" || (def as any).transform === "filter")) {
+                 const sourceKey = (def as any).deriveFrom?.[0];
+                 if (!sourceKey) continue;
+                 
+                 // Find components using targetKey
+                 let converted = false;
+                 const updateComponent = (c: any) => {
+                     if (c.dataSource?.type === "state" && c.dataSource.value === targetKey) {
+                         // Find filter keys from action triggers
+                         const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : (a.triggeredBy ? [a.triggeredBy] : []);
+                         const filterKeys = triggers
+                            .filter((t: any) => t.type === "state_change" && t.stateKey)
+                            .map((t: any) => t.stateKey)
+                            .filter((k: string) => k !== sourceKey);
+                         
+                         c.dataSource = {
+                             type: "derived",
+                             source: sourceKey,
+                             filters: filterKeys
+                         };
+                         
+                         converted = true;
+                         console.log(`[SystemAutoWiring] Converted filter action ${a.id} to declarative dataSource on ${c.id}`);
+                     }
+                     if (c.children) c.children.forEach(updateComponent);
+                 };
+                 components.forEach(updateComponent);
+                 
+                 if (converted) {
+                     actionsToRemove.add(a.id);
+                 }
+             }
+         }
+     }
+  }
+
+  // Execute removals
+  if (actionsToRemove.size > 0) {
+      const kept = [];
+      for (const a of actions) {
+          if (!actionsToRemove.has(a.id)) kept.push(a);
+      }
+      mutation.actionsAdded = kept;
+      // Re-assign local ref if needed, but array mutation is safer if we just splice.
+      // But here we replaced the array in mutation, but 'actions' local var is stale.
+      // Better to splice in place to keep 'actions' ref valid.
+      for (let i = actions.length - 1; i >= 0; i--) {
+          if (actionsToRemove.has(actions[i].id)) {
+              actions.splice(i, 1);
+          }
+      }
+  }
+
   // 2. CONVERT INVALID ACTION TYPES (Systemic Fix)
   for (const a of actions) {
-    if (a.type === "state_update" || a.type === "state_mutation" || a.type === "state_assign") {
+    if (["state_update", "state_mutation", "state_assign", "state_transform", "transform", "filter"].includes(a.type)) {
       const originalType = a.type;
       a.type = ACTION_TYPES.INTERNAL;
-      const updates = a.config?.updates ?? a.config?.set;
-      if (updates && !Array.isArray(a.steps)) {
-        a.steps = [
-          {
-            type: "state_mutation",
-            config: { updates },
-          },
-        ];
-        delete a.config?.updates;
-        delete a.config?.set;
+
+      // Special handling for state_transform
+      if (originalType === "state_transform" || originalType === "transform") {
+          const target = a.config?.target ?? a.config?.to ?? a.config?.assign;
+          const source = a.config?.source ?? a.config?.from ?? a.config?.value;
+          const logic = a.config?.transform ?? a.config?.operation ?? "transform";
+          
+          if (target) {
+               a.config = {
+                   operation: "assign",
+                   assign: {
+                       [target]: {
+                           deriveFrom: Array.isArray(source) ? source : [source],
+                           logic: logic
+                       }
+                   },
+                   ...(a.config ?? {})
+               };
+               // Clean up old keys to avoid confusion
+               delete a.config.target;
+               delete a.config.source;
+               delete a.config.from;
+               delete a.config.to;
+               delete a.config.transform;
+          }
+      } else {
+          // Existing logic for state_mutation/update
+          const updates = a.config?.updates ?? a.config?.set;
+          if (updates && !Array.isArray(a.steps)) {
+            a.steps = [
+              {
+                type: "state_mutation",
+                config: { updates },
+              },
+            ];
+            delete a.config?.updates;
+            delete a.config?.set;
+          }
       }
+      
       a.config = { __semantic: (a.config && a.config.__semantic) || (originalType === "state_assign" ? "state_update" : originalType), ...(a.config ?? {}) };
       console.log(`[SystemAutoWiring] Converted action ${a.id} from '${originalType}' to 'internal'`);
     }
@@ -621,20 +772,8 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           }
           
           if (!statusConsumed) {
-               const mirrorId = `mirror_status_${a.id.replace(/^fetch_|^get_/, "")}`;
-               if (!actions.some((x: any) => x.id === mirrorId)) {
-                   actions.push({
-                       id: mirrorId,
-                       type: "internal",
-                       inputs: [statusKey, errorKey],
-                       config: {
-                           code: `// System auto-mirroring of status\nreturn { status: ${statusKey}, error: ${errorKey} };`,
-                           __semantic: "status_mirror"
-                       },
-                       triggeredBy: { type: "state_change", stateKey: statusKey }
-                   });
-                   console.log(`[SystemAutoWiring] Injected status mirroring action: ${mirrorId}`);
-               }
+              // Status mirroring is now handled automatically by the runtime.
+              // We do NOT inject explicit actions for this anymore.
           }
       }
   }
@@ -882,14 +1021,36 @@ function applyContainerPatchesToNewComponents(mutation: any) {
 
 function ensureEveryActionHasTrigger(mutation: any) {
   const actions = mutation.actionsAdded ?? [];
+  let firstPageId: string | undefined;
+  if (Array.isArray(mutation.pagesAdded) && mutation.pagesAdded.length) {
+    firstPageId = (mutation.pagesAdded[0] as any).pageId ?? mutation.pagesAdded[0].id;
+  }
+
   for (const action of actions) {
        const hasTriggers = !!action.triggeredBy &&
           (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
 
        if (!hasTriggers) {
-           // Final safety net: Just bind to internal/manual to satisfy Strict Mode
-           action.triggeredBy = { type: "internal", reason: "system_safety_net" };
-           console.warn(`[SystemSafetyNet] Action ${action.id} had no trigger. Auto-bound to internal(system_safety_net) to prevent crash.`);
+           if (firstPageId) {
+               action.triggeredBy = { type: "lifecycle", event: "onPageLoad" };
+               mutation.pagesUpdated = mutation.pagesUpdated ?? [];
+               let pageUpdate = mutation.pagesUpdated.find((u: any) => u.pageId === firstPageId);
+               if (!pageUpdate) {
+                   pageUpdate = { pageId: firstPageId, patch: { events: [] } };
+                   mutation.pagesUpdated.push(pageUpdate);
+               }
+               pageUpdate.patch.events = pageUpdate.patch.events ?? [];
+               pageUpdate.patch.events.push({ 
+                   type: "onPageLoad", 
+                   actionId: action.id, 
+                   args: { autoAttached: true, reason: "orphan_rescue" } 
+               });
+               console.log(`[SystemAutoWiring] Rescued orphan action ${action.id} by binding to onPageLoad of ${firstPageId}`);
+           } else {
+               // Final safety net: Just bind to internal/manual to satisfy Strict Mode
+               action.triggeredBy = { type: "internal", reason: "system_safety_net" };
+               console.warn(`[SystemSafetyNet] Action ${action.id} had no trigger. Auto-bound to internal(system_safety_net) to prevent crash.`);
+           }
        }
   }
 }
@@ -972,4 +1133,83 @@ function tryAttachComponentTriggerFromSemantics(mutation: any, action: any): boo
     !!action.triggeredBy &&
     (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
   return after;
+}
+
+function canonicalizeStateKeys(mutation: any) {
+  if (!mutation) return;
+  const canonicalKeys = new Set<string>();
+  const aliasMap = new Map<string, string>();
+
+  // 1. Gather authoritative keys from UI components (bindKey)
+  const scanComponents = (comps: any[]) => {
+    for (const c of comps) {
+      if (c.properties?.bindKey) canonicalKeys.add(c.properties.bindKey);
+      if (Array.isArray(c.children)) scanComponents(c.children);
+    }
+  };
+  scanComponents(mutation.componentsAdded || []);
+  if (mutation.pagesAdded) {
+    mutation.pagesAdded.forEach((p: any) => scanComponents(p.components || []));
+  }
+
+  // 2. Identify Aliases in stateAdded
+  if (mutation.stateAdded) {
+    for (const key of Object.keys(mutation.stateAdded)) {
+      if (canonicalKeys.has(key)) continue;
+      // Heuristic: "status" -> "filters.status"
+      const matchSuffix = Array.from(canonicalKeys).find(ck => ck.endsWith(`.${key}`));
+      if (matchSuffix) {
+        aliasMap.set(key, matchSuffix);
+      }
+    }
+  }
+
+  // 3. Apply Aliasing
+  if (aliasMap.size > 0) {
+    console.log(`[SystemAutoWiring] Canonicalizing state aliases:`, Object.fromEntries(aliasMap));
+    
+    // Fix stateAdded
+    if (mutation.stateAdded) {
+      for (const [alias, target] of aliasMap) {
+        if (mutation.stateAdded[target] === undefined) {
+          mutation.stateAdded[target] = mutation.stateAdded[alias];
+        }
+        delete mutation.stateAdded[alias];
+      }
+    }
+
+    // Fix Actions
+    const fixAction = (a: any) => {
+       if (a.triggeredBy && a.triggeredBy.stateKey && aliasMap.has(a.triggeredBy.stateKey)) {
+           a.triggeredBy.stateKey = aliasMap.get(a.triggeredBy.stateKey);
+       }
+       if (a.type === "state_mutation") {
+           const updates = a.config?.updates ?? a.config?.set;
+           if (updates) {
+               for (const key of Object.keys(updates)) {
+                   if (aliasMap.has(key)) {
+                       updates[aliasMap.get(key)!] = updates[key];
+                       delete updates[key];
+                   }
+               }
+           }
+       }
+       if (Array.isArray(a.inputs)) {
+           a.inputs = a.inputs.map((i: any) => aliasMap.get(i) || i);
+       }
+       if (a.type === "integration_call" && a.config?.assign && aliasMap.has(a.config.assign)) {
+           a.config.assign = aliasMap.get(a.config.assign);
+       }
+    };
+    (mutation.actionsAdded || []).forEach(fixAction);
+
+    // Fix Components
+    const fixComponent = (c: any) => {
+        if (c.properties?.bindKey && aliasMap.has(c.properties.bindKey)) {
+            c.properties.bindKey = aliasMap.get(c.properties.bindKey);
+        }
+        if (Array.isArray(c.children)) c.children.forEach(fixComponent);
+    };
+    (mutation.componentsAdded || []).forEach(fixComponent);
+  }
 }

@@ -6,13 +6,92 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { resolvePath } from "@/lib/utils";
+
+function resolveDataSource(component: MiniAppComponentSpec, state: Record<string, any>): any[] {
+  const ds = component.dataSource;
+  // Legacy/Simple fallback
+  if (!ds) {
+    const direct = component.properties?.data ?? component.properties?.items;
+    return Array.isArray(direct) ? direct : [];
+  }
+  
+  // Static
+  if (ds.type === "static") return Array.isArray(ds.value) ? ds.value : [];
+  
+  // State (Direct)
+  if (ds.type === "state") {
+    const val = resolvePath(state, ds.value);
+    return Array.isArray(val) ? val : [];
+  }
+  
+  // Declarative Derived State
+  if (ds.type === "derived" || (ds as any).type === "expression") {
+    // Note: "expression" usually returns a single value, but if it's a list source...
+    // Let's focus on "derived" as per spec.
+    const sourceKey = (ds as any).source;
+    if (!sourceKey) return [];
+    
+    const raw = resolvePath(state, sourceKey);
+    let items = Array.isArray(raw) ? [...raw] : [];
+    
+    const filters = (ds as any).filters; // string[] or { field, value }[]
+    if (Array.isArray(filters)) {
+      for (const f of filters) {
+        if (typeof f === "string") {
+            // Heuristic: filter key "filters.status" -> field "status"
+            // or "statusFilter" -> field "status"
+            const filterValue = resolvePath(state, f);
+            if (filterValue === undefined || filterValue === null || filterValue === "" || filterValue === "__all__") continue;
+            
+            // Guess field name
+            const parts = f.split(".");
+            const last = parts[parts.length - 1];
+            // Remove "filters" prefix if present, remove "Filter" suffix
+            let fieldName = last === "filters" ? parts[parts.length - 1] : last; // fallback
+            if (fieldName.startsWith("filters.")) fieldName = fieldName.replace("filters.", "");
+            fieldName = fieldName.replace(/^filters?_?|_?filters?$/i, "");
+            
+            items = items.filter(item => {
+                if (!item || typeof item !== "object") return true;
+                // Try exact match on guessed field
+                const val = (item as any)[fieldName];
+                if (val !== undefined) return String(val) === String(filterValue);
+                
+                // Fallback: if fieldName is "query" or "search", try generic search?
+                if (fieldName === "query" || fieldName === "search") {
+                    return Object.values(item).some(v => String(v).toLowerCase().includes(String(filterValue).toLowerCase()));
+                }
+                
+                return true; 
+            });
+        }
+      }
+    }
+    
+    // Sort?
+    const sort = (ds as any).sort; // { field, direction }
+    if (sort && sort.field) {
+        const dir = sort.direction === "desc" ? -1 : 1;
+        items.sort((a, b) => {
+            const av = (a as any)[sort.field];
+            const bv = (b as any)[sort.field];
+            return (av > bv ? 1 : av < bv ? -1 : 0) * dir;
+        });
+    }
+    
+    return items;
+  }
+  
+  return [];
+}
 
 export type MiniAppComponentSpec = {
   id: string;
   type: string;
   label?: string;
   properties?: Record<string, any>;
-  dataSource?: { type: "static" | "state" | "expression"; value: any };
+  dataSource?: { type: "static" | "state" | "expression" | "derived"; value?: any; source?: string; filters?: string[] };
   events?: Array<{ type: string; actionId: string; args?: Record<string, any> }>;
   children?: MiniAppComponentSpec[];
   layout?: { w?: number; h?: number };
@@ -140,12 +219,7 @@ const DropdownComponent: MiniAppComponent = {
     const labelKey = typeof component.properties?.optionLabelKey === "string" ? component.properties.optionLabelKey : "label";
     const valueKey = typeof component.properties?.optionValueKey === "string" ? component.properties.optionValueKey : "value";
 
-    const rawOptions =
-      Array.isArray(component.properties?.options)
-        ? component.properties.options
-        : component.dataSource?.type === "state" && typeof component.dataSource.value === "string"
-          ? state[component.dataSource.value]
-          : [];
+    const rawOptions = resolveDataSource(component, state);
 
     const options = normalizeOptions(rawOptions, labelKey, valueKey);
     const hasOptions = options.length > 0;
@@ -184,8 +258,7 @@ const ListComponent: MiniAppComponent = {
   type: "list",
   render: ({ component, state }) => {
     const bindKey = getBindKey(component);
-    const raw = bindKey ? state[bindKey] : component.properties?.items;
-    const items = Array.isArray(raw) ? raw : [];
+    const items = resolveDataSource(component, state);
     const title = component.label ?? component.properties?.title ?? "List";
     const itemKey = typeof component.properties?.itemKey === "string" ? component.properties.itemKey : undefined;
     const itemLabelKey = typeof component.properties?.itemLabelKey === "string" ? component.properties.itemLabelKey : "name";
@@ -323,7 +396,7 @@ const HeatmapComponent: MiniAppComponent = {
   type: "heatmap",
   render: ({ component, state }) => {
     const bindKey = getBindKey(component) ?? "commitTimes";
-    const raw = component.dataSource?.type === "state" ? state[bindKey] : component.properties?.data;
+    const raw = resolveDataSource(component, state);
 
     // Feedback Loop Support
     const loadingKey = component.properties?.loadingKey;
@@ -441,8 +514,7 @@ const TableComponent: MiniAppComponent = {
   type: "table",
   render: ({ component, state }) => {
     const bindKey = getBindKey(component);
-    const raw = bindKey ? state[bindKey] : component.properties?.data;
-    const items = Array.isArray(raw) ? raw : [];
+    const items = resolveDataSource(component, state);
     const title = component.label ?? component.properties?.title;
     
     // Feedback Loop Support
