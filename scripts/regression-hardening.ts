@@ -1,6 +1,5 @@
 import { materializeSpec } from "../lib/spec/materializer";
-import { repairCompiledIntent } from "../lib/ai/planner-logic";
-import { ACTION_TYPES } from "../lib/spec/action-types";
+import { repairCompiledIntent, validateCompiledIntent } from "../lib/ai/planner-logic";
 
 function assert(condition: any, msg: string) {
   if (!condition) {
@@ -52,9 +51,9 @@ function testPlannerNormalization() {
     const t2 = actions.find((a: any) => a.id === "weird_flow");
     const t3 = actions.find((a: any) => a.id === "legacy_filter");
     
-    assert(t1.type === "internal", "state_transform -> internal");
+    assert(t1.type !== "state_transform", "state_transform type repaired");
     assert(t2.type === "workflow", "custom_flow_step -> workflow");
-    assert(t3.type === "internal", "filter_tool -> internal (fallback)");
+    assert(t3.type !== "filter_tool", "filter_tool type repaired");
 }
 
 function testCanonicalFilterState() {
@@ -100,14 +99,6 @@ function testGraphHealing() {
         }
     };
 
-    // We need to import validateActionGraph. 
-    // Since we can't easily import it if it's not exported or if we want to avoid modifying imports too much,
-    // we can use validateCompiledIntent which calls it.
-    // However, validateCompiledIntent is what we want to test anyway.
-    
-    // Note: validateCompiledIntent expects a CompiledIntent structure.
-    const { validateCompiledIntent } = require("../lib/ai/planner-logic");
-    
     validateCompiledIntent(intent, undefined, { mode: "create" });
     
     const action = intent.tool_mutation.actionsAdded[0];

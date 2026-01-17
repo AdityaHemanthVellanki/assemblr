@@ -3,6 +3,7 @@ import type { ToolSpec } from "../spec/toolSpec";
 import { normalizeActionId } from "../spec/action-id";
 import { ActionRegistry } from "../spec/action-registry";
 import { ACTION_TYPES, type ActionType } from "../spec/action-types";
+import { runIntentInSandbox } from "../execution/sandbox";
 
 const COMPONENT_EVENT_ALIASES: Record<string, string[]> = {
   list: ["onSelect", "onItemClick", "onRowClick"],
@@ -276,6 +277,249 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
           }
       }
   }
+
+  const reachableFinal = new Set<string>();
+  const queueFinal: string[] = [];
+
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          if (p.events) {
+              for (const e of p.events) {
+                  if (e.actionId) {
+                      const aid = normalizeActionId(e.actionId);
+                      if (nodes.has(aid)) {
+                          reachableFinal.add(aid);
+                          queueFinal.push(aid);
+                      }
+                  }
+              }
+          }
+      }
+  }
+  for (const c of components) {
+      if (c.events) {
+          for (const e of c.events) {
+              if (e.actionId) {
+                  const aid = normalizeActionId(e.actionId);
+                  if (nodes.has(aid)) {
+                      reachableFinal.add(aid);
+                      queueFinal.push(aid);
+                  }
+              }
+          }
+      }
+  }
+  for (const [id, node] of nodes) {
+      for (const t of node.triggers) {
+          if (t.type === "state_change" || t.type === "lifecycle") {
+              reachableFinal.add(id);
+              queueFinal.push(id);
+          }
+      }
+  }
+
+  while (queueFinal.length > 0) {
+      const curr = queueFinal.shift()!;
+      const node = nodes.get(curr);
+      if (!node) continue;
+
+      const actionDef = actions.find((a: any) => normalizeActionId(a.id) === curr);
+      if (actionDef) {
+          const mutatedKeys = getMutatedKeys(actionDef);
+          for (const key of mutatedKeys) {
+              for (const [otherId, otherNode] of nodes) {
+                  if (otherId === curr) continue;
+                  if (otherNode.triggers.some((t: any) => t.type === "state_change" && t.stateKey === key)) {
+                      if (!reachableFinal.has(otherId)) {
+                          reachableFinal.add(otherId);
+                          queueFinal.push(otherId);
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  const unreachable = Array.from(nodes.keys()).filter((id) => !reachableFinal.has(id));
+  if (unreachable.length > 0) {
+      const e: any = new Error(
+          `Assemblr could not prove reachability for actions: ${unreachable.join(", ")}. Attach them to a UI event or lifecycle trigger.`,
+      );
+      e.code = "InvalidIntentGraph";
+      e.meta = {
+          type: "InvalidIntentGraph",
+          reason: "UnreachableActions",
+          actions: unreachable,
+          status: "rejected",
+      };
+      throw e;
+  }
+}
+
+export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSpec) {
+  if (intent.execution_graph && Array.isArray(intent.execution_graph.nodes) && Array.isArray(intent.execution_graph.edges)) {
+    return;
+  }
+  if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
+    intent.execution_graph = intent.execution_graph || { nodes: [], edges: [] };
+    return;
+  }
+  const mutation = intent.tool_mutation as any;
+  if (!mutation) {
+    intent.execution_graph = { nodes: [], edges: [] };
+    return;
+  }
+  const actions = mutation.actionsAdded ?? [];
+  if (!actions.length) {
+    intent.execution_graph = { nodes: [], edges: [] };
+    return;
+  }
+  const nodes: any[] = [];
+  const edges: any[] = [];
+  const actionById = new Map<string, any>();
+  const mutatedByKey = new Map<string, Set<string>>();
+  const rootKindById = new Map<string, string>();
+  const markRoot = (rawId: string | undefined, kind: string) => {
+    if (!rawId) return;
+    const id = normalizeActionId(rawId);
+    const existing = rootKindById.get(id);
+    if (existing === "lifecycle") return;
+    if (existing === "ui" && kind === "state") return;
+    rootKindById.set(id, kind);
+  };
+  const addFromNode = (node: any, kind: string) => {
+    if (!node || !Array.isArray(node.events)) return;
+    for (const e of node.events) {
+      if (!e || !e.actionId) continue;
+      const eventType = typeof e.type === "string" ? e.type : "";
+      const k = eventType === "onPageLoad" ? "lifecycle" : kind;
+      markRoot(e.actionId, k);
+    }
+  };
+  const components = mutation.componentsAdded ?? [];
+  const pages = mutation.pagesAdded ?? [];
+  for (const a of actions) {
+    if (!a || !a.id) continue;
+    const id = normalizeActionId(a.id);
+    actionById.set(id, a);
+    const mutated = getMutatedKeys(a);
+    for (const key of mutated) {
+      if (!mutatedByKey.has(key)) mutatedByKey.set(key, new Set());
+      mutatedByKey.get(key)!.add(id);
+    }
+    const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : a.triggeredBy ? [a.triggeredBy] : [];
+    for (const t of triggers) {
+      if (!t || !t.type) continue;
+      if (t.type === "lifecycle") {
+        markRoot(id, "lifecycle");
+      } else if (t.type === "component_event") {
+        markRoot(id, "ui");
+      } else if (t.type === "state_change") {
+        markRoot(id, "state");
+      }
+    }
+  }
+  for (const c of components) addFromNode(c, "ui");
+  for (const p of pages) addFromNode(p, "lifecycle");
+  if (currentSpec && (currentSpec as any).kind === "mini_app") {
+    const mini: any = currentSpec as any;
+    for (const p of mini.pages ?? []) {
+      addFromNode(p, "lifecycle");
+      for (const c of p.components ?? []) {
+        const stack: any[] = [c];
+        while (stack.length) {
+          const n = stack.shift();
+          if (!n) continue;
+          addFromNode(n, "ui");
+          if (Array.isArray(n.children)) stack.push(...n.children);
+        }
+      }
+    }
+  }
+  const edgeSet = new Set<string>();
+  for (const a of actions) {
+    if (!a || !a.id) continue;
+    const id = normalizeActionId(a.id);
+    const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : a.triggeredBy ? [a.triggeredBy] : [];
+    for (const t of triggers) {
+      if (!t || t.type !== "state_change" || !t.stateKey) continue;
+      const producers = Array.from(mutatedByKey.get(t.stateKey) ?? new Set<string>()).sort();
+      for (const fromId of producers) {
+        if (fromId === id) continue;
+        const key = `${fromId}->${id}`;
+        if (edgeSet.has(key)) continue;
+        edgeSet.add(key);
+        edges.push({ from: fromId, to: id });
+      }
+    }
+  }
+  for (const [id, action] of actionById.entries()) {
+    let nodeType: "integration_call" | "transform" | "condition" | "emit_event";
+    if (action.type === ACTION_TYPES.INTEGRATION_CALL) {
+      nodeType = "integration_call";
+    } else if (action.type === ACTION_TYPES.INTERNAL || action.type === ACTION_TYPES.WORKFLOW) {
+      nodeType = "transform";
+    } else if (action.type === ACTION_TYPES.NAVIGATION) {
+      nodeType = "emit_event";
+    } else {
+      nodeType = "transform";
+    }
+    const entryKind = rootKindById.get(id);
+    const params = { ...(action.config ?? {}), entry_kind: entryKind };
+    const node: any = {
+      id,
+      type: nodeType,
+      capabilityId: action.config?.capabilityId,
+      params,
+    };
+    nodes.push(node);
+  }
+  if (!nodes.length && actions.length) {
+    const e: any = new Error("Assemblr could not construct an execution graph from actions.");
+    e.code = "InvalidIntentGraph";
+    e.meta = {
+      type: "InvalidIntentGraph",
+      reason: "SandboxExecutionFailed",
+      details: "No execution nodes were produced from actionsAdded.",
+      status: "rejected",
+    };
+    throw e;
+  }
+  const indegree = new Map<string, number>();
+  for (const n of nodes) indegree.set(n.id, 0);
+  for (const e of edges) indegree.set(e.to, (indegree.get(e.to) || 0) + 1);
+  const roots: string[] = [];
+  for (const [id, deg] of indegree.entries()) {
+    if (deg === 0) roots.push(id);
+  }
+  if (!roots.length && nodes.length) {
+    const initId = "__init__";
+    const initNode: any = {
+      id: initId,
+      type: "emit_event",
+      params: { entry_kind: "synthetic" },
+    };
+    nodes.unshift(initNode);
+    for (const n of nodes) {
+      if (n.id === initId) continue;
+      edges.push({ from: initId, to: n.id });
+    }
+  }
+  if (nodes.length > 1 && edges.length === 0) {
+    const e: any = new Error(
+      "Assemblr constructed an execution graph with multiple nodes but no edges. Actions are not connected by any triggers.",
+    );
+    e.code = "InvalidIntentGraph";
+    e.meta = {
+      type: "InvalidIntentGraph",
+      reason: "NoEdgesForMultipleNodes",
+      details: "At least one edge is required when more than one execution node exists.",
+      nodeIds: nodes.map((n) => n.id),
+      status: "rejected",
+    };
+    throw e;
+  }
+  intent.execution_graph = { nodes, edges };
 }
 
 export function simulateExecution(intent: CompiledIntent): { success: boolean; logs: string[] } {
@@ -387,6 +631,23 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
       console.warn("[DryRun] Simulation completed with warnings:", simulation.logs);
       // In Non-Fatal Mode, we log but proceed. 
       // Ideally we could attach these logs to the intent for the runtime to display in a debug panel.
+  }
+
+  const sandbox = runIntentInSandbox(intent);
+  if (!sandbox.ok) {
+      const err = sandbox.error;
+      const meta = {
+        type: err.type,
+        reason: err.reason,
+        nodeId: err.nodeId,
+        details: err.details,
+        autoFix: err.autoFix,
+        status: err.status,
+      };
+      const e = new Error(err.details || err.reason);
+      (e as any).code = "InvalidIntentGraph";
+      (e as any).meta = meta;
+      throw e;
   }
 
   const mutation = intent.tool_mutation;
@@ -786,7 +1047,6 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   for (const a of actions) {
       if (!allowedActionTypes.has(a.type)) {
           const original = a.type;
-          // Map known legacy/invalid types to internal
           if (["state_transform", "transform", "filter", "map", "update_state", "set_status"].some(t => original.includes(t))) {
               a.type = ACTION_TYPES.INTERNAL;
               a.config = { __semantic: original, ...(a.config ?? {}) };
@@ -795,10 +1055,21 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
               a.type = ACTION_TYPES.WORKFLOW;
               console.log(`[SystemHardening] Normalized invalid action type '${original}' to 'workflow' for action ${a.id}`);
           } else {
-              // Default fallback
-              a.type = ACTION_TYPES.INTERNAL;
-              a.config = { __semantic: "unknown_type_rescue", originalType: original, ...(a.config ?? {}) };
-              console.log(`[SystemHardening] Rescued unknown action type '${original}' -> 'internal' for action ${a.id}`);
+              const e: any = new Error(
+                  `Unsupported action type '${original}' for action '${a.id}'. Allowed types: ${Array.from(allowedActionTypes).join(
+                      ", ",
+                  )}.`,
+              );
+              e.code = "InvalidIntentGraph";
+              e.meta = {
+                  type: "InvalidIntentGraph",
+                  reason: "UnsupportedActionType",
+                  actionId: a.id,
+                  originalType: original,
+                  allowedTypes: Array.from(allowedActionTypes),
+                  status: "rejected",
+              };
+              throw e;
           }
       }
   }
@@ -855,9 +1126,12 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
                             .filter((k: string) => k !== sourceKey);
                          
                          c.dataSource = {
-                             type: "derived",
-                             source: sourceKey,
-                             filters: filterKeys
+                             type: "expression",
+                             value: {
+                                 kind: "derived",
+                                 source: sourceKey,
+                                 filters: filterKeys
+                             }
                          };
                          
                          converted = true;
@@ -1008,33 +1282,15 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   }
 
   for (const a of actions) {
-      if (a.type === "integration_call" && !a.effectOnly && a.config?.assign && a.config?.ephemeral_internal !== true) {
+      if (a.type === ACTION_TYPES.INTEGRATION_CALL && !a.effectOnly && a.config?.assign && a.config?.ephemeral_internal !== true) {
           const rawKey = a.config.assign;
           const statusKey = `${rawKey}Status`;
           const errorKey = `${rawKey}Error`;
           
-          const hasConsumer = actions.some((x: any) => 
-              x.id !== a.id && 
-              x.type === "internal" && 
-              (x.inputs?.includes(rawKey) || extractStateDependencies(x).includes(rawKey))
-          );
-
-          if (!hasConsumer) {
-               const normalizeId = `normalize_${a.id.replace(/^fetch_|^get_/, "")}`;
-               if (!actions.some((x: any) => x.id === normalizeId)) {
-                   const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
-                   actions.push({
-                       id: normalizeId,
-                       type: "internal",
-                       inputs: [rawKey],
-                       config: {
-                           code: `return ${rawKey}; // System auto-normalization`,
-                           assign: normalizedKey
-                       },
-                       triggeredBy: { type: "state_change", stateKey: rawKey }
-                   });
-                   console.log(`[SystemAutoWiring] Injected canonical normalizer: ${normalizeId}`);
-               }
+          const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
+          const state = mutation.stateAdded || (mutation.stateAdded = {});
+          if (!Object.prototype.hasOwnProperty.call(state, normalizedKey)) {
+              state[normalizedKey] = [];
           }
 
           let statusConsumed = false;
@@ -1047,16 +1303,9 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           }
 
           if (!statusConsumed) {
-              statusConsumed = actions.some((x: any) => 
-                  x.id !== a.id && 
-                  (x.inputs?.includes(statusKey) || x.inputs?.includes(errorKey) || 
-                   extractStateDependencies(x).includes(statusKey) || extractStateDependencies(x).includes(errorKey))
+              throw new Error(
+                  `Integration action ${a.id} appears to be effect-only. If intentional, mark it as effectOnly: true.`
               );
-          }
-          
-          if (!statusConsumed) {
-              // Status mirroring is now handled automatically by the runtime.
-              // We do NOT inject explicit actions for this anymore.
           }
       }
   }
@@ -1139,6 +1388,37 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
         }
       }
     }
+
+  for (const a of actions) {
+      if (a.type === ACTION_TYPES.INTERNAL) {
+          const op = a.config?.operation;
+          const semantic = a.config?.__semantic;
+          const hasDerivedStep =
+              Array.isArray(a.steps) &&
+              a.steps.some((s: any) => s && typeof s.type === "string" && s.type === "derive_state");
+          const isDerivedOp =
+              op === "filter" ||
+              op === "map" ||
+              op === "derive_state" ||
+              op === "derive" ||
+              (typeof semantic === "string" && /filter|derive/.test(semantic));
+          if (isDerivedOp || hasDerivedStep) {
+              const e: any = new Error(
+                  `Derived/filter action '${a.id}' cannot be represented as an internal action. Use declarative derived state instead.`,
+              );
+              e.code = "InvalidIntentGraph";
+              e.meta = {
+                  type: "InvalidIntentGraph",
+                  reason: "DerivedStateAsAction",
+                  actionId: a.id,
+                  operation: op,
+                  semantic,
+                  status: "rejected",
+              };
+              throw e;
+          }
+      }
+  }
   }
 
   autoAttachComponentEventTriggers(mutation, actions);

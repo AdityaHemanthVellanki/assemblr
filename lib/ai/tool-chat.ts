@@ -18,6 +18,8 @@ import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { materializeSpec } from "@/lib/spec/materializer";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
+import { validateCompiledIntent } from "./planner-logic";
+import { saveDraftRuntime, DraftRuntimeStatus } from "@/lib/observability/store";
 
 const versioningService = new VersioningService();
 
@@ -292,6 +294,7 @@ const mutation = intent.tool_mutation;
         let updatedSpec: ToolSpec;
         let updatedMiniApp: MiniAppSpec;
         try {
+            validateCompiledIntent(intent, input.currentSpec, { mode: "create" });
             const resolved = resolveMutationRefs(input.currentSpec, mutation);
             updatedSpec = materializeSpec(input.currentSpec, resolved);
             (updatedSpec as any).kind = "mini_app"; // Enforce Kind
@@ -365,20 +368,54 @@ const mutation = intent.tool_mutation;
             };
         }
 
-        // VERSIONING: Create Draft instead of just returning spec
-        const userId = "user_placeholder"; // TODO: Pass userId in input
-        
-        await versioningService.createDraft(input.toolId, updatedSpec, userId, intent);
-        
+        const trace = tracer.getTrace();
+
+        const status: DraftRuntimeStatus = {
+          planner_success: true,
+          ui_generated: true,
+          ui_rendered: false,
+          version_persisted: false,
+        };
+
+        saveDraftRuntime(trace.id, {
+          traceId: trace.id,
+          toolId: input.toolId,
+          spec: updatedSpec,
+          status,
+        });
+
+        let versionPersisted = false;
+        try {
+          const userId = "user_placeholder";
+          await versioningService.createDraft(input.toolId, updatedSpec, userId, intent);
+          versionPersisted = true;
+        } catch (e) {
+          console.error("Failed to persist draft version to tool_versions", e);
+        }
+
+        status.version_persisted = versionPersisted;
+        saveDraftRuntime(trace.id, {
+          traceId: trace.id,
+          toolId: input.toolId,
+          spec: updatedSpec,
+          status,
+        });
+
         tracer.finish("success");
         return {
-            explanation: tracer.generateExplanation(),
-            message: { type: "text", content: "I've created a new draft version of your app." },
-            spec: updatedSpec, // Return for immediate preview
-            metadata: { 
-                persist: false, // Don't overwrite project.spec directly in legacy way
-                trace: tracer.getTrace(),
-            }
+          explanation: tracer.generateExplanation(),
+          message: {
+            type: "text",
+            content: versionPersisted
+              ? "I've created a new draft version of your app."
+              : "I've generated a new draft UI. Draft could not be saved yet, but your UI is still visible.",
+          },
+          spec: updatedSpec,
+          metadata: {
+            persist: false,
+            trace,
+            runtime: status,
+          },
         };
     }
 

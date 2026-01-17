@@ -82,7 +82,7 @@ async function run() {
     failures++;
   }
 
-  console.log("\n--- Data Integration remains validated (auto-consumed via normalizer) ---");
+  console.log("\n--- Data Integration without consumer is rejected ---");
   const intentDataStrict: CompiledIntent = {
     intent_type: "modify",
     system_goal: "data test",
@@ -99,16 +99,11 @@ async function run() {
       componentsAdded: [{ id: "title", type: "text", properties: { text: "Commits" } }],
     },
   };
-  repairCompiledIntent(intentDataStrict);
-  try {
-    validateCompiledIntent(intentDataStrict);
-    const action = intentDataStrict.tool_mutation!.actionsAdded![0] as any;
-    assert(!action.effectOnly, "data action is not effectOnly");
-    console.log("✅ PASS: data-producing integration validated via internal consumer");
-  } catch (e: any) {
-    console.error(`❌ FAIL: data-producing integration should validate: ${e.message}`);
-    failures++;
-  }
+  assertThrows(
+    () => repairCompiledIntent(intentDataStrict),
+    "data-producing integration without consumers should be rejected",
+  );
+  console.log("✅ PASS: data-producing integration without consumers is rejected");
 
   console.log("\n--- Effect-Only: open external doc ---");
   const intentOpenDoc: CompiledIntent = {

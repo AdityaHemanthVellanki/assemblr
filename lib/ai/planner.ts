@@ -7,7 +7,7 @@ import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
 import { Metric } from "@/lib/metrics/store";
 import { CompiledIntent } from "@/lib/core/intent";
-import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent } from "@/lib/ai/planner-logic";
+import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent, buildExecutionGraph } from "@/lib/ai/planner-logic";
 import { PolicyEngine } from "@/lib/governance/engine";
 import { OrgPolicy } from "@/lib/core/governance";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
@@ -166,11 +166,68 @@ export async function compileIntent(
     if (!content) throw new Error("No response from AI");
 
     const parsed = JSON.parse(content);
-    repairCompiledIntent(parsed, currentSpec);
-    validateCompiledIntent(parsed, currentSpec, { mode });
-    return parsed;
+    try {
+      repairCompiledIntent(parsed, currentSpec);
+      buildExecutionGraph(parsed, currentSpec);
+      validateCompiledIntent(parsed, currentSpec, { mode });
+      return parsed;
+    } catch (err: any) {
+      if (!err || err.code !== "InvalidIntentGraph") {
+        console.error("Intent graph validation failed:", err);
+        throw err;
+      }
+      console.warn("[PlannerSafeMode] Graph construction failed, retrying in Safe Mode:", err.message);
+      const safeIntent = buildSafeModeIntent(parsed);
+      try {
+        repairCompiledIntent(safeIntent, currentSpec);
+        buildExecutionGraph(safeIntent, currentSpec);
+        validateCompiledIntent(safeIntent, currentSpec, { mode });
+        return safeIntent;
+      } catch (errSafe) {
+        console.error("Safe Mode compilation failed:", errSafe);
+        throw err;
+      }
+    }
   } catch (error) {
     console.error("Intent compilation failed:", error);
     throw error;
   }
+}
+
+function buildSafeModeIntent(source: any): CompiledIntent {
+  const clone: any = JSON.parse(JSON.stringify(source || {}));
+  const mutation = clone.tool_mutation || {};
+  const actions = Array.isArray(mutation.actionsAdded) ? mutation.actionsAdded : [];
+  const primary = actions.find((a: any) => a && a.type === "integration_call") || actions[0];
+  mutation.actionsAdded = primary ? [primary] : [];
+  if (!Array.isArray(mutation.pagesAdded) || mutation.pagesAdded.length === 0) {
+    mutation.pagesAdded = [{ id: "main", name: "Main", events: [] }];
+  } else {
+    mutation.pagesAdded = [mutation.pagesAdded[0]];
+  }
+  const firstPage = mutation.pagesAdded[0];
+  if (!Array.isArray(firstPage.events)) firstPage.events = [];
+  if (primary) {
+    const already = firstPage.events.some((e: any) => e && e.actionId === primary.id && e.type === "onPageLoad");
+    if (!already) {
+      firstPage.events.push({ type: "onPageLoad", actionId: primary.id });
+    }
+  }
+  if (Array.isArray(mutation.componentsAdded) && mutation.componentsAdded.length > 0) {
+    mutation.componentsAdded = [mutation.componentsAdded[0]];
+  } else {
+    mutation.componentsAdded = [];
+  }
+  clone.tool_mutation = mutation;
+  if (!clone.execution_policy) {
+    clone.execution_policy = { deterministic: true, parallelizable: false, retries: 0 };
+  } else {
+    clone.execution_policy.deterministic = true;
+    clone.execution_policy.parallelizable = false;
+    if (typeof clone.execution_policy.retries !== "number") clone.execution_policy.retries = 0;
+  }
+  clone.intent_type = clone.intent_type || "create";
+  clone.output_mode = clone.output_mode || "mini_app";
+  clone.execution_graph = { nodes: [], edges: [] };
+  return clone as CompiledIntent;
 }

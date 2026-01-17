@@ -73,8 +73,9 @@ INSTRUCTIONS:
      - Component: \`dataSource: { type: "state", value: "myKey" }\`
      - Status: Component properties \`loadingKey: "myKeyStatus"\`, \`errorKey: "myKeyError"\`.
    - **Action Triggers**:
-     - If an action updates state based on another state (e.g. filter), use \`triggeredBy: { type: "state_change", stateKey: "..." }\`.
-     - If an action runs on load, use \`triggeredBy: { type: "lifecycle", event: "onPageLoad" }\`.
+   - Do NOT implement filtering or derived data as actions. Use declarative derived state (\`__derivations\`) or component \`dataSource.type === "expression"\` instead.
+   - Use actions only for integrations, navigation, and non-derived state updates.
+   - If an action runs on load, use \`triggeredBy: { type: "lifecycle", event: "onPageLoad" }\`.
    - Before outputting, verify: Is every action wired? Is state used? Are components valid? Is feedback visible?
    - Before outputting, verify: Did you reuse existing patterns in TOOL_MEMORY? Did you avoid duplicates?
 
@@ -205,4 +206,3 @@ ${capabilities.map((c) => `"${c}"`).join(", ")}
 
 If the user's intent is ambiguous, add "ambiguity_questions" instead of guessing.
 `;
-

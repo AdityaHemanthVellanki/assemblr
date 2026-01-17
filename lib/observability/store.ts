@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { ToolSpec } from "@/lib/spec/toolSpec";
 
 export type ExecutionTrace = {
   id: string;
@@ -86,4 +87,28 @@ function mapRowToTrace(row: any): ExecutionTrace {
     completedAt: row.completed_at,
     metadata: row.metadata,
   };
+}
+
+export type DraftRuntimeStatus = {
+  planner_success: boolean;
+  ui_generated: boolean;
+  ui_rendered: boolean;
+  version_persisted: boolean;
+};
+
+export type DraftRuntime = {
+  traceId: string;
+  toolId: string;
+  spec: ToolSpec;
+  status: DraftRuntimeStatus;
+};
+
+const DRAFT_RUNTIME_STORE = new Map<string, DraftRuntime>();
+
+export function saveDraftRuntime(traceId: string, runtime: DraftRuntime) {
+  DRAFT_RUNTIME_STORE.set(traceId, runtime);
+}
+
+export function getDraftRuntime(traceId: string): DraftRuntime | undefined {
+  return DRAFT_RUNTIME_STORE.get(traceId);
 }
