@@ -623,12 +623,22 @@ function validateSpec(spec: any) {
         for (const comp of page.components) {
             if (comp.events) {
                 for (const event of comp.events) {
+                    if ((event as any).action && !(event as any).actionId) {
+                        throw new Error(
+                            `Component(${comp.id}) has inline action object on event '${event.type}'. All UI actions must be declared in actionsAdded and referenced by actionId.`,
+                        );
+                    }
                     validateEvent(`Component(${comp.id})`, event);
                 }
             }
         }
         if (page.events) {
             for (const event of page.events) {
+                if ((event as any).action && !(event as any).actionId) {
+                    throw new Error(
+                        `Page(${page.id}) has inline action object on event '${event.type}'. All UI actions must be declared in actionsAdded and referenced by actionId.`,
+                    );
+                }
                 validateEvent(`Page(${page.id})`, event);
             }
         }

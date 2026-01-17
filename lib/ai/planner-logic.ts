@@ -713,21 +713,58 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   const existingComponents = existingMini ? flattenMiniAppComponents(existingMini).map((x) => x.component) : [];
   const existingPages = existingMini ? (existingMini.pages ?? []) : [];
   
-  // 1. Validate Component Types
   const allowedTypes = new Set(["container", "text", "button", "input", "select", "dropdown", "list", "table", "card", "heatmap"]);
   const components = mutation.componentsAdded || [];
   for (const c of components) {
-    if (!allowedTypes.has(c.type.toLowerCase())) {
-      throw new Error(`Unsupported component type: ${c.type}. Allowed: ${Array.from(allowedTypes).join(", ")}`);
+    const rawType = typeof c.type === "string" ? c.type : "";
+    const normalizedType = rawType.toLowerCase();
+    if (!normalizedType || !allowedTypes.has(normalizedType)) {
+      console.warn("[PlannerValidation] Unsupported or missing component type in componentsAdded", {
+        id: c.id,
+        type: c.type,
+      });
+      c.type = "container";
+    } else {
+      c.type = normalizedType;
     }
 
-    // Fix: Children must be strings
-    if (Array.isArray(c.children)) {
-        for (const child of c.children) {
-            if (typeof child !== "string") {
-                 throw new Error(`Component ${c.id} has invalid children. Must be array of string IDs only.`);
-            }
+    if (c.children != null) {
+      const normalizedChildren: string[] = [];
+      const rawChildren: any = c.children as any;
+
+      const pushChild = (val: any) => {
+        if (typeof val === "string") {
+          normalizedChildren.push(val);
+          return;
         }
+        if (val && typeof val === "object") {
+          const childId = typeof (val as any).id === "string" ? (val as any).id : undefined;
+          if (childId) {
+            normalizedChildren.push(childId);
+          } else {
+            console.warn("[PlannerValidation] Dropped child without id on component", { parentId: c.id, child: val });
+          }
+          return;
+        }
+        console.warn("[PlannerValidation] Dropped non-object child on component", { parentId: c.id, child: val });
+      };
+
+      if (Array.isArray(rawChildren)) {
+        for (const child of rawChildren) pushChild(child);
+      } else if (rawChildren && typeof rawChildren === "object") {
+        const keys = Object.keys(rawChildren);
+        const indexKeys = keys.filter((k) => /^\d+$/.test(k));
+        if (indexKeys.length && indexKeys.length === keys.length) {
+          indexKeys.sort((a, b) => Number(a) - Number(b));
+          for (const k of indexKeys) pushChild((rawChildren as any)[k]);
+        } else {
+          pushChild(rawChildren);
+        }
+      } else {
+        console.warn("[PlannerValidation] Dropped invalid children payload on component", { parentId: c.id, children: rawChildren });
+      }
+
+      c.children = normalizedChildren.length ? normalizedChildren : undefined;
     }
 
     // Fix: itemTemplate.onClick
@@ -754,29 +791,48 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         }
     }
 
-    // Fix 4: Select Binding
-    if ((c.type.toLowerCase() === "select" || c.type.toLowerCase() === "dropdown")) {
-        // Check for value key if data source is state
-        if (c.dataSource?.type === "state") {
-            const valKey = c.properties?.optionValueKey;
-            if (!valKey) {
-                 console.warn(`[PlannerValidation] Warning: Select component ${c.id} binds to state but missing 'optionValueKey'. Ensure the data source contains 'value' or 'id' fields.`);
+    // Fix 4: Select Binding & Contract
+    if (c.type.toLowerCase() === "select" || c.type.toLowerCase() === "dropdown") {
+      const props = c.properties || {};
+
+      // 4a. Enforce optionValueKey presence (no silent fallback)
+      const optionValueKey = props.optionValueKey;
+      if (optionValueKey === undefined || optionValueKey === null || optionValueKey === "") {
+        throw new Error(
+          `Select component ${c.id} is missing 'optionValueKey'. It must default to 'value' explicitly at authoring time.`,
+        );
+      }
+
+      // 4b. Enforce exclusive binding model: either bindKey (controlled) OR stateUpdate, but never both or neither
+      const hasBindKey = typeof props.bindKey === "string" && props.bindKey.length > 0;
+      let hasStateUpdate = false;
+      if (Array.isArray(c.events)) {
+        for (const e of c.events) {
+          if (e && e.stateUpdate && typeof e.stateUpdate === "object" && Object.keys(e.stateUpdate).length > 0) {
+            hasStateUpdate = true;
+            break;
+          }
+        }
+      }
+      if ((hasBindKey && hasStateUpdate) || (!hasBindKey && !hasStateUpdate)) {
+        throw new Error(
+          `Select component ${c.id} must use exactly one of 'bindKey' (controlled) or 'stateUpdate', but not both or neither.`,
+        );
+      }
+
+      // 4c. Normalize unsafe empty option values
+      if (Array.isArray(props.options)) {
+        for (const opt of props.options) {
+          if (opt && typeof opt === "object") {
+            if (opt.value === "" || opt.value === null || opt.value === undefined) {
+              opt.value = SELECT_ALL_VALUE;
+              console.warn(
+                `[PlannerValidation] Normalized unsafe empty option value on Select ${c.id} to '${SELECT_ALL_VALUE}'.`,
+              );
             }
+          }
         }
-        if (Array.isArray(c.properties?.options)) {
-             for (const opt of c.properties.options) {
-                  if (opt && typeof opt === "object") {
-                       if (opt.value === "" || opt.value === null || opt.value === undefined) {
-                            opt.value = SELECT_ALL_VALUE;
-                            console.warn(`[PlannerValidation] Normalized unsafe empty option value on Select ${c.id} to '${SELECT_ALL_VALUE}'.`);
-                       }
-                  }
-             }
-        }
-        // Enforce explicit state binding
-        if (!c.properties?.bindKey && !c.events?.some((e: any) => e.type === "onChange")) {
-             throw new Error(`Select component ${c.id} is missing 'bindKey'. It must bind to a state key to be useful.`);
-        }
+      }
     }
   }
 
@@ -1057,8 +1113,15 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
     for (const c of components) {
       if (!c || typeof c !== "object") continue;
       if (c.type === "select" || c.type === "dropdown") {
-        if (c.properties && Array.isArray(c.properties.options)) {
-          c.properties.options = c.properties.options.map((opt: any) => {
+        const props = (c.properties = c.properties || {});
+
+        // Ensure optionValueKey has a concrete default early in the pipeline
+        if (props.optionValueKey === undefined || props.optionValueKey === null || props.optionValueKey === "") {
+          props.optionValueKey = "value";
+        }
+
+        if (Array.isArray(props.options)) {
+          props.options = props.options.map((opt: any) => {
             if (!opt || typeof opt !== "object") return opt;
             if (opt.value === "" || opt.value === null || opt.value === undefined) {
               return { ...opt, value: SELECT_ALL_VALUE };
@@ -1305,6 +1368,21 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
            c.dataSource.value = c.dataSource.value.replace(/^state\./, "");
       }
 
+      // Enforce declarative visibility: visible/disabled/style.expr must reference state keys or derived keys, not inline boolean expressions
+      const props = c.properties || {};
+      const visibleIf = props.visibleIf;
+      if (visibleIf !== undefined) {
+          const isObjectRef = visibleIf && typeof visibleIf === "object" && typeof visibleIf.stateKey === "string";
+          const isSimpleStateRef =
+              typeof visibleIf === "string" &&
+              /^{{state\.([a-zA-Z0-9_.$-]+)}}$/.test(visibleIf);
+          if (!isObjectRef && !isSimpleStateRef && typeof visibleIf !== "boolean") {
+              throw new Error(
+                  `Component ${c.id} has non-declarative 'visibleIf'. It must reference a state or derived key (e.g., { stateKey: 'hasSelectedActivityWithUrl', equals: true }).`,
+              );
+          }
+      }
+
       if (Array.isArray(c.events)) {
         c.events = c.events.map((e: any) => {
           if (!e || typeof e !== "object") return e;
@@ -1326,13 +1404,28 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           console.log(`[SystemAutoWiring] Removed illegal itemTemplate.onClick from ${c.id}`);
       }
 
-      if ((c.type === "select" || c.type === "dropdown") && !c.properties?.bindKey) {
-          const key = `filters.${c.id.replace(/^select_|^dropdown_/, "")}`;
-          c.properties = c.properties || {};
-          c.properties.bindKey = key;
-          mutation.stateAdded = mutation.stateAdded || {};
-          if (!mutation.stateAdded[key]) mutation.stateAdded[key] = SELECT_ALL_VALUE;
-          console.log(`[SystemAutoWiring] Auto-bound select ${c.id} to ${key}`);
+      if (c.type === "select" || c.type === "dropdown") {
+          const props = (c.properties = c.properties || {});
+
+          // Respect the Select contract: do not auto-bind a controlled key if the component
+          // is already using the stateUpdate pattern on its events.
+          let hasStateUpdate = false;
+          if (Array.isArray(c.events)) {
+              for (const e of c.events) {
+                  if (e && e.stateUpdate && typeof e.stateUpdate === "object" && Object.keys(e.stateUpdate).length > 0) {
+                      hasStateUpdate = true;
+                      break;
+                  }
+              }
+          }
+
+          if (!hasStateUpdate && !props.bindKey) {
+              const key = `filters.${c.id.replace(/^select_|^dropdown_/, "")}`;
+              props.bindKey = key;
+              mutation.stateAdded = mutation.stateAdded || {};
+              if (!mutation.stateAdded[key]) mutation.stateAdded[key] = SELECT_ALL_VALUE;
+              console.log(`[SystemAutoWiring] Auto-bound select ${c.id} to ${key}`);
+          }
       }
       
       if (c.properties?.disabledKey && c.properties.disabledKey.startsWith("!")) {

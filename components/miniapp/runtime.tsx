@@ -66,6 +66,83 @@ function walkComponents(components: MiniAppComponentSpec[], fn: (c: MiniAppCompo
   }
 }
 
+function normalizeComponentNode(node: any): MiniAppComponentSpec | null {
+  if (!node || typeof node !== "object") {
+    console.warn("MiniAppRuntime dropped invalid component node", { node });
+    return null;
+  }
+  const id = typeof node.id === "string" && node.id.length ? node.id : `anon_${Math.random().toString(36).slice(2)}`;
+  const type = typeof node.type === "string" && node.type.trim().length ? node.type : "";
+  if (!type) {
+    console.warn("MiniAppRuntime dropped component with missing type", { id });
+    return null;
+  }
+
+  const rawChildren = (node as any).children;
+  const childValues: any[] = [];
+  if (Array.isArray(rawChildren)) {
+    childValues.push(...rawChildren);
+  } else if (rawChildren && typeof rawChildren === "object") {
+    const keys = Object.keys(rawChildren);
+    const indexKeys = keys.filter((k) => /^\d+$/.test(k));
+    if (indexKeys.length && indexKeys.length === keys.length) {
+      indexKeys.sort((a, b) => Number(a) - Number(b));
+      for (const k of indexKeys) childValues.push((rawChildren as any)[k]);
+    } else {
+      childValues.push(rawChildren);
+    }
+  }
+
+  const normalizedChildren: MiniAppComponentSpec[] = [];
+  for (const child of childValues) {
+    const norm = normalizeComponentNode(child);
+    if (norm) normalizedChildren.push(norm);
+  }
+
+  const out: MiniAppComponentSpec = {
+    id,
+    type,
+    label: (node as any).label,
+    properties: (node as any).properties,
+    dataSource: (node as any).dataSource,
+    events: (node as any).events,
+    children: normalizedChildren,
+    layout: (node as any).layout,
+  };
+  return out;
+}
+
+function normalizeComponentList(root: any): MiniAppComponentSpec[] {
+  const values: any[] = [];
+  if (Array.isArray(root)) {
+    values.push(...root);
+  } else if (root && typeof root === "object") {
+    const keys = Object.keys(root);
+    const indexKeys = keys.filter((k) => /^\d+$/.test(k));
+    if (indexKeys.length && indexKeys.length === keys.length) {
+      indexKeys.sort((a, b) => Number(a) - Number(b));
+      for (const k of indexKeys) values.push((root as any)[k]);
+    } else {
+      values.push(root);
+    }
+  }
+
+  const out: MiniAppComponentSpec[] = [];
+  for (const v of values) {
+    const c = normalizeComponentNode(v);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+function normalizeMiniAppSpec(spec: MiniAppSpec): MiniAppSpec {
+  const pages = (spec.pages ?? []).map((p) => {
+    const components = normalizeComponentList(p.components ?? []);
+    return { ...p, components };
+  });
+  return { ...spec, pages };
+}
+
 export class MiniAppStore {
   private listeners = new Set<() => void>();
   private snapshot: RuntimeSnapshot;
@@ -420,7 +497,6 @@ export class MiniAppStore {
 }
 
 export function validateRegisteredComponents(spec: MiniAppSpec) {
-  // Enforce component canonicalization (lowercase types)
   for (const page of spec.pages ?? []) {
     walkComponents((page.components ?? []) as any, (c) => {
       if (c.type && typeof c.type === "string") {
@@ -434,18 +510,18 @@ export function validateRegisteredComponents(spec: MiniAppSpec) {
     walkComponents((page.components ?? []) as any, (c) => {
       try {
         getMiniAppComponent(String(c.type));
-      } catch {
+      } catch (err) {
         missing.push({ id: String(c.id), type: String(c.type) });
       }
     });
   }
   if (missing.length) {
-    const msg = JSON.stringify({
+    const msg = {
       error: "unsupported_component",
       missing,
       allowedTypes: Object.keys(MINI_APP_COMPONENTS),
-    });
-    throw new Error(msg);
+    };
+    console.warn("MiniAppRuntime unsupported components detected", msg);
   }
 }
 
@@ -491,17 +567,18 @@ function MiniAppRoot({
   integrations: MiniAppIntegrations;
   initialState?: Record<string, any>;
 }) {
+  const runtimeSpec = React.useMemo(() => normalizeMiniAppSpec(spec), [spec]);
   const store = React.useMemo(() => {
-    validateRegisteredComponents(spec);
-    return new MiniAppStore(spec, integrations, initialState ?? {});
-  }, [spec, integrations, initialState]);
+    validateRegisteredComponents(runtimeSpec);
+    return new MiniAppStore(runtimeSpec, integrations, initialState ?? {});
+  }, [runtimeSpec, integrations, initialState]);
 
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const [showHealth, setShowHealth] = React.useState(false);
 
   const activePage = React.useMemo(
-    () => (spec.pages ?? []).find((p) => p.id === snapshot.activePageId) ?? null,
-    [spec.pages, snapshot.activePageId],
+    () => (runtimeSpec.pages ?? []).find((p) => p.id === snapshot.activePageId) ?? null,
+    [runtimeSpec.pages, snapshot.activePageId],
   );
 
   // Global Lifecycle: onLoad & onUnload
@@ -511,20 +588,19 @@ function MiniAppRoot({
     lifecycleFired.current = true;
 
     // onLoad
-    const onLoad = spec.lifecycle?.onLoad ?? [];
+    const onLoad = runtimeSpec.lifecycle?.onLoad ?? [];
     for (const h of onLoad) store.dispatch(h.actionId, h.args ?? {}, { event: "onLoad" });
 
     return () => {
-      // onUnload
-      const onUnload = spec.lifecycle?.onUnload ?? [];
+      const onUnload = runtimeSpec.lifecycle?.onUnload ?? [];
       for (const h of onUnload) store.dispatch(h.actionId, h.args ?? {}, { event: "onUnload" });
     };
-  }, [spec.lifecycle, store]);
+  }, [runtimeSpec.lifecycle, store]);
 
   // Global Lifecycle: onInterval
   React.useEffect(() => {
     const intervals: NodeJS.Timeout[] = [];
-    const onInterval = spec.lifecycle?.onInterval ?? [];
+    const onInterval = runtimeSpec.lifecycle?.onInterval ?? [];
     
     for (const h of onInterval) {
       if (h.intervalMs && h.intervalMs > 0) {
@@ -538,7 +614,7 @@ function MiniAppRoot({
     return () => {
       intervals.forEach(clearInterval);
     };
-  }, [spec.lifecycle, store]);
+  }, [runtimeSpec.lifecycle, store]);
 
   const pageLoadFired = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
@@ -583,15 +659,35 @@ function MiniAppRoot({
   const renderComponent: (component: MiniAppComponentSpec) => React.ReactNode = React.useCallback(function renderComponent(
     component: MiniAppComponentSpec,
   ): React.ReactNode {
-      const def = getMiniAppComponent(component.type);
+      if (!component || !component.type) {
+        console.warn("MiniAppRuntime skipped component with missing type", { id: component && (component as any).id });
+        return null;
+      }
+      let def: any;
+      try {
+        def = getMiniAppComponent(component.type);
+      } catch (err) {
+        console.warn("MiniAppRuntime skipped unsupported component", {
+          id: component.id,
+          type: component.type,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      }
       const actions = { dispatch: (actionId: string, payload?: Record<string, any>) => void store.dispatch(actionId, payload ?? {}) };
       return def.render({
         state: snapshot.state,
         actions,
         setState: store.setState,
-        emit: (eventName, payload) => emitFromComponent(component.id, eventName, payload),
+        emit: (eventName: string, payload?: any) => emitFromComponent(component.id, eventName, payload),
         component,
-        renderChildren: (children) => <>{children.map((c) => <React.Fragment key={c.id}>{renderComponent(c)}</React.Fragment>)}</>,
+        renderChildren: (children: MiniAppComponentSpec[]) => (
+          <>
+            {children.map((c: MiniAppComponentSpec) => (
+              <React.Fragment key={c.id}>{renderComponent(c)}</React.Fragment>
+            ))}
+          </>
+        ),
       });
     }, [emitFromComponent, snapshot.state, store]);
 
@@ -617,14 +713,14 @@ function MiniAppRoot({
 
       <div className="border-b px-6 py-4 flex items-center justify-between bg-card">
         <div>
-          <h1 className="text-xl font-semibold">{spec.title}</h1>
-          {spec.description ? <p className="text-sm text-muted-foreground">{spec.description}</p> : null}
+          <h1 className="text-xl font-semibold">{runtimeSpec.title}</h1>
+          {runtimeSpec.description ? <p className="text-sm text-muted-foreground">{runtimeSpec.description}</p> : null}
         </div>
 
         <div className="flex items-center gap-4">
-          {spec.pages?.length > 1 ? (
+          {runtimeSpec.pages?.length > 1 ? (
             <div className="flex gap-2">
-              {spec.pages.map((p) => (
+              {runtimeSpec.pages.map((p) => (
                 <button
                   key={p.id}
                   onClick={() => store.setActivePageId(p.id)}

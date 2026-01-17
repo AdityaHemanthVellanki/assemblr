@@ -117,7 +117,7 @@ async function runTests() {
 
   const materializer = await import("../lib/spec/materializer");
   try {
-    const next = materializer.materializeSpec(specWithPage, badPageUpdate);
+    const next = materializer.materializeSpec(specWithPage, badPageUpdate) as any;
     assert(next.pages.length === 1, "Spec with bad page event still materializes");
     console.log("✅ PASS: Page update with missing action does not crash materializer");
   } catch (e: any) {
@@ -441,6 +441,48 @@ async function runTests() {
     failures++;
   }
 
+  // Test 6c: Select contract enforcement (bindKey XOR stateUpdate, optionValueKey default)
+  const intentSelectContract: CompiledIntent = {
+    intent_type: "create",
+    tool_mutation: {
+      componentsAdded: [
+        {
+          id: "filter_select_ok",
+          type: "select",
+          properties: {
+            bindKey: "filters.status",
+            optionValueKey: "value",
+            options: [
+              { label: "All", value: "__all__" },
+              { label: "Open", value: "open" },
+            ],
+          },
+          events: [
+            {
+              type: "onChange",
+              actionId: "noop",
+            },
+          ],
+        },
+      ],
+      actionsAdded: [
+        {
+          id: "noop",
+          type: "internal",
+          config: { __semantic: "state_update" },
+        },
+      ],
+    } as any,
+  } as any;
+
+  try {
+    validateCompiledIntent(intentSelectContract);
+    console.log("✅ PASS: Select component with bindKey and explicit optionValueKey passes validation");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Valid select component failed validation: ${e.message}`);
+    failures++;
+  }
+
   const intentBadClick: CompiledIntent = {
       intent_type: "modify",
       tool_mutation: {
@@ -705,6 +747,50 @@ async function runTests() {
       console.error(`❌ FAIL: Inline event hoisting spec materialization failed: ${e.message}`);
       failures++;
     }
+  }
+
+  console.log("\n--- Test 7b: Inline action objects are rejected by spec validator ---");
+  try {
+    const baseSpecInline: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Inline Action Rejection Test",
+      state: {},
+      pages: [
+        {
+          id: "page1",
+          name: "Page 1",
+          layoutMode: "grid",
+          components: [
+            {
+              id: "button1",
+              type: "button",
+              properties: {},
+              events: [
+                {
+                  type: "onClick",
+                  action: {
+                    type: "navigation",
+                    config: { pageId: "page2" },
+                  },
+                } as any,
+              ],
+            } as any,
+          ],
+        } as any,
+      ],
+      actions: [],
+    };
+
+    try {
+      materializeSpec(baseSpecInline as any, { toolPropsUpdated: {} } as any);
+      console.error("❌ FAIL: Spec with inline action object passed validation");
+      failures++;
+    } catch (e: any) {
+      console.log("✅ PASS: Inline action objects in UI are rejected by spec validator");
+    }
+  } catch (e: any) {
+    console.error("❌ FAIL: Inline action rejection test threw unexpectedly:", e.message);
+    failures++;
   }
 
   console.log("\n--- Test 8: UI renders with zero actions ---");

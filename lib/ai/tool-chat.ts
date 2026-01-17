@@ -384,31 +384,36 @@ const mutation = intent.tool_mutation;
           status,
         });
 
-        let versionPersisted = false;
         try {
           const userId = "user_placeholder";
-          await versioningService.createDraft(input.toolId, updatedSpec, userId, intent);
-          versionPersisted = true;
+          versioningService
+            .createDraft(input.toolId, updatedSpec, userId, intent)
+            .then(() => {
+              const updatedStatus: DraftRuntimeStatus = {
+                ...status,
+                version_persisted: true,
+              };
+              saveDraftRuntime(trace.id, {
+                traceId: trace.id,
+                toolId: input.toolId,
+                spec: updatedSpec,
+                status: updatedStatus,
+              });
+            })
+            .catch((e) => {
+              console.warn("Failed to persist draft version to tool_versions", e);
+            });
         } catch (e) {
-          console.error("Failed to persist draft version to tool_versions", e);
+          console.warn("Versioning service invocation failed", e);
         }
-
-        status.version_persisted = versionPersisted;
-        saveDraftRuntime(trace.id, {
-          traceId: trace.id,
-          toolId: input.toolId,
-          spec: updatedSpec,
-          status,
-        });
 
         tracer.finish("success");
         return {
           explanation: tracer.generateExplanation(),
           message: {
             type: "text",
-            content: versionPersisted
-              ? "I've created a new draft version of your app."
-              : "I've generated a new draft UI. Draft could not be saved yet, but your UI is still visible.",
+            content:
+              "I've generated a new draft UI. I'll attempt to persist it in the background, but your UI is available regardless of persistence.",
           },
           spec: updatedSpec,
           metadata: {
