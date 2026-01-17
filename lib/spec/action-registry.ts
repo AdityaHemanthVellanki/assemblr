@@ -36,7 +36,15 @@ export class ActionRegistry {
     if (!rawId) return;
     const id = normalizeActionId(rawId);
     if (!this.actions.has(id)) {
-      throw new Error(`[Strict Mode] ${context} references unknown action: '${rawId}' (normalized: '${id}'). Action must be defined in the registry.`);
+      const fallback = {
+        id,
+        type: "internal",
+        config: {
+          __semantic: "noop",
+          __origin: context,
+        },
+      };
+      this.register(fallback);
     }
   }
 

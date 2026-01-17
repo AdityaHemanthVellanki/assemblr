@@ -44,16 +44,24 @@ function testPlannerNormalization() {
         }
     };
     
-    repairCompiledIntent(intent);
+    let error: any = null;
+    try {
+        repairCompiledIntent(intent);
+    } catch (e: any) {
+        error = e;
+        console.log(`Caught expected error for legacy_filter: ${e.message}`);
+    }
     
     const actions = intent.tool_mutation.actionsAdded;
     const t1 = actions.find((a: any) => a.id === "bad_transform");
     const t2 = actions.find((a: any) => a.id === "weird_flow");
-    const t3 = actions.find((a: any) => a.id === "legacy_filter");
     
     assert(t1.type !== "state_transform", "state_transform type repaired");
     assert(t2.type === "workflow", "custom_flow_step -> workflow");
-    assert(t3.type !== "filter_tool", "filter_tool type repaired");
+    assert(
+      error && error.meta && error.meta.reason === "DerivedStateAsAction",
+      "legacy_filter is rejected as derived state action",
+    );
 }
 
 function testCanonicalFilterState() {

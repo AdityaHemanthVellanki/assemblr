@@ -1,6 +1,7 @@
 
 import type { ToolSpec } from "./toolSpec";
 import { normalizeActionId } from "./action-id";
+import { ActionRegistry } from "./action-registry";
 
 export interface ToolMutation {
     toolPropsUpdated?: { title?: string; description?: string };
@@ -601,51 +602,43 @@ function resolveTemplates(value: any): any {
 }
 
 function validateSpec(spec: any) {
-    // 1. Check for duplicate Component IDs across all pages
     const componentIds = new Set<string>();
     for (const page of spec.pages) {
         for (const comp of page.components) {
             if (componentIds.has(comp.id)) {
-                // Warn or throw? User said "Fail early if Duplicate IDs exist"
-                // However, crashing the generation might be harsh. 
-                // We'll throw to be strict as requested ("Spec correctness problem").
                 throw new Error(`Duplicate Component ID found: ${comp.id}`);
             }
             componentIds.add(comp.id);
         }
     }
 
-    // 2. Check Action references (if actions reference components, which they don't directly in schema, 
-    // but events reference actions)
-    // Validate Events reference existing Actions
-    const actionIds = new Set(spec.actions.map((a: any) => normalizeActionId(a.id)));
+    const registry = new ActionRegistry(spec.actions ?? []);
+
+    const validateEvent = (context: string, event: { actionId?: string }) => {
+        if (!event.actionId) return;
+        registry.ensureExists(event.actionId, context);
+    };
+
     for (const page of spec.pages) {
         for (const comp of page.components) {
             if (comp.events) {
                 for (const event of comp.events) {
-                    if (!actionIds.has(normalizeActionId(event.actionId))) {
-                        throw new Error(`Component ${comp.id} references missing action: ${event.actionId}`);
-                    }
+                    validateEvent(`Component(${comp.id})`, event);
                 }
             }
         }
         if (page.events) {
             for (const event of page.events) {
-                if (!actionIds.has(normalizeActionId(event.actionId))) {
-                    throw new Error(`Page ${page.id} references missing action: ${event.actionId}`);
-                }
+                validateEvent(`Page(${page.id})`, event);
             }
         }
     }
 
-    // 3. Check Lifecycle references
     if (spec.lifecycle) {
-        const checkLifecycle = (events: any[], context: string) => {
-            if (!events) return;
+        const checkLifecycle = (events: any[] | undefined, context: string) => {
+            if (!Array.isArray(events)) return;
             for (const event of events) {
-                if (!actionIds.has(normalizeActionId(event.actionId))) {
-                    throw new Error(`${context} references missing action: ${event.actionId}`);
-                }
+                validateEvent(context, event);
             }
         };
         checkLifecycle(spec.lifecycle.onLoad, "Lifecycle.onLoad");

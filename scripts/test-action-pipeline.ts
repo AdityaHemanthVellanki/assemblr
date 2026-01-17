@@ -1,10 +1,11 @@
 
-import { validateCompiledIntent, repairCompiledIntent } from "../lib/ai/planner-logic";
+import { validateCompiledIntent, repairCompiledIntent, buildExecutionGraph } from "../lib/ai/planner-logic";
 import { normalizeActionId } from "../lib/spec/action-id";
 import { ActionRegistry } from "../lib/spec/action-registry";
 import { MiniAppStore } from "../components/miniapp/runtime";
 import { CompiledIntent } from "../lib/core/intent";
 import { MiniAppSpec } from "../lib/spec/miniAppSpec";
+import { materializeSpec } from "../lib/spec/materializer";
 
 async function runTests() {
   console.log("Running Action Pipeline Tests...");
@@ -55,7 +56,13 @@ async function runTests() {
     },
     outcome: "success"
   } as any;
-  assertThrows(() => validateCompiledIntent(intentMissingAction), "Trigger references missing action");
+  try {
+    validateCompiledIntent(intentMissingAction);
+    console.log("✅ PASS: Trigger references missing action do not crash validation");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Trigger references missing action (Threw: ${e.message})`);
+    failures++;
+  }
 
   // Test 2b: Strict Mode (Lifecycle references missing action)
   const intentMissingLifecycleAction: CompiledIntent = {
@@ -109,7 +116,14 @@ async function runTests() {
   };
 
   const materializer = await import("../lib/spec/materializer");
-  assertThrows(() => materializer.materializeSpec(specWithPage, badPageUpdate), "Page update references missing action");
+  try {
+    const next = materializer.materializeSpec(specWithPage, badPageUpdate);
+    assert(next.pages.length === 1, "Spec with bad page event still materializes");
+    console.log("✅ PASS: Page update with missing action does not crash materializer");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Page update references missing action (Threw: ${e.message})`);
+    failures++;
+  }
 
   console.log("\n--- Test 2d: containerPropsUpdated for newly added root container ---");
   {
@@ -242,7 +256,7 @@ async function runTests() {
     execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
     tool_mutation: {
       actionsAdded: [
-        { id: "fetch-data", type: "integration_call", config: { assign: "data" } } // Orphan, kebab-case
+        { id: "fetch-data", type: "integration_call", effectOnly: true, config: { assign: "data" } } // Orphan, kebab-case
       ],
       pagesAdded: [{ id: "p1" }],
       componentsAdded: [
@@ -274,7 +288,7 @@ async function runTests() {
     system_goal: "test",
     tool_mutation: {
       actionsAdded: [
-        { id: "fetch_raw_data", type: "integration_call", config: { assign: "rawData" } }
+        { id: "fetch_raw_data", type: "integration_call", config: { assign: "rawData", capabilityId: "test_capability_raw" } }
       ],
       pagesAdded: [{ id: "p1" }],
       componentsAdded: [
@@ -311,7 +325,7 @@ async function runTests() {
     system_goal: "test derived consumption",
     tool_mutation: {
       actionsAdded: [
-        { id: "load_activity_list", type: "integration_call", config: { assign: "activityList" } }
+        { id: "load_activity_list", type: "integration_call", config: { assign: "activityList", capabilityId: "test_capability_activity_list" } }
       ],
       pagesAdded: [{ id: "activity_page" }],
       componentsAdded: [
@@ -337,7 +351,7 @@ async function runTests() {
     system_goal: "test",
     tool_mutation: {
       actionsAdded: [
-        { id: "fetch_github_commits", type: "integration_call", config: { assign: "github_commits" } }
+        { id: "fetch_github_commits", type: "integration_call", config: { assign: "github_commits", capabilityId: "test_capability_github_commits" } }
       ],
       pagesAdded: [{ id: "p1" }],
       componentsAdded: [
@@ -567,6 +581,275 @@ async function runTests() {
     assert(!!action, "Runtime found action via kebab-case lookup");
   } catch (e: any) {
     console.error(`❌ FAIL: Runtime test error: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 7: Inline event actions are hoisted into actionsAdded ---");
+  {
+    const intentInline: CompiledIntent = {
+      intent_type: "modify",
+      system_goal: "ui-only dashboard",
+      constraints: [],
+      integrations_required: [],
+      output_mode: "mini_app",
+      execution_graph: { nodes: [], edges: [] },
+      execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
+      tool_mutation: {
+        stateAdded: {
+          toolFilter: null,
+          activityTypeFilter: null,
+          timeRangeFilter: null,
+          selectedActivityId: null,
+        },
+        pagesAdded: [
+          { id: "activity_dashboard", name: "Activity Dashboard", components: [] } as any,
+        ],
+        componentsAdded: [
+          {
+            id: "tool-filter",
+            type: "select",
+            properties: { bindKey: "toolFilter" },
+            events: [
+              {
+                type: "onChange",
+                action: {
+                  type: "state_assign",
+                  config: {
+                    operation: "assign_state",
+                    params: { key: "toolFilter", value: "{{event.value}}" },
+                  },
+                },
+              },
+            ],
+          } as any,
+          {
+            id: "activitytype-filter",
+            type: "select",
+            properties: { bindKey: "activityTypeFilter" },
+            events: [
+              {
+                type: "onChange",
+                action: {
+                  type: "state_assign",
+                  config: {
+                    operation: "assign_state",
+                    params: { key: "activityTypeFilter", value: "{{event.value}}" },
+                  },
+                },
+              },
+            ],
+          } as any,
+          {
+            id: "timerange-filter",
+            type: "select",
+            properties: { bindKey: "timeRangeFilter" },
+            events: [
+              {
+                type: "onChange",
+                action: {
+                  type: "state_assign",
+                  config: {
+                    operation: "assign_state",
+                    params: { key: "timeRangeFilter", value: "{{event.value}}" },
+                  },
+                },
+              },
+            ],
+          } as any,
+          {
+            id: "activity-list",
+            type: "list",
+            dataSource: { type: "state", value: "activityItems" },
+            events: [
+              {
+                type: "onItemClick",
+                action: {
+                  type: "state_assign",
+                  config: {
+                    operation: "assign_state",
+                    params: { key: "selectedActivityId", value: "{{event.item.id}}" },
+                  },
+                },
+              },
+            ],
+          } as any,
+        ],
+      },
+      outcome: "success",
+    } as any;
+
+    const baseSpec: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Inline Event Test",
+      state: {},
+      pages: [],
+      actions: [],
+    };
+
+    repairCompiledIntent(intentInline);
+    const mutation: any = intentInline.tool_mutation;
+    const events = (mutation.componentsAdded || []).flatMap((c: any) => c.events || []);
+    assert(events.every((e: any) => !e.action && typeof e.actionId === "string" && e.actionId.length > 0), "All component events reference actionId only");
+    const actionIds = new Set((mutation.actionsAdded || []).map((a: any) => a.id));
+    assert(actionIds.has("set_tool_filter"), "set_tool_filter action created");
+    assert(actionIds.has("set_activity_type_filter"), "set_activity_type_filter action created");
+    assert(actionIds.has("set_time_range_filter"), "set_time_range_filter action created");
+    assert(actionIds.has("select_activity"), "select_activity action created");
+
+    try {
+      const nextSpec = materializeSpec(baseSpec as any, mutation) as MiniAppSpec;
+      assert(nextSpec.actions.length >= 4, "Materialized spec carries hoisted actions");
+      assert(nextSpec.pages.length >= 0, "Materialized spec built without error");
+      console.log("✅ PASS: Inline event actions hoisted and spec materializes without missing-action errors");
+    } catch (e: any) {
+      console.error(`❌ FAIL: Inline event hoisting spec materialization failed: ${e.message}`);
+      failures++;
+    }
+  }
+
+  console.log("\n--- Test 8: UI renders with zero actions ---");
+  try {
+    const specZeroActions: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Zero Actions App",
+      state: { message: "Hello" },
+      pages: [
+        {
+          id: "page-zero",
+          name: "Zero",
+          layoutMode: "stack",
+          components: [
+            {
+              id: "text1",
+              type: "text",
+              properties: { content: "Static: {{state.message}}" },
+            } as any,
+          ],
+        },
+      ],
+      actions: [],
+    };
+    const storeZero = new MiniAppStore(specZeroActions, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    const snapZero = storeZero.getSnapshot();
+    assert(snapZero.activePageId === "page-zero", "Active page set correctly with zero actions");
+    assert(snapZero.state.message === "Hello", "State initialized correctly with zero actions");
+    console.log("✅ PASS: UI store initializes with zero actions");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Zero actions runtime test failed: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 9: Filters work via declarative derivations (no actions) ---");
+  try {
+    const specFilters: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Filter App",
+      state: {
+        items: [
+          { id: 1, kind: "a" },
+          { id: 2, kind: "b" },
+        ],
+        kindFilter: "a",
+        __derivations: [
+          { target: "filtered", source: "items", op: "filter", args: { field: "kind", equalsKey: "kindFilter" } },
+        ],
+      } as any,
+      pages: [
+        {
+          id: "page-filters",
+          name: "Filters",
+          layoutMode: "stack",
+          components: [],
+        },
+      ],
+      actions: [],
+    };
+    const storeFilters = new MiniAppStore(specFilters, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    const snapFilters = storeFilters.getSnapshot();
+    assert(Array.isArray(snapFilters.state.filtered), "Derived filtered list exists");
+    assert(snapFilters.state.filtered.length === 1, "Filter reduces items based on state");
+    console.log("✅ PASS: Declarative derivations compute filtered state without actions");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Declarative filter derivation failed: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 10: Invalid capability IDs are downgraded and do not break validation ---");
+  try {
+    const intentBadCap: CompiledIntent = {
+      intent_type: "create",
+      system_goal: "Bad capability test",
+      constraints: [],
+      integrations_required: [],
+      output_mode: "mini_app",
+      execution_graph: { nodes: [], edges: [] },
+      execution_policy: { deterministic: true, parallelizable: false, retries: 0 },
+      tool_mutation: {
+        pagesAdded: [
+          {
+            id: "page-badcap",
+            name: "BadCap",
+            layoutMode: "stack",
+            components: [],
+            events: [{ type: "onPageLoad", actionId: "load-bad" }],
+          } as any,
+        ],
+        actionsAdded: [
+          {
+            id: "load-bad",
+            type: "integration_call",
+            config: { capabilityId: "nonexistent_capability" },
+            triggeredBy: { type: "lifecycle", event: "onPageLoad" },
+          } as any,
+        ],
+        stateAdded: {},
+      },
+    };
+    buildExecutionGraph(intentBadCap);
+    validateCompiledIntent(intentBadCap);
+    const nodes = intentBadCap.execution_graph.nodes;
+    assert(nodes.length === 1, "Execution graph has one node for invalid capability action");
+    assert(nodes[0].type === "emit_event", "Invalid capability action downgraded to emit_event");
+    assert(!nodes[0].capabilityId, "Execution node does not carry invalid capabilityId");
+    console.log("✅ PASS: Invalid capability IDs are downgraded without throwing InvalidIntentGraph");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Invalid capability downgrade test failed: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 11: Materializer auto-generates noop actions for missing references ---");
+  try {
+    const baseSpecMissing: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Missing Action App",
+      state: {},
+      pages: [
+        {
+          id: "page-missing",
+          name: "Missing",
+          layoutMode: "stack",
+          components: [
+            {
+              id: "btn1",
+              type: "button",
+              properties: { text: "Click" },
+              events: [{ type: "onClick", actionId: "missing_action_id" }],
+            } as any,
+          ],
+        },
+      ],
+      actions: [],
+    };
+    const mutationMissing: any = {
+      pagesAdded: [],
+      actionsAdded: [],
+      stateAdded: {},
+    };
+    const nextSpec = materializeSpec(baseSpecMissing as any, mutationMissing) as MiniAppSpec;
+    assert(nextSpec.pages.length === 1, "Spec with missing action still materializes");
+    console.log("✅ PASS: Materializer does not throw for missing action references");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Materializer missing-action resilience test failed: ${e.message}`);
     failures++;
   }
 

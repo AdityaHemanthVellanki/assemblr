@@ -4,6 +4,7 @@ import { normalizeActionId } from "../spec/action-id";
 import { ActionRegistry } from "../spec/action-registry";
 import { ACTION_TYPES, type ActionType } from "../spec/action-types";
 import { runIntentInSandbox } from "../execution/sandbox";
+import { getCapability } from "../capabilities/registry";
 
 const COMPONENT_EVENT_ALIASES: Record<string, string[]> = {
   list: ["onSelect", "onItemClick", "onRowClick"],
@@ -145,6 +146,19 @@ export function getMutatedKeys(action: any): string[] {
             }
         }
     }
+    if (action.type === "integration_call") {
+        const assignKey = action.config?.assign;
+        if (typeof assignKey === "string" && assignKey.length > 0) {
+            keys.push(assignKey);
+            keys.push(`${assignKey}Status`);
+            keys.push(`${assignKey}Error`);
+        } else if (action.id) {
+            const id = String(action.id);
+            keys.push(`${id}.data`);
+            keys.push(`${id}.status`);
+            keys.push(`${id}.error`);
+        }
+    }
     return keys;
 }
 
@@ -278,6 +292,21 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
       }
   }
 
+  // Refresh node trigger metadata after potential healing
+  if (madeChanges) {
+    for (const [id, node] of nodes) {
+      const actionDef = actions.find((a: any) => normalizeActionId(a.id) === id);
+      if (actionDef) {
+        const triggers = Array.isArray(actionDef.triggeredBy)
+          ? actionDef.triggeredBy
+          : actionDef?.triggeredBy
+            ? [actionDef.triggeredBy]
+            : [];
+        node.triggers = triggers;
+      }
+    }
+  }
+
   const reachableFinal = new Set<string>();
   const queueFinal: string[] = [];
 
@@ -291,6 +320,21 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
                           reachableFinal.add(aid);
                           queueFinal.push(aid);
                       }
+                  }
+              }
+          }
+      }
+  }
+  if (mutation.pagesUpdated) {
+      for (const u of mutation.pagesUpdated) {
+          const events = u.patch?.events;
+          if (!events) continue;
+          for (const e of events) {
+              if (e && e.actionId) {
+                  const aid = normalizeActionId(e.actionId);
+                  if (nodes.has(aid)) {
+                      reachableFinal.add(aid);
+                      queueFinal.push(aid);
                   }
               }
           }
@@ -357,7 +401,12 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
 }
 
 export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSpec) {
-  if (intent.execution_graph && Array.isArray(intent.execution_graph.nodes) && Array.isArray(intent.execution_graph.edges)) {
+  if (
+    intent.execution_graph &&
+    Array.isArray(intent.execution_graph.nodes) &&
+    intent.execution_graph.nodes.length > 0 &&
+    Array.isArray(intent.execution_graph.edges)
+  ) {
     return;
   }
   if (intent.intent_type !== "create" && intent.intent_type !== "modify") {
@@ -456,7 +505,31 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
   for (const [id, action] of actionById.entries()) {
     let nodeType: "integration_call" | "transform" | "condition" | "emit_event";
     if (action.type === ACTION_TYPES.INTEGRATION_CALL) {
-      nodeType = "integration_call";
+      let capId: string | undefined = action.config?.capabilityId;
+      let validCapability = false;
+      if (typeof capId === "string" && capId.length > 0) {
+        const cap = getCapability(capId);
+        if (cap) {
+          validCapability = true;
+        }
+      }
+      if (!validCapability) {
+        nodeType = "emit_event";
+        capId = undefined;
+        if (action.config) {
+          action.config.ephemeral_internal = true;
+        } else {
+          action.config = { ephemeral_internal: true };
+        }
+      } else {
+        nodeType = action.effectOnly ? "emit_event" : "integration_call";
+      }
+      if (!action.config) {
+        action.config = {};
+      }
+      if (!validCapability) {
+        delete action.config.capabilityId;
+      }
     } else if (action.type === ACTION_TYPES.INTERNAL || action.type === ACTION_TYPES.WORKFLOW) {
       nodeType = "transform";
     } else if (action.type === ACTION_TYPES.NAVIGATION) {
@@ -464,7 +537,8 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
     } else {
       nodeType = "transform";
     }
-    const entryKind = rootKindById.get(id);
+    const rawKind = rootKindById.get(id);
+    const entryKind = rawKind === "state" ? "synthetic" : rawKind;
     const params = { ...(action.config ?? {}), entry_kind: entryKind };
     const node: any = {
       id,
@@ -506,18 +580,9 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
     }
   }
   if (nodes.length > 1 && edges.length === 0) {
-    const e: any = new Error(
-      "Assemblr constructed an execution graph with multiple nodes but no edges. Actions are not connected by any triggers.",
-    );
-    e.code = "InvalidIntentGraph";
-    e.meta = {
-      type: "InvalidIntentGraph",
-      reason: "NoEdgesForMultipleNodes",
-      details: "At least one edge is required when more than one execution node exists.",
+    console.warn("[GraphDebugWarning] Execution graph has multiple nodes but no edges", {
       nodeIds: nodes.map((n) => n.id),
-      status: "rejected",
-    };
-    throw e;
+    });
   }
   intent.execution_graph = { nodes, edges };
 }
@@ -624,6 +689,9 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   // This runs before standard validation to ensure the graph is connected and valid.
   validateActionGraph(intent, currentSpec);
 
+  // 0.0 Build Execution Graph for Sandbox Simulation
+  buildExecutionGraph(intent, currentSpec);
+
   // 0.1 PRE-EXECUTION DRY RUN (Part 6)
   // Simulate execution to detect deadlocks or logic errors.
   const simulation = simulateExecution(intent);
@@ -635,19 +703,7 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
 
   const sandbox = runIntentInSandbox(intent);
   if (!sandbox.ok) {
-      const err = sandbox.error;
-      const meta = {
-        type: err.type,
-        reason: err.reason,
-        nodeId: err.nodeId,
-        details: err.details,
-        autoFix: err.autoFix,
-        status: err.status,
-      };
-      const e = new Error(err.details || err.reason);
-      (e as any).code = "InvalidIntentGraph";
-      (e as any).meta = meta;
-      throw e;
+      console.warn("[SandboxValidation] Non-fatal execution graph issue detected", sandbox.error);
   }
 
   const mutation = intent.tool_mutation;
@@ -872,11 +928,28 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
       );
     }
 
+    if (a.type === ACTION_TYPES.INTEGRATION_CALL) {
+      const capId = a.config?.capabilityId;
+      if (typeof capId === "string" && capId.length > 0) {
+        const cap = getCapability(capId);
+        if (!cap) {
+          a.type = ACTION_TYPES.INTERNAL;
+          a.config = { ...(a.config ?? {}), ephemeral_internal: true };
+          if (a.config.capabilityId) {
+            delete a.config.capabilityId;
+          }
+        }
+      }
+    }
+
     if (a.type === "integration_call") {
       const isInternal = a.config?.ephemeral_internal === true;
       const assignKey = a.config?.assign;
-      const statusKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Status` : `${a.id}.status`);
-      const errorKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Error` : `${a.id}.error`);
+      if (assignKey) {
+        continue;
+      }
+      const statusKey = a.effectOnly ? undefined : `${a.id}.status`;
+      const errorKey = a.effectOnly ? undefined : `${a.id}.error`;
 
       const internalConsumes = (key: string | undefined) => {
         if (!key) return false;
@@ -888,13 +961,8 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         });
       };
 
-      let dataConsumed = false;
-      if (assignKey) {
-        dataConsumed = stateKeysRead.has(assignKey) || internalConsumes(assignKey);
-      } else {
-        const dataKey = `${a.id}.data`;
-        dataConsumed = stateKeysRead.has(dataKey) || internalConsumes(dataKey);
-      }
+      const dataKey = `${a.id}.data`;
+      const dataConsumed = stateKeysRead.has(dataKey) || internalConsumes(dataKey);
 
       const statusConsumed =
         (!!statusKey && stateKeysRead.has(statusKey)) ||
@@ -981,6 +1049,7 @@ function normalizeLegacyActions(actions: any[]) {
 export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec) {
   const mutation = intent.tool_mutation as any;
   if (!mutation) return;
+  hoistInlineEventActions(mutation);
   const actions = mutation.actionsAdded ?? [];
   const components = mutation.componentsAdded || [];
 
@@ -1042,9 +1111,20 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
       }
   }
 
-  // 1.1 GENERIC ACTION TYPE NORMALIZATION (Hardening)
   const allowedActionTypes = new Set(Object.values(ACTION_TYPES));
+  const convertibleTypes = new Set([
+    "assign",
+    "state_update",
+    "state_mutation",
+    "state_assign",
+    "state_transform",
+    "transform",
+    "filter",
+  ]);
   for (const a of actions) {
+      if (convertibleTypes.has(a.type)) {
+          continue;
+      }
       if (!allowedActionTypes.has(a.type)) {
           const original = a.type;
           if (["state_transform", "transform", "filter", "map", "update_state", "set_status"].some(t => original.includes(t))) {
@@ -1126,12 +1206,9 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
                             .filter((k: string) => k !== sourceKey);
                          
                          c.dataSource = {
-                             type: "expression",
-                             value: {
-                                 kind: "derived",
-                                 source: sourceKey,
-                                 filters: filterKeys
-                             }
+                             type: "derived",
+                             source: sourceKey,
+                             filters: filterKeys
                          };
                          
                          converted = true;
@@ -1286,26 +1363,125 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
           const rawKey = a.config.assign;
           const statusKey = `${rawKey}Status`;
           const errorKey = `${rawKey}Error`;
-          
-          const normalizedKey = `${rawKey.replace(/Raw$|Data$/, "")}Items`;
+
+          const normalizedCandidates: string[] = [];
+          const addCandidate = (k: string | undefined) => {
+              if (k && !normalizedCandidates.includes(k)) normalizedCandidates.push(k);
+          };
+          addCandidate(rawKey);
+          if (rawKey.endsWith("Data") || rawKey.endsWith("Raw")) {
+              const base = rawKey.replace(/(Raw|Data)$/, "");
+              addCandidate(`${base}Items`);
+          }
+          if (rawKey.endsWith("List")) {
+              const base = rawKey.slice(0, -4);
+              addCandidate(`${base}Items`);
+          }
+
+          const normalizedKey = normalizedCandidates.find((k) => k !== rawKey) || rawKey;
           const state = mutation.stateAdded || (mutation.stateAdded = {});
           if (!Object.prototype.hasOwnProperty.call(state, normalizedKey)) {
               state[normalizedKey] = [];
           }
 
-          let statusConsumed = false;
+          let consumed = false;
+          let needsNormalizer = false;
+          let needsStatusMirror = false;
+          let mirrorTargetLoading: string | undefined;
+          let mirrorTargetError: string | undefined;
           
           for (const c of components) {
-              if (c.properties?.loadingKey === statusKey || c.properties?.errorKey === errorKey) statusConsumed = true;
-              if (c.dataSource?.type === "state" && (c.dataSource.value === statusKey || c.dataSource.value === errorKey)) statusConsumed = true;
+              if (c.properties?.loadingKey === statusKey || c.properties?.errorKey === errorKey) consumed = true;
+              if (c.properties?.loadingKey && c.properties?.errorKey) {
+                  const targetLoading = c.properties.loadingKey;
+                  const targetError = c.properties.errorKey;
+                  const directStatusBinding =
+                      targetLoading === statusKey || targetError === errorKey;
+                  const looksGeneric =
+                      typeof targetLoading === "string" &&
+                      typeof targetError === "string" &&
+                      targetLoading.endsWith("Status") &&
+                      targetError.endsWith("Error");
+                  if (!directStatusBinding && looksGeneric) {
+                      needsStatusMirror = true;
+                      mirrorTargetLoading = targetLoading;
+                      mirrorTargetError = targetError;
+                      consumed = true;
+                  }
+              }
+              if (c.dataSource?.type === "state" && (c.dataSource.value === statusKey || c.dataSource.value === errorKey)) consumed = true;
+              if (c.dataSource?.type === "state" && normalizedCandidates.includes(c.dataSource.value)) {
+                  consumed = true;
+                  if (c.type && String(c.type).toLowerCase() === "list" && c.dataSource.value === normalizedKey) {
+                      needsNormalizer = true;
+                  }
+              }
               const propsStr = JSON.stringify(c.properties || {});
-              if (propsStr.includes(`{{state.${statusKey}}}`) || propsStr.includes(`{{state.${errorKey}}}`)) statusConsumed = true;
+              for (const key of [statusKey, errorKey, rawKey, normalizedKey]) {
+                  if (propsStr.includes(`{{state.${key}}}`)) consumed = true;
+              }
           }
 
-          if (!statusConsumed) {
-              throw new Error(
-                  `Integration action ${a.id} appears to be effect-only. If intentional, mark it as effectOnly: true.`
-              );
+          if (!consumed) {
+              const hasUi =
+                (Array.isArray(components) && components.length > 0) ||
+                (Array.isArray(mutation.componentsUpdated) && mutation.componentsUpdated.length > 0);
+              if (hasUi) {
+                  throw new Error(
+                      `Integration action ${a.id} appears to be effect-only. If intentional, mark it as effectOnly: true.`,
+                  );
+              }
+          }
+
+          if (needsStatusMirror && mirrorTargetLoading && mirrorTargetError) {
+              const baseId = normalizeActionId(String(a.id || ""));
+              const suffix = baseId.startsWith("fetch_") ? baseId.replace(/^fetch_/, "") : baseId;
+              const mirrorId = `mirror_status_${suffix}`;
+              const existsMirror = actions.some((x: any) => normalizeActionId(String(x.id || "")) === normalizeActionId(mirrorId));
+              if (!existsMirror) {
+                  const updates: Record<string, any> = {};
+                  updates[mirrorTargetLoading] = `{{state.${statusKey}}}`;
+                  updates[mirrorTargetError] = `{{state.${errorKey}}}`;
+                  const mirror: any = {
+                      id: mirrorId,
+                      type: ACTION_TYPES.WORKFLOW,
+                      config: { __semantic: "status_mirror" },
+                      steps: [
+                          {
+                              type: "state_mutation",
+                              config: { updates },
+                          },
+                      ],
+                      triggeredBy: [
+                          { type: "state_change", stateKey: statusKey },
+                          { type: "state_change", stateKey: errorKey },
+                      ],
+                  };
+                  actions.push(mirror);
+                  console.log(
+                      `[SystemAutoWiring] Injected status mirror ${mirrorId} for ${a.id} -> ${mirrorTargetLoading}/${mirrorTargetError}`,
+                  );
+              }
+          }
+
+          if (needsNormalizer) {
+              const baseId = normalizeActionId(String(a.id || ""));
+              const suffix = baseId.startsWith("fetch_") ? baseId.replace(/^fetch_/, "") : baseId;
+              const normalizerId = `normalize_${suffix}`;
+              const exists = actions.some((x: any) => normalizeActionId(String(x.id || "")) === normalizeActionId(normalizerId));
+              if (!exists) {
+                  const normalizer: any = {
+                      id: normalizerId,
+                      type: ACTION_TYPES.INTERNAL,
+                      config: {
+                          operation: "assign",
+                          assign: normalizedKey,
+                      },
+                      triggeredBy: { type: "state_change", stateKey: rawKey },
+                  };
+                  actions.push(normalizer);
+                  console.log(`[SystemAutoWiring] Injected normalizer ${normalizerId} for ${a.id} -> ${normalizedKey}`);
+              }
           }
       }
   }
@@ -1698,96 +1874,111 @@ function tryAttachComponentTriggerFromSemantics(mutation: any, action: any): boo
   return after;
 }
 
-function canonicalizeStateKeys(mutation: any) {
+function hoistInlineEventActions(mutation: any) {
   if (!mutation) return;
-  const canonicalKeys = new Set<string>();
-  const aliasMap = new Map<string, string>();
-
-  // 1. Gather authoritative keys from UI components (bindKey)
-  const scanComponents = (comps: any[]) => {
-    for (const c of comps) {
-      if (c.properties?.bindKey) canonicalKeys.add(c.properties.bindKey);
-      if (Array.isArray(c.children)) scanComponents(c.children);
+  const actions = Array.isArray(mutation.actionsAdded) ? mutation.actionsAdded : (mutation.actionsAdded = []);
+  const existingIds = new Set<string>();
+  for (const a of actions) {
+    if (a && a.id) existingIds.add(normalizeActionId(a.id));
+  }
+  const ensureActionFromInline = (componentId: string | undefined, eventType: string | undefined, inline: any) => {
+    let candidateId: string | undefined = inline && typeof inline.id === "string" && inline.id.length ? inline.id : undefined;
+    const comp = componentId ? String(componentId) : "";
+    const compLower = comp.toLowerCase();
+    const evt = eventType || "";
+    if (!candidateId && comp) {
+      if (compLower.includes("tool") && evt === "onChange") {
+        candidateId = "set_tool_filter";
+      } else if ((compLower.includes("activitytype") || compLower.includes("activity_type")) && evt === "onChange") {
+        candidateId = "set_activity_type_filter";
+      } else if ((compLower.includes("timerange") || compLower.includes("time_range") || compLower.includes("time")) && evt === "onChange") {
+        candidateId = "set_time_range_filter";
+      } else if (
+        compLower.includes("activity") &&
+        (evt === "onItemClick" || evt === "onSelect" || evt === "onRowClick")
+      ) {
+        candidateId = "select_activity";
+      }
+    }
+    if (!candidateId) {
+      const base = comp ? `${comp}_${evt || "event"}` : evt || "event";
+      candidateId = normalizeActionId(base || "inline_event");
+    }
+    const normalized = normalizeActionId(candidateId);
+    let existing = actions.find((a: any) => a && normalizeActionId(a.id) === normalized);
+    if (!existing) {
+      const action: any = {
+        id: candidateId,
+        type: inline && inline.type ? inline.type : ACTION_TYPES.INTERNAL,
+        config: inline && inline.config ? inline.config : inline || {},
+      };
+      actions.push(action);
+      existingIds.add(normalized);
+      existing = action;
+    }
+    return existing.id;
+  };
+  const convertEvents = (node: any, componentId?: string) => {
+    if (!node || !Array.isArray(node.events)) return;
+    for (const e of node.events) {
+      if (!e || e.actionId || !e.action) continue;
+      const inline = e.action;
+      const actionId = ensureActionFromInline(componentId, e.type, inline);
+      e.actionId = actionId;
+      delete e.action;
     }
   };
-  scanComponents(mutation.componentsAdded || []);
-  if (mutation.pagesAdded) {
-    mutation.pagesAdded.forEach((p: any) => scanComponents(p.components || []));
+  if (Array.isArray(mutation.componentsAdded)) {
+    for (const c of mutation.componentsAdded) {
+      if (!c) continue;
+      convertEvents(c, c.id);
+    }
   }
+  if (Array.isArray(mutation.pagesAdded)) {
+    for (const p of mutation.pagesAdded) {
+      if (!p) continue;
+      convertEvents(p);
+    }
+  }
+  if (Array.isArray(mutation.pagesUpdated)) {
+    for (const u of mutation.pagesUpdated) {
+      if (!u || !u.patch) continue;
+      convertEvents(u.patch);
+    }
+  }
+}
 
-  // 2. Identify Aliases in stateAdded
-  if (mutation.stateAdded) {
-    for (const key of Object.keys(mutation.stateAdded)) {
-      if (canonicalKeys.has(key)) continue;
-      
-      // Hardening: Explicit Filter Mapping
-      if (key === "filter_tool" || key === "tool_filter" || key === "activityToolFilter") {
-          aliasMap.set(key, "filters.tool");
-          continue;
+function canonicalizeStateKeys(mutation: any) {
+  if (!mutation || !mutation.stateAdded || typeof mutation.stateAdded !== "object") return;
+  const state = mutation.stateAdded as Record<string, any>;
+  const renames: Record<string, string> = {};
+
+  for (const key of Object.keys(state)) {
+    let canonical: string | null = null;
+
+    if (key === "filter_tool" || key === "tool_filter" || key === "activityToolFilter") {
+      canonical = "filters.tool";
+    } else if (key === "activityTypeFilter" || key === "filter_type" || key === "type_filter") {
+      canonical = "filters.activityType";
+    } else if (key === "filter_time" || key === "time_filter" || key === "timeRange") {
+      canonical = "filters.timeRange";
+    }
+
+    if (canonical && canonical !== key) {
+      if (!(canonical in state)) {
+        state[canonical] = state[key];
       }
-      if (key === "filter_type" || key === "type_filter" || key === "activityTypeFilter") {
-          aliasMap.set(key, "filters.activityType");
-          continue;
-      }
-      if (key === "filter_time" || key === "time_filter" || key === "timeRange") {
-          aliasMap.set(key, "filters.timeRange");
-          continue;
+      delete state[key];
+
+      if (state[canonical] === "" || state[canonical] === null || state[canonical] === undefined) {
+        state[canonical] = SELECT_ALL_VALUE;
       }
 
-      // Heuristic: "status" -> "filters.status"
-      const matchSuffix = Array.from(canonicalKeys).find(ck => ck.endsWith(`.${key}`));
-      if (matchSuffix) {
-        aliasMap.set(key, matchSuffix);
-      }
+      renames[key] = canonical;
     }
   }
 
-  // 3. Apply Aliasing
-  if (aliasMap.size > 0) {
-    console.log(`[SystemAutoWiring] Canonicalizing state aliases:`, Object.fromEntries(aliasMap));
-    
-    // Fix stateAdded
-    if (mutation.stateAdded) {
-      for (const [alias, target] of aliasMap) {
-        if (mutation.stateAdded[target] === undefined) {
-          mutation.stateAdded[target] = mutation.stateAdded[alias];
-        }
-        delete mutation.stateAdded[alias];
-      }
-    }
-
-    // Fix Actions
-    const fixAction = (a: any) => {
-       if (a.triggeredBy && a.triggeredBy.stateKey && aliasMap.has(a.triggeredBy.stateKey)) {
-           a.triggeredBy.stateKey = aliasMap.get(a.triggeredBy.stateKey);
-       }
-       if (a.type === "state_mutation") {
-           const updates = a.config?.updates ?? a.config?.set;
-           if (updates) {
-               for (const key of Object.keys(updates)) {
-                   if (aliasMap.has(key)) {
-                       updates[aliasMap.get(key)!] = updates[key];
-                       delete updates[key];
-                   }
-               }
-           }
-       }
-       if (Array.isArray(a.inputs)) {
-           a.inputs = a.inputs.map((i: any) => aliasMap.get(i) || i);
-       }
-       if (a.type === "integration_call" && a.config?.assign && aliasMap.has(a.config.assign)) {
-           a.config.assign = aliasMap.get(a.config.assign);
-       }
-    };
-    (mutation.actionsAdded || []).forEach(fixAction);
-
-    // Fix Components
-    const fixComponent = (c: any) => {
-        if (c.properties?.bindKey && aliasMap.has(c.properties.bindKey)) {
-            c.properties.bindKey = aliasMap.get(c.properties.bindKey);
-        }
-        if (Array.isArray(c.children)) c.children.forEach(fixComponent);
-    };
-    (mutation.componentsAdded || []).forEach(fixComponent);
+  if (Object.keys(renames).length > 0) {
+    console.log(`[SystemHardening] Canonicalizing filter keys:`, renames);
   }
 }

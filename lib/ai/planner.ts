@@ -16,7 +16,22 @@ import { SYSTEM_PROMPT } from "@/lib/ai/prompts";
 
 const policyEngine = new PolicyEngine();
 
-
+function sanitizeIntegrationsForIntent(intent: CompiledIntent, allowedCapabilityIds: Set<string>) {
+  const mutation = intent.tool_mutation as any;
+  if (!mutation || !Array.isArray(mutation.actionsAdded)) return;
+  for (const action of mutation.actionsAdded) {
+    if (!action || action.type !== "integration_call") continue;
+    const cfg = action.config || {};
+    const capId = typeof cfg.capabilityId === "string" ? cfg.capabilityId : "";
+    if (!capId || !allowedCapabilityIds.has(capId)) {
+      action.type = "internal";
+      action.config = { ...cfg, ephemeral_internal: true };
+      if (action.config.capabilityId) {
+        delete action.config.capabilityId;
+      }
+    }
+  }
+}
 
 function buildToolMemory(spec?: ToolSpec): any {
   if (!spec || (spec as any).kind !== "mini_app") return { kind: (spec as any)?.kind ?? "unknown" };
@@ -167,6 +182,8 @@ export async function compileIntent(
 
     const parsed = JSON.parse(content);
     try {
+      const allowedCapabilityIds = new Set(connectedCapabilities.map((c) => c.id));
+      sanitizeIntegrationsForIntent(parsed, allowedCapabilityIds);
       repairCompiledIntent(parsed, currentSpec);
       buildExecutionGraph(parsed, currentSpec);
       validateCompiledIntent(parsed, currentSpec, { mode });
