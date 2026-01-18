@@ -208,19 +208,33 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
       }
   }
   // B. Component Events
-  for (const c of components) {
-      if (c.events) {
-          for (const e of c.events) {
-              if (e.actionId) {
-                  const aid = normalizeActionId(e.actionId);
-                  if (nodes.has(aid)) {
-                      reachable.add(aid);
-                      queue.push(aid);
+  const traverseComponents = (comps: any[]) => {
+      const stack = [...comps];
+      while (stack.length) {
+          const c = stack.shift();
+          if (!c) continue;
+          if (c.events) {
+              for (const e of c.events) {
+                  if (e.actionId) {
+                      const aid = normalizeActionId(e.actionId);
+                      if (nodes.has(aid)) {
+                          reachable.add(aid);
+                          queue.push(aid);
+                      }
                   }
               }
           }
+          if (c.children) stack.push(...c.children);
+      }
+  };
+  
+  traverseComponents(components);
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          if (p.components) traverseComponents(p.components);
       }
   }
+  
   // C. Explicit Triggers (State Change)
   for (const [id, node] of nodes) {
       for (const t of node.triggers) {
@@ -310,6 +324,26 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
   const reachableFinal = new Set<string>();
   const queueFinal: string[] = [];
 
+  const traverseComponentsFinal = (comps: any[]) => {
+      const stack = [...comps];
+      while (stack.length) {
+          const c = stack.shift();
+          if (!c) continue;
+          if (c.events) {
+              for (const e of c.events) {
+                  if (e.actionId) {
+                      const aid = normalizeActionId(e.actionId);
+                      if (nodes.has(aid)) {
+                          reachableFinal.add(aid);
+                          queueFinal.push(aid);
+                      }
+                  }
+              }
+          }
+          if (c.children) stack.push(...c.children);
+      }
+  };
+
   if (mutation.pagesAdded) {
       for (const p of mutation.pagesAdded) {
           if (p.events) {
@@ -323,6 +357,7 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
                   }
               }
           }
+          if (p.components) traverseComponentsFinal(p.components);
       }
   }
   if (mutation.pagesUpdated) {
@@ -340,19 +375,7 @@ export function validateActionGraph(intent: CompiledIntent, currentSpec?: ToolSp
           }
       }
   }
-  for (const c of components) {
-      if (c.events) {
-          for (const e of c.events) {
-              if (e.actionId) {
-                  const aid = normalizeActionId(e.actionId);
-                  if (nodes.has(aid)) {
-                      reachableFinal.add(aid);
-                      queueFinal.push(aid);
-                  }
-              }
-          }
-      }
-  }
+  traverseComponentsFinal(components);
   for (const [id, node] of nodes) {
       for (const t of node.triggers) {
           if (t.type === "state_change" || t.type === "lifecycle") {
@@ -469,7 +492,18 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
     }
   }
   for (const c of components) addFromNode(c, "ui");
-  for (const p of pages) addFromNode(p, "lifecycle");
+  for (const p of pages) {
+    addFromNode(p, "lifecycle");
+    if (Array.isArray(p.components)) {
+      const stack: any[] = [...p.components];
+      while (stack.length) {
+        const n = stack.shift();
+        if (!n) continue;
+        addFromNode(n, "ui");
+        if (Array.isArray(n.children)) stack.push(...n.children);
+      }
+    }
+  }
   if (currentSpec && (currentSpec as any).kind === "mini_app") {
     const mini: any = currentSpec as any;
     for (const p of mini.pages ?? []) {
@@ -566,7 +600,9 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
   for (const [id, deg] of indegree.entries()) {
     if (deg === 0) roots.push(id);
   }
-  if (!roots.length && nodes.length) {
+  
+  // Auto-connect roots to a synthetic init node to ensure graph connectivity and validity
+  if (nodes.length > 0) {
     const initId = "__init__";
     const initNode: any = {
       id: initId,
@@ -574,11 +610,12 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
       params: { entry_kind: "synthetic" },
     };
     nodes.unshift(initNode);
-    for (const n of nodes) {
-      if (n.id === initId) continue;
-      edges.push({ from: initId, to: n.id });
+    for (const rootId of roots) {
+      if (rootId === initId) continue;
+      edges.push({ from: initId, to: rootId });
     }
   }
+
   if (nodes.length > 1 && edges.length === 0) {
     console.warn("[GraphDebugWarning] Execution graph has multiple nodes but no edges", {
       nodeIds: nodes.map((n) => n.id),
@@ -2073,5 +2110,22 @@ function canonicalizeStateKeys(mutation: any) {
 
   if (Object.keys(renames).length > 0) {
     console.log(`[SystemHardening] Canonicalizing filter keys:`, renames);
+  }
+}
+
+export function sanitizeIntegrationsForIntent(intent: CompiledIntent, allowedCapabilityIds: Set<string>) {
+  const mutation = intent.tool_mutation as any;
+  if (!mutation || !Array.isArray(mutation.actionsAdded)) return;
+  for (const action of mutation.actionsAdded) {
+    if (!action || action.type !== "integration_call") continue;
+    const cfg = action.config || {};
+    const capId = typeof cfg.capabilityId === "string" ? cfg.capabilityId : "";
+    if (!capId || !allowedCapabilityIds.has(capId)) {
+      action.type = "internal";
+      action.config = { ...cfg, ephemeral_internal: true };
+      if (action.config.capabilityId) {
+        delete action.config.capabilityId;
+      }
+    }
   }
 }

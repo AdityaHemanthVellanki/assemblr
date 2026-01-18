@@ -7,30 +7,27 @@ import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
 import { Metric } from "@/lib/metrics/store";
 import { CompiledIntent } from "@/lib/core/intent";
-import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent, buildExecutionGraph } from "@/lib/ai/planner-logic";
+import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent, buildExecutionGraph, sanitizeIntegrationsForIntent } from "@/lib/ai/planner-logic";
 import { PolicyEngine } from "@/lib/governance/engine";
 import { OrgPolicy } from "@/lib/core/governance";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 
 import { SYSTEM_PROMPT } from "@/lib/ai/prompts";
 
+import { getActivityDashboardSpec } from "@/lib/ai/templates/activity-dashboard";
+
 const policyEngine = new PolicyEngine();
 
-function sanitizeIntegrationsForIntent(intent: CompiledIntent, allowedCapabilityIds: Set<string>) {
-  const mutation = intent.tool_mutation as any;
-  if (!mutation || !Array.isArray(mutation.actionsAdded)) return;
-  for (const action of mutation.actionsAdded) {
-    if (!action || action.type !== "integration_call") continue;
-    const cfg = action.config || {};
-    const capId = typeof cfg.capabilityId === "string" ? cfg.capabilityId : "";
-    if (!capId || !allowedCapabilityIds.has(capId)) {
-      action.type = "internal";
-      action.config = { ...cfg, ephemeral_internal: true };
-      if (action.config.capabilityId) {
-        delete action.config.capabilityId;
-      }
-    }
-  }
+function isActivityDashboardIntent(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const triggers = [
+    "activity dashboard",
+    "recent activity",
+    "unified activity feed",
+    "github slack notion activity",
+    "activity feed"
+  ];
+  return triggers.some(t => normalized.includes(t));
 }
 
 function buildToolMemory(spec?: ToolSpec): any {
@@ -154,6 +151,24 @@ export async function compileIntent(
 
   const installedIntegrations = connectedCapabilities.map(c => c.integrationId).filter((v, i, a) => a.indexOf(v) === i);
   const installedText = `INSTALLED_INTEGRATIONS (Use these for UI filter options, do NOT rely on runtime data):\n${JSON.stringify(installedIntegrations)}`;
+
+  // 0. Check for Canonical Templates (Bypass AI)
+  if (isActivityDashboardIntent(userMessage)) {
+      console.log("[Planner] Detected Activity Dashboard intent. Using canonical template.");
+      const intent = getActivityDashboardSpec();
+      const allowedCapabilityIds = new Set(connectedCapabilities.map((c) => c.id));
+      
+      // Safety: Downgrade missing capabilities to no-ops
+      sanitizeIntegrationsForIntent(intent, allowedCapabilityIds);
+      
+      // Graph: Ensure execution graph is built and valid
+      buildExecutionGraph(intent, currentSpec);
+      
+      // Validation: Ensure it meets all strictness rules
+      validateCompiledIntent(intent, currentSpec, { mode });
+      
+      return intent;
+  }
 
   const toolMemory = buildToolMemory(currentSpec);
   const prompt =

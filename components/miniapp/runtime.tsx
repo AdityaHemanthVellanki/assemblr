@@ -297,6 +297,36 @@ export class MiniAppStore {
           .map(([day, count]) => ({ day, count }));
         continue;
       }
+
+      if (op === "find") {
+        const field = typeof args.field === "string" ? args.field : "id";
+        const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
+        const equalsVal = equalsKey ? state[equalsKey] : args.equals;
+        
+        if (equalsVal === undefined || equalsVal === null || equalsVal === "") {
+            patch[target] = null;
+            continue;
+        }
+        
+        patch[target] = srcArr.find((it: any) => {
+            const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+            return String(v) === String(equalsVal);
+        }) ?? null;
+        continue;
+      }
+
+      if (op === "exists" || op === "defined") {
+        let exists = srcVal !== undefined && srcVal !== null;
+        if (exists && Array.isArray(srcVal)) exists = srcVal.length > 0;
+        
+        if (exists && args.field) {
+            const v = typeof srcVal === 'object' ? (srcVal as any)[args.field] : undefined;
+            exists = v !== undefined && v !== null && v !== "";
+        }
+        
+        patch[target] = exists;
+        continue;
+      }
     }
     return patch;
   }
