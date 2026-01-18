@@ -20,6 +20,8 @@ import { RUNTIMES } from "@/lib/integrations/map";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { validateCompiledIntent } from "./planner-logic";
 import { saveDraftRuntime, DraftRuntimeStatus } from "@/lib/observability/store";
+import type { PlannerContext } from "@/lib/ai/types";
+import { getConnectedIntegrations } from "@/lib/integrations/store";
 
 const versioningService = new VersioningService();
 
@@ -191,10 +193,14 @@ export async function processToolChat(input: {
     const schemas = await getDiscoveredSchemas(input.orgId);
     const metrics = await findMetrics(input.orgId);
     
+    // Build Planner Context (Source of Truth: Database)
+    const integrationsMap = await getConnectedIntegrations(input.orgId);
+    const plannerContext: PlannerContext = { integrations: integrationsMap };
+
     const intent = await compileIntent(
       input.userMessage,
       input.messages,
-      input.connectedIntegrationIds,
+      plannerContext,
       schemas,
       metrics,
       input.mode,

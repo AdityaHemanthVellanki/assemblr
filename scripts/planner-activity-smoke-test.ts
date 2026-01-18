@@ -31,7 +31,15 @@ async function run() {
 
   const history: Array<{ role: "user" | "assistant"; content: string }> = [];
 
-  const connectedIntegrationIds = ["github", "slack", "notion", "linear", "google"];
+  const plannerContext = {
+    integrations: {
+        github: { connected: true, capabilities: ["github_issues_list", "github_repos_list", "github_commits_list"], scopes: ["repo"] },
+        slack: { connected: true, capabilities: ["slack_channels_list", "slack_messages_list"], scopes: ["chat:write"] },
+        notion: { connected: true, capabilities: ["notion_pages_search", "notion_databases_list"], scopes: [] },
+        linear: { connected: true, capabilities: ["linear_issues_list", "linear_teams_list"], scopes: ["read"] },
+        google: { connected: true, capabilities: ["google_drive_list", "google_gmail_list"], scopes: ["https://www.googleapis.com/auth/drive.readonly"] }
+    }
+  };
 
   const schemas: DiscoveredSchema[] = [];
   const metrics: Metric[] = [];
@@ -41,7 +49,7 @@ async function run() {
   const intent = await compileIntent(
     prompt,
     history,
-    connectedIntegrationIds,
+    plannerContext,
     schemas,
     metrics,
     "create",

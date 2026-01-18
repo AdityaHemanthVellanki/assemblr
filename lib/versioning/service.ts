@@ -36,7 +36,7 @@ export class VersioningService {
         id: randomUUID(),
         tool_id: toolId,
         created_at: new Date().toISOString(),
-        // created_by: userId, // Column missing in DB
+        created_by: userId,
         intent_summary: intent?.system_goal || "Manual Edit",
         // Gracefully strip compiled_intent if persistence schema doesn't support it yet
         // compiled_intent: intent, 

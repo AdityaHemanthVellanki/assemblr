@@ -11,6 +11,9 @@ import { flattenMiniAppComponents, validateCompiledIntent, repairCompiledIntent,
 import { PolicyEngine } from "@/lib/governance/engine";
 import { OrgPolicy } from "@/lib/core/governance";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
+import type { PlannerContext } from "@/lib/ai/types";
+import { Capability } from "@/lib/capabilities/definitions";
+import { materializeCapabilityAction } from "@/lib/runtime/capabilityCompiler";
 
 import { SYSTEM_PROMPT } from "@/lib/ai/prompts";
 
@@ -116,7 +119,7 @@ function buildToolMemory(spec?: ToolSpec): any {
 export async function compileIntent(
   userMessage: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
-  connectedIntegrationIds: string[],
+  plannerContext: PlannerContext,
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = [],
   mode: "create" | "chat" = "create",
@@ -126,31 +129,52 @@ export async function compileIntent(
   getServerEnv();
 
   // Filter registry to only connected integrations AND Policy Allowed
-  const connectedCapabilities = CAPABILITY_REGISTRY.filter((c) => {
-    // 1. Check Connectivity
-    if (!connectedIntegrationIds.includes(c.integrationId)) return false;
+  const connectedCapabilities: Capability[] = [];
+  const installedIntegrations: string[] = [];
 
-    // 2. Check Governance Policy
-    const policyResult = policyEngine.evaluate(policies, {
-        integrationId: c.integrationId,
-        capabilityId: c.id,
-        actionType: "capability_usage"
-    });
+  for (const [integrationId, details] of Object.entries(plannerContext.integrations)) {
+    if (!details.connected) continue;
+    installedIntegrations.push(integrationId);
+
+    // Get base capabilities from registry
+    // We trust the context's capabilities list, but need metadata from registry
+    const baseCaps = CAPABILITY_REGISTRY.filter((c) => c.integrationId === integrationId);
     
-    // If blocked, we exclude it from the prompt so the planner doesn't even try to use it.
-    // This is "Policy-Aware Planning" - prevention by omission.
-    return policyResult.allowed;
-  });
+    // Filter by context capabilities if they are explicit
+    const validCaps = baseCaps.filter(c => details.capabilities.includes(c.id));
+    
+    for (const c of validCaps) {
+      // Check Governance Policy
+      const policyResult = policyEngine.evaluate(policies, {
+          integrationId: c.integrationId,
+          capabilityId: c.id,
+          actionType: "capability_usage"
+      });
+      
+      if (policyResult.allowed) {
+          connectedCapabilities.push(c);
+      }
+    }
+  }
 
   const capsText = connectedCapabilities
     .map(
-      (c) =>
-        `- ID: ${c.id}\n  Integration: ${c.integrationId}\n  Params: ${c.supportedFields.join(", ")}${c.constraints?.requiredFilters ? `\n  REQUIRED PARAMS: ${c.constraints.requiredFilters.join(", ")}` : ""}`
+      (c) => {
+        const integration = plannerContext.integrations[c.integrationId];
+        const scopes = integration?.scopes?.length ? integration.scopes.join(", ") : "default";
+        return `- ID: ${c.id}\n  Integration: ${c.integrationId}\n  Scopes: ${scopes}\n  Params: ${c.supportedFields.join(", ")}${c.constraints?.requiredFilters ? `\n  REQUIRED PARAMS: ${c.constraints.requiredFilters.join(", ")}` : ""}`;
+      }
     )
     .join("\n\n");
 
-  const installedIntegrations = connectedCapabilities.map(c => c.integrationId).filter((v, i, a) => a.indexOf(v) === i);
   const installedText = `INSTALLED_INTEGRATIONS (Use these for UI filter options, do NOT rely on runtime data):\n${JSON.stringify(installedIntegrations)}`;
+
+  // 0. Hard-Map Common User Intents (Deterministic Resolver)
+  let deterministicHint = "";
+  if (userMessage.toLowerCase().includes("email") && plannerContext.integrations.google?.connected) {
+    console.log("[Planner] Hard-mapping 'email' intent to 'google_gmail_list'");
+    deterministicHint = "\n\nHINT: User is asking for emails. You MUST use 'google_gmail_list' capability.";
+  }
 
   // 0. Check for Canonical Templates (Bypass AI)
   if (isActivityDashboardIntent(userMessage)) {
@@ -173,7 +197,7 @@ export async function compileIntent(
   const toolMemory = buildToolMemory(currentSpec);
   const prompt =
     SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsText) +
-    `\n\n${installedText}\n\nMODE HINT: ${mode.toUpperCase()}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
+    `\n\n${installedText}\n\nMODE HINT: ${mode.toUpperCase()}${deterministicHint}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
 
   try {
     const contextMessages = history.map(m => ({

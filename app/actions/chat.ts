@@ -45,15 +45,14 @@ export async function sendChatMessage(
   }
 
   // 2. Fetch Integrations (Real)
-  // We assume we have a way to get connected integrations. 
-  // For now, we'll fetch from `integrations` table if it exists, or connections.
-  // Assuming `connections` table.
-  const { data: connections } = await supabase
-    .from("connections")
-    .select("integration_id")
-    .eq("org_id", orgId);
-  const connectedIntegrationIds =
-    (connections ?? []).map((c: { integration_id: string }) => c.integration_id) || [];
+  // We allow processToolChat to fetch authoritative data, but we pass IDs for backward compatibility if needed.
+  // Actually, processToolChat now fetches its own data.
+  // But we can verify connectivity here if we want.
+  // For now, let's just pass empty array or fetch correctly to avoid confusion.
+  
+  // We'll leave connectedIntegrationIds as empty or fetch correctly.
+  // processToolChat ignores it now anyway.
+  const connectedIntegrationIds: string[] = [];
 
   // 3. Process Chat
   const response = await processToolChat({

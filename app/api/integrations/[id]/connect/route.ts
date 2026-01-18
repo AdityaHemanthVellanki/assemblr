@@ -84,29 +84,29 @@ export async function POST(
   });
 
   // 5. Build Auth URL
-  const params = new URLSearchParams();
-  params.append("response_type", "code");
-  params.append("client_id", clientId);
+  const oauthParams = new URLSearchParams();
+  oauthParams.append("response_type", "code");
+  oauthParams.append("client_id", clientId);
 
   // Redirect URI strategy
   // Use the same callback endpoint
   const redirectBase = env.APP_BASE_URL;
   const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
 
-  params.append("redirect_uri", redirectUri);
-  params.append("state", state);
+  oauthParams.append("redirect_uri", redirectUri);
+  oauthParams.append("state", state);
 
   if (provider.scopes.length > 0) {
-    params.append("scope", provider.scopes.join(provider.scopeSeparator ?? " "));
+    oauthParams.append("scope", provider.scopes.join(provider.scopeSeparator ?? " "));
   }
 
   if (provider.extraAuthParams) {
     for (const [k, v] of Object.entries(provider.extraAuthParams)) {
-      params.append(k, v);
+      oauthParams.append(k, v);
     }
   }
 
-  const authUrl = `${provider.authUrl}?${params.toString()}`;
+  const authUrl = `${provider.authUrl}?${oauthParams.toString()}`;
 
   return NextResponse.json({ redirectUrl: authUrl });
 }
