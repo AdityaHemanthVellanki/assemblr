@@ -179,7 +179,7 @@ const TextComponent: MiniAppComponent = {
     const raw = component.properties?.content ?? component.label ?? "";
     const content = typeof raw === "string"
       ? raw.replace(/{{state\.([a-zA-Z0-9_.$-]+)}}/g, (_, key) => {
-          const val = state[key];
+          const val = resolvePath(state, key);
           return val === undefined || val === null ? "" : String(val);
         })
       : String(raw);

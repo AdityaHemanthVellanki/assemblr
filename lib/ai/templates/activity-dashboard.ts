@@ -18,9 +18,8 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
     },
     selectedActivityId: null,
     // Derivations will be populated at runtime, but we declare them here for clarity if needed
-    __derivations: [
-      {
-        target: "filteredActivities",
+    __derivations: {
+      filteredActivities: {
         source: "activities",
         op: "filter",
         args: {
@@ -28,27 +27,7 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
           includesKey: "filters.tool"
         }
       },
-      // We can chain derivations or add more. 
-      // The user asked for specific derivations: filteredActivities, selectedActivity, hasSelectedActivity, hasSelectedActivityWithUrl
-      // Note: The runtime currently supports simple derivations. We might need to chain them or enhance runtime.
-      // For now, let's assume single-pass filtering is enough or we chain them if runtime supports it.
-      // Actually, runtime `computeDerivedPatch` iterates the array. So we can chain if order matters (it does).
-      // But runtime implementation of `computeDerivedPatch` recalculates all from base state?
-      // Let's look at runtime.tsx:
-      // const patch: Record<string, any> = {}; for (const d of defs) { ... srcVal = state[source]; ... }
-      // It reads from `state`. `state` passed to it is `merged` (base + partial). 
-      // It does NOT seem to feed `patch` back into `state` for subsequent derivations in the same pass *unless* we are careful.
-      // Actually, `computeDerivedPatch` returns a patch. `setState` merges it.
-      // So dependent derivations might be tricky in one pass if they depend on each other.
-      // However, for this template:
-      // 1. filteredActivities (depends on activities + filters)
-      // 2. selectedActivity (depends on activities + selectedActivityId)
-      // 3. hasSelectedActivity (depends on selectedActivity)
-      // 4. hasSelectedActivityWithUrl (depends on selectedActivity)
-      
-      // We can define them.
-      {
-        target: "selectedActivity",
+      selectedActivity: {
         source: "activities",
         op: "find",
         args: {
@@ -56,18 +35,16 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
             equalsKey: "selectedActivityId"
         }
       },
-      {
-        target: "hasSelectedActivity",
+      hasSelectedActivity: {
         source: "selectedActivity",
         op: "exists"
       },
-      {
-        target: "hasSelectedActivityWithUrl",
+      hasSelectedActivityWithUrl: {
         source: "selectedActivity",
         op: "exists",
         args: { field: "url" }
       }
-    ] as any
+    } as any
   },
   pages: [
     {
@@ -89,7 +66,7 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
               type: "select",
               label: "Source",
               properties: {
-                bindKey: "filters.tool",
+                value: "{{state.filters.tool}}",
                 optionValueKey: "value",
                 optionLabelKey: "label",
                 data: [
@@ -100,14 +77,15 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
                   { label: "Notion", value: "notion" },
                   { label: "Google", value: "google" }
                 ]
-              }
+              },
+              events: [{ type: "onChange", actionId: "set_tool_filter" }]
             },
             {
               id: "time_filter",
               type: "select",
               label: "Time Range",
               properties: {
-                bindKey: "filters.timeRange",
+                value: "{{state.filters.timeRange}}",
                 optionValueKey: "value",
                 optionLabelKey: "label",
                 data: [
@@ -115,7 +93,8 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
                   { label: "Last 7 Days", value: "7d" },
                   { label: "Last 30 Days", value: "30d" }
                 ]
-              }
+              },
+              events: [{ type: "onChange", actionId: "set_time_filter" }]
             }
           ]
         },
@@ -137,9 +116,6 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
           },
           events: [
             { type: "onSelect", actionId: "select_activity", args: { id: "{{item.id}}" } } // item.id needs to be resolved from event payload
-            // The runtime dispatch passes payload. The action config needs to map it.
-            // Runtime: emit("onSelect", { ...item }) -> dispatch(actionId, { ...item })
-            // Action select_activity needs to take id from payload and set selectedActivityId.
           ]
         },
         {
@@ -150,30 +126,56 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
           properties: { variant: "card" },
           children: [
             {
-              id: "detail_title",
-              type: "text",
-              properties: {
-                content: "{{state.selectedActivity.title}}"
-              }
+                id: "empty_selection",
+                type: "text",
+                properties: {
+                    content: "Select an activity to view details",
+                    visibleIf: { stateKey: "hasSelectedActivity", equals: false }
+                }
             },
             {
-              id: "detail_meta",
-              type: "text",
-              properties: {
-                content: "{{state.selectedActivity.source}} - {{state.selectedActivity.timestamp}}"
-              }
-            },
-            {
-              id: "open_btn",
-              type: "button",
-              label: "Open in Tool",
-              properties: {
-                // Declarative visibility
-                visibleIf: { stateKey: "hasSelectedActivityWithUrl", equals: true }
-              },
-              events: [
-                { type: "onClick", actionId: "open_in_tool" }
-              ]
+                id: "selection_container",
+                type: "container",
+                properties: {
+                    layout: "column",
+                    visibleIf: { stateKey: "hasSelectedActivity", equals: true }
+                },
+                children: [
+                    {
+                      id: "detail_title",
+                      type: "text",
+                      properties: {
+                        content: "{{state.selectedActivity.title}}",
+                        variant: "h3"
+                      }
+                    },
+                    {
+                      id: "detail_meta",
+                      type: "text",
+                      properties: {
+                        content: "{{state.selectedActivity.source}} • {{state.selectedActivity.timestamp}}"
+                      }
+                    },
+                    {
+                      id: "detail_desc",
+                      type: "text",
+                      properties: {
+                        content: "{{state.selectedActivity.description}}"
+                      }
+                    },
+                    {
+                      id: "open_btn",
+                      type: "button",
+                      label: "Open in Tool",
+                      properties: {
+                        // Declarative visibility
+                        visibleIf: { stateKey: "hasSelectedActivityWithUrl", equals: true }
+                      },
+                      events: [
+                        { type: "onClick", actionId: "open_in_tool" }
+                      ]
+                    }
+                ]
             }
           ]
         }
@@ -188,8 +190,6 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
       config: {
         capabilityId: "activity_feed_list", // Canonical capability (virtual)
         assign: "activities",
-        // Filters are passed here if the capability supports them, but user said "Filters NEVER refetch"
-        // So we fetch all (or reasonable default) and filter client-side.
         args: {
             limit: 50
         }

@@ -48,6 +48,20 @@ async function run() {
   // 7. Validate
   validateCompiledIntent(intent, undefined, { mode: "create" });
   
+  // Test 2: UI Structure & Wiring
+  console.log("Test 2: UI Structure & Wiring...");
+  const pages = intent.tool_mutation.pagesAdded || [];
+  assert(pages.length === 1, "Expected 1 page");
+  const page = pages[0];
+  const filters = page.components.find((c: any) => c.id === "filters_container");
+  assert(filters, "Filters container missing");
+  
+  // Check action wiring
+  // select_activity should be internal and reachable
+  const selectAction = actions.find((a: any) => a.id === "select_activity");
+  assert(selectAction, "select_activity action missing");
+  assert(selectAction.type === "internal", "select_activity should be internal");
+  
   console.log("ok: Activity Dashboard template tests passed");
 }
 

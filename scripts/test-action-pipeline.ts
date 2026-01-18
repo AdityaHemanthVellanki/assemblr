@@ -894,9 +894,11 @@ async function runTests() {
     buildExecutionGraph(intentBadCap);
     validateCompiledIntent(intentBadCap);
     const nodes = intentBadCap.execution_graph.nodes;
-    assert(nodes.length === 1, "Execution graph has one node for invalid capability action");
-    assert(nodes[0].type === "emit_event", "Invalid capability action downgraded to emit_event");
-    assert(!nodes[0].capabilityId, "Execution node does not carry invalid capabilityId");
+    // __init__ + downgrade action
+    assert(nodes.length === 2, "Execution graph has two nodes (init + downgraded action)");
+    const downgraded = nodes.find((n: any) => n.id !== "__init__");
+    assert(downgraded.type === "emit_event", "Invalid capability action downgraded to emit_event");
+    assert(!downgraded.capabilityId, "Execution node does not carry invalid capabilityId");
     console.log("✅ PASS: Invalid capability IDs are downgraded without throwing InvalidIntentGraph");
   } catch (e: any) {
     console.error(`❌ FAIL: Invalid capability downgrade test failed: ${e.message}`);
@@ -936,6 +938,43 @@ async function runTests() {
     console.log("✅ PASS: Materializer does not throw for missing action references");
   } catch (e: any) {
     console.error(`❌ FAIL: Materializer missing-action resilience test failed: ${e.message}`);
+    failures++;
+  }
+
+  console.log("\n--- Test 12: Chained Derivations & Time Filter ---");
+  try {
+    const specChained: MiniAppSpec = {
+      kind: "mini_app",
+      title: "Chained Filter App",
+      state: {
+        items: [
+          { id: 1, tool: "github", timestamp: new Date(Date.now() - 1000).toISOString() }, // 1s ago
+          { id: 2, tool: "slack", timestamp: new Date(Date.now() - 100000000).toISOString() }, // ~1 day ago
+          { id: 3, tool: "github", timestamp: new Date(Date.now() - 1000000000).toISOString() }, // ~11 days ago
+        ],
+        toolFilter: "github",
+        timeFilter: "7d",
+        __derivations: {
+          byTool: { source: "items", op: "filter", args: { field: "tool", equalsKey: "toolFilter" } },
+          byTime: { source: "byTool", op: "filter", args: { sinceKey: "timeFilter" } } // Should use timestamp field by default
+        } as any
+      },
+      pages: [],
+      actions: []
+    };
+    const storeChained = new MiniAppStore(specChained, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    const snap = storeChained.getSnapshot();
+    
+    // byTool should have id 1 and 3
+    assert(snap.state.byTool.length === 2, "First filter (tool) applied correctly");
+    
+    // byTime should filter out id 3 (> 7 days)
+    assert(snap.state.byTime.length === 1, "Second filter (time) applied correctly");
+    assert(snap.state.byTime[0].id === 1, "Correct item remains after chained filters");
+    
+    console.log("✅ PASS: Chained derivations and time filtering work");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Chained derivations test failed: ${e.message}`);
     failures++;
   }
 

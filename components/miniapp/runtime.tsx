@@ -191,86 +191,159 @@ export class MiniAppStore {
 
   private computeDerivedPatch(state: Record<string, any>): Record<string, any> {
     const defs = state.__derivations;
-    if (!Array.isArray(defs)) return {};
+    if (!defs || typeof defs !== "object") return {};
+    
+    // Support both Array (legacy) and Object (new)
+    const entries = Array.isArray(defs) 
+      ? defs 
+      : Object.entries(defs).map(([target, def]: [string, any]) => ({ target, ...def }));
+    
+    // Note: To support chained derivations (A -> B -> C), we need to compute sequentially
+    // and feed the intermediate results back into the state view used for next computation.
+    // BUT, we only emit a patch at the end.
+    
     const patch: Record<string, any> = {};
-    for (const d of defs) {
+    const workingState = { ...state }; // Clone base state
+
+    for (const d of entries) {
       if (!d || typeof d !== "object") continue;
       const target = typeof d.target === "string" ? d.target : undefined;
       const source = typeof d.source === "string" ? d.source : undefined;
       const op = typeof d.op === "string" ? d.op : undefined;
+      
+      // console.log("Derivation:", { target, source, op });
+
       if (!target || !source || !op) continue;
 
-      const srcVal = state[source];
+      // Use workingState to allow chaining
+      const srcVal = workingState[source];
       const srcArr = Array.isArray(srcVal) ? srcVal : [];
       const args = (d.args ?? {}) as Record<string, any>;
 
+      // console.log("Src:", source, srcArr.length);
+
+      let result: any = undefined;
+
       if (op === "filter") {
         const field = typeof args.field === "string" ? args.field : undefined;
-        if (!field) continue;
+        
+        // Time filter support (special case: doesn't strictly require 'field' if using timestamp, but logic below assumes field for other filters)
+        // If we only filter by time, field might be optional? 
+        // Current logic requires 'field' for generic filter. 
+        // Let's allow field to be undefined IF sinceKey is present.
+        const sinceKey = typeof args.sinceKey === "string" ? args.sinceKey : undefined;
+        
+        if (!field && !sinceKey) continue;
+        
         const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
         const includesKey = typeof args.includesKey === "string" ? args.includesKey : undefined;
-        const equalsValRaw = equalsKey ? state[equalsKey] : args.equals;
-        const includesValRaw = includesKey ? state[includesKey] : args.includes;
+        const equalsValRaw = equalsKey ? workingState[equalsKey] : args.equals;
+        const includesValRaw = includesKey ? workingState[includesKey] : args.includes;
         const equalsVal = equalsValRaw === "__all__" ? "" : equalsValRaw;
         const includesVal = includesValRaw === "__all__" ? "" : includesValRaw;
-        patch[target] = srcArr.filter((it: any) => {
-          const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+        
+        const sinceVal = sinceKey ? workingState[sinceKey] : args.since;
+
+        result = srcArr.filter((it: any) => {
+          const v = it && typeof it === "object" && field ? (it as any)[field] : undefined;
+          
+          // Time filter
+          if (sinceVal && sinceVal !== "__all__") {
+              const ts = it && typeof it === "object" ? (it as any)["timestamp"] : undefined; 
+              if (ts) {
+                  const dateVal = new Date(ts).getTime();
+                  const now = Date.now();
+                  let cutoff = 0;
+                  if (sinceVal === "24h") cutoff = now - 24 * 60 * 60 * 1000;
+                  else if (sinceVal === "7d") cutoff = now - 7 * 24 * 60 * 60 * 1000;
+                  else if (sinceVal === "30d") cutoff = now - 30 * 24 * 60 * 60 * 1000;
+                  
+                  if (cutoff > 0 && dateVal < cutoff) return false;
+              }
+          }
+
           if (includesVal != null && includesVal !== "") return String(v ?? "").includes(String(includesVal));
           if (equalsVal != null && equalsVal !== "") return String(v ?? "") === String(equalsVal);
           return true;
         });
-        continue;
       }
 
-      if (op === "sort") {
+      else if (op === "find") {
+         const field = typeof args.field === "string" ? args.field : "id";
+         const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
+         const equalsVal = equalsKey ? workingState[equalsKey] : args.equals;
+         
+         if (equalsVal === undefined || equalsVal === null || equalsVal === "") {
+             result = null;
+         } else {
+             result = srcArr.find((it: any) => {
+                 const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+                 return String(v) === String(equalsVal);
+             }) ?? null;
+         }
+      }
+
+      else if (op === "exists" || op === "defined") {
+         // Check if source value itself exists/is not null
+         // If source is "selectedActivity", srcVal is the object.
+         let exists = srcVal !== undefined && srcVal !== null;
+         if (exists && Array.isArray(srcVal)) exists = srcVal.length > 0;
+         
+         if (exists && args.field) {
+             const v = typeof srcVal === 'object' ? (srcVal as any)[args.field] : undefined;
+             exists = v !== undefined && v !== null && v !== "";
+         }
+         result = exists;
+      }
+      
+      else if (op === "sort") {
         const field = typeof args.field === "string" ? args.field : undefined;
-        if (!field) continue;
-        const dir = args.direction === "asc" || args.direction === "desc" ? args.direction : "asc";
-        const next = [...srcArr];
-        next.sort((a: any, b: any) => {
-          const av = a && typeof a === "object" ? (a as any)[field] : undefined;
-          const bv = b && typeof b === "object" ? (b as any)[field] : undefined;
-          const na = typeof av === "number" ? av : Number.isFinite(Number(av)) ? Number(av) : null;
-          const nb = typeof bv === "number" ? bv : Number.isFinite(Number(bv)) ? Number(bv) : null;
-          let cmp = 0;
-          if (na != null && nb != null) cmp = na - nb;
-          else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
-          return dir === "asc" ? cmp : -cmp;
-        });
-        patch[target] = next;
-        continue;
-      }
-
-      if (op === "map") {
-        const pick = Array.isArray(args.pick) ? args.pick.filter((x: any) => typeof x === "string") : [];
-        if (!pick.length) continue;
-        patch[target] = srcArr.map((it: any) => {
-          const out: Record<string, any> = {};
-          for (const k of pick) out[k] = it && typeof it === "object" ? (it as any)[k] : undefined;
-          return out;
-        });
-        continue;
-      }
-
-      if (op === "count") {
-        patch[target] = srcArr.length;
-        continue;
-      }
-
-      if (op === "groupByCount") {
-        const field = typeof args.field === "string" ? args.field : undefined;
-        if (!field) continue;
-        const m = new Map<string, number>();
-        for (const it of srcArr) {
-          const v = it && typeof it === "object" ? (it as any)[field] : undefined;
-          const k = String(v ?? "");
-          m.set(k, (m.get(k) ?? 0) + 1);
+        if (field) {
+            const dir = args.direction === "asc" || args.direction === "desc" ? args.direction : "asc";
+            const next = [...srcArr];
+            next.sort((a: any, b: any) => {
+              const av = a && typeof a === "object" ? (a as any)[field] : undefined;
+              const bv = b && typeof b === "object" ? (b as any)[field] : undefined;
+              const na = typeof av === "number" ? av : Number.isFinite(Number(av)) ? Number(av) : null;
+              const nb = typeof bv === "number" ? bv : Number.isFinite(Number(bv)) ? Number(bv) : null;
+              let cmp = 0;
+              if (na != null && nb != null) cmp = na - nb;
+              else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+              return dir === "asc" ? cmp : -cmp;
+            });
+            result = next;
         }
-        patch[target] = Array.from(m.entries()).map(([key, count]) => ({ key, count }));
-        continue;
       }
 
-      if (op === "latest") {
+      else if (op === "map") {
+        const pick = Array.isArray(args.pick) ? args.pick.filter((x: any) => typeof x === "string") : [];
+        if (pick.length) {
+            result = srcArr.map((it: any) => {
+              const out: Record<string, any> = {};
+              for (const k of pick) out[k] = it && typeof it === "object" ? (it as any)[k] : undefined;
+              return out;
+            });
+        }
+      }
+
+      else if (op === "count") {
+        result = srcArr.length;
+      }
+      
+      else if (op === "groupByCount") {
+        const field = typeof args.field === "string" ? args.field : undefined;
+        if (field) {
+            const m = new Map<string, number>();
+            for (const it of srcArr) {
+              const v = it && typeof it === "object" ? (it as any)[field] : undefined;
+              const k = String(v ?? "");
+              m.set(k, (m.get(k) ?? 0) + 1);
+            }
+            result = Array.from(m.entries()).map(([key, count]) => ({ key, count }));
+        }
+      }
+      
+      else if (op === "latest") {
         const byField = typeof args.byField === "string" ? args.byField : "timestamp";
         const next = [...srcArr];
         next.sort((a: any, b: any) => {
@@ -278,11 +351,10 @@ export class MiniAppStore {
           const bv = b && typeof b === "object" ? (b as any)[byField] : undefined;
           return String(bv ?? "").localeCompare(String(av ?? ""));
         });
-        patch[target] = next[0] ?? null;
-        continue;
+        result = next[0] ?? null;
       }
-
-      if (op === "aggregateByDay") {
+      
+      else if (op === "aggregateByDay") {
         const tsField = typeof args.timestampField === "string" ? args.timestampField : "timestamp";
         const m = new Map<string, number>();
         for (const it of srcArr) {
@@ -292,40 +364,14 @@ export class MiniAppStore {
           const day = d.toISOString().slice(0, 10);
           m.set(day, (m.get(day) ?? 0) + 1);
         }
-        patch[target] = Array.from(m.entries())
+        result = Array.from(m.entries())
           .sort((a, b) => a[0].localeCompare(b[0]))
           .map(([day, count]) => ({ day, count }));
-        continue;
       }
 
-      if (op === "find") {
-        const field = typeof args.field === "string" ? args.field : "id";
-        const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
-        const equalsVal = equalsKey ? state[equalsKey] : args.equals;
-        
-        if (equalsVal === undefined || equalsVal === null || equalsVal === "") {
-            patch[target] = null;
-            continue;
-        }
-        
-        patch[target] = srcArr.find((it: any) => {
-            const v = it && typeof it === "object" ? (it as any)[field] : undefined;
-            return String(v) === String(equalsVal);
-        }) ?? null;
-        continue;
-      }
-
-      if (op === "exists" || op === "defined") {
-        let exists = srcVal !== undefined && srcVal !== null;
-        if (exists && Array.isArray(srcVal)) exists = srcVal.length > 0;
-        
-        if (exists && args.field) {
-            const v = typeof srcVal === 'object' ? (srcVal as any)[args.field] : undefined;
-            exists = v !== undefined && v !== null && v !== "";
-        }
-        
-        patch[target] = exists;
-        continue;
+      if (result !== undefined) {
+          patch[target] = result;
+          workingState[target] = result; // Update working state for chaining
       }
     }
     return patch;
@@ -448,6 +494,18 @@ export class MiniAppStore {
 
     if (type === "navigation") {
       const pageId = config.pageId;
+      const url = config.url;
+      const target = config.target || "_self";
+
+      if (typeof url === "string" && url.length) {
+          try {
+            window.open(url, target);
+          } catch (e) {
+            console.error("Navigation failed", e);
+          }
+          return;
+      }
+
       if (typeof pageId === "string" && pageId.length) this.setActivePageId(pageId);
       return;
     }
@@ -464,6 +522,7 @@ export class MiniAppStore {
         (config.args ?? config.params ?? config.payload ?? {}) as Record<string, any>;
       const args = evaluateArgs(argsRaw, ctx);
       const assignKey = typeof config.assign === "string" ? config.assign : undefined;
+      const capabilityId = config.capabilityId;
 
       // Set loading state
       const loadingPatch: Record<string, any> = {
@@ -481,7 +540,68 @@ export class MiniAppStore {
       this.addTrace({ actionId, type: "integration", status: "loading", message: `Calling integration...`, data: args });
       this.emit();
 
-      const res = await this.integrations.call(actionId, args);
+      // INTERCEPT: Multi-Integration Fan-Out for Activity Dashboard
+      let res: IntegrationResult;
+      if (capabilityId === "activity_feed_list") {
+          try {
+              // We need to call multiple integrations.
+              // Since 'this.integrations.call' expects a single actionId (which maps to a capability or action?),
+              // and the runtime doesn't know about "connected integrations" directly (unless passed in state or context).
+              // We'll attempt to call specific known capabilities for standard tools.
+              // We assume 'this.integrations.call' can handle arbitrary capability IDs if the backend supports them.
+              
+              const targets = [
+                  { id: "github_commits_list", tool: "github" },
+                  { id: "slack_messages_list", tool: "slack" },
+                  { id: "notion_pages_search", tool: "notion" },
+                  { id: "google_drive_list", tool: "google" }
+              ];
+              
+              const promises = targets.map(async (t) => {
+                  try {
+                      // Call with minimal args
+                      const r = await this.integrations.call(t.id, { limit: 20 });
+                      if (r.status === "success") {
+                          return r.rows.map((row: any) => ({
+                              id: row.id || row.sha || row.ts || Math.random().toString(36),
+                              title: row.title || row.message || row.name || row.commit?.message || "Untitled",
+                              description: row.body || row.text || row.description || "",
+                              tool: t.tool,
+                              timestamp: row.timestamp || row.created_at || row.created_time || new Date().toISOString(),
+                              url: row.url || row.html_url || row.permalink || row.webViewLink
+                          }));
+                      }
+                      return [];
+                  } catch (e) {
+                      console.warn(`Failed to fetch from ${t.tool}`, e);
+                      return [];
+                  }
+              });
+              
+              const results = await Promise.all(promises);
+              const merged = results.flat().sort((a, b) => 
+                  new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+              );
+              
+              // Normalize data structure for UI
+              const normalized = merged.map(item => ({
+                  id: String(item.id),
+                  title: String(item.title || "Untitled"),
+                  source: String(item.tool || "unknown"),
+                  description: String(item.description || ""),
+                  timestamp: item.timestamp,
+                  url: item.url ? String(item.url) : undefined
+              }));
+              
+              res = { status: "success", rows: normalized };
+          } catch (e) {
+              res = { status: "error", error: e instanceof Error ? e.message : String(e) };
+          }
+      } else {
+          // Standard single call
+          res = await this.integrations.call(actionId, args);
+      }
+
       this.resultsByActionId[actionId] = res;
 
       if (res.status === "success") {

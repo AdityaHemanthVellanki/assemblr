@@ -612,7 +612,13 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
     nodes.unshift(initNode);
     for (const rootId of roots) {
       if (rootId === initId) continue;
-      edges.push({ from: initId, to: rootId });
+      // Filter: Only connect lifecycle roots (onPageLoad) to __init__
+      // UI actions (triggered by onClick, etc) should NOT be connected to __init__
+      // as they are not triggered by app initialization.
+      const rawKind = rootKindById.get(rootId);
+      if (rawKind === "lifecycle" || rawKind === "synthetic" || !rawKind) {
+         edges.push({ from: initId, to: rootId });
+      }
     }
   }
 
