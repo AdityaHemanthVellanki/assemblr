@@ -53,13 +53,22 @@ type IntegrationListItem = IntegrationUiConfig & {
   connected: boolean;
   connectedAt: string | null;
   updatedAt: string | null;
-  status?: string; // Add status support
+  status: string;
 };
 
 type FilterMode = "all" | "connected" | "not_connected";
 
-function statusDotClass(connected: boolean) {
-  return connected ? "bg-emerald-500" : "bg-muted-foreground/50";
+function statusDotClass(status: string) {
+  if (status === "active") return "bg-emerald-500";
+  if (status === "error") return "bg-red-500";
+  return "bg-muted-foreground/50";
+}
+
+function statusLabel(status: string, connected: boolean) {
+    if (!connected) return "Not connected";
+    if (status === "active") return "Healthy";
+    if (status === "error") return "Error";
+    return "Connected";
 }
 
 function safeJsonMessage(err: unknown) {
@@ -187,7 +196,7 @@ export default function IntegrationsPage() {
     return integrations.find((i) => i.id === active.id) ?? null;
   }, [active, integrations]);
 
-  const openConnect = React.useCallback((integrationId: string) => {
+  const openConnect = React.useCallback(async (integrationId: string) => {
     setFormError(null);
     setDisconnectMode(false);
     setSubmitting(false);
@@ -196,7 +205,41 @@ export default function IntegrationsPage() {
     const current = integrations.find((i) => i.id === integrationId);
     if (!current) return;
 
-    // Pre-fill defaults
+    // CRITICAL FIX: Direct OAuth Redirect
+    // If it's an OAuth integration, skip the modal and redirect immediately.
+    // The "connectionMode" logic might vary, but all 5 supported tools are "hosted_oauth".
+    if (current.connectionMode === "hosted_oauth" || current.auth.type === "oauth") {
+        try {
+            // Set local loading state (optimistic)
+            setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
+            
+            const res = await fetch(`/api/integrations/${integrationId}/connect`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            });
+            
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || "Failed to initiate connection");
+            }
+            
+            const { redirectUrl } = await res.json();
+            if (redirectUrl) {
+                window.location.href = redirectUrl;
+                return;
+            } else {
+                throw new Error("No redirect URL returned");
+            }
+        } catch (e) {
+            console.error("Connect failed", e);
+            setPageError(safeJsonMessage(e));
+            // Revert status
+            await load(); // Refresh to get true status
+            return;
+        }
+    }
+
+    // Pre-fill defaults for other types (e.g. database/api_key)
     const initialValues: Record<string, unknown> = {};
     if (current.auth.type === "database") {
       initialValues.port = 5432;
@@ -214,7 +257,7 @@ export default function IntegrationsPage() {
       auth: current.auth,
     };
     setActive(config);
-  }, [integrations]);
+  }, [integrations, load]);
 
   const closeModal = React.useCallback(() => {
     setActive(null);
@@ -311,7 +354,7 @@ export default function IntegrationsPage() {
     <div className="mx-auto w-full max-w-6xl space-y-6">
       <div className="space-y-1">
         <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
-        <p className="text-muted-foreground">Connect your tools and data sources to Assemblr.</p>
+        <p className="text-muted-foreground">Connect your tools to power real, live dashboards</p>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -376,14 +419,14 @@ export default function IntegrationsPage() {
                   </div>
 
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className={`h-2 w-2 rounded-full ${statusDotClass(i.connected)}`} />
-                    {i.connected ? "Connected" : "Not connected"}
+                    <span className={`h-2 w-2 rounded-full ${statusDotClass(i.status)}`} />
+                    {statusLabel(i.status, i.connected)}
                   </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-3 pt-2">
                   <div className="text-xs text-muted-foreground truncate">
-                    {i.connectedAt ? `Synced ${formatTimestamp(i.connectedAt)}` : "Ready to connect"}
+                    {i.connected ? `Synced ${formatTimestamp(i.updatedAt || i.connectedAt || "")}` : "Ready to connect"}
                   </div>
                   <Button
                     type="button"
@@ -427,8 +470,12 @@ export default function IntegrationsPage() {
 
             <div className="mt-8 space-y-6">
               {activeStatus?.connected ? (
-                <div className="rounded-md border border-border bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
-                   ✓ Connected since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
+                <div className={`rounded-md border p-3 text-sm ${
+                    activeStatus.status === "error" 
+                    ? "border-destructive/20 bg-destructive/10 text-destructive" 
+                    : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                }`}>
+                   {activeStatus.status === "error" ? "⚠ Connection Error" : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
                 </div>
               ) : null}
 

@@ -45,9 +45,37 @@ export class VersioningService {
         diff
     };
 
-    const { error } = await (supabase.from("tool_versions") as any).insert(version);
-    if (error) {
-      throw new Error(`Failed to persist version to tool_versions table: ${error.message ?? "Unknown error"}`);
+    // SAFE PERSISTENCE: Best-effort only. Never throw.
+    try {
+        // Known allowed columns - protect against schema drift
+        // We whitelist only the columns we know exist or are critical.
+        // If the DB has extra columns, they should be nullable.
+        // If the DB is missing columns, we avoid sending them.
+        const ALLOWED_COLUMNS = [
+            "id", "tool_id", "created_at", "intent_summary", 
+            "mini_app_spec", "status", "diff"
+        ];
+        
+        // Pick only allowed columns
+        const safePayload: any = {};
+        for (const col of ALLOWED_COLUMNS) {
+            if ((version as any)[col] !== undefined) {
+                safePayload[col] = (version as any)[col];
+            }
+        }
+        
+        // Attempt insert
+        const { error } = await (supabase.from("tool_versions") as any).insert(safePayload);
+        
+        if (error) {
+            console.warn(`[VersioningService] Persistence failed (non-fatal): ${error.message}. Falling back to ephemeral mode.`);
+            version.mode = "ephemeral";
+        } else {
+            version.mode = "persistent";
+        }
+    } catch (e) {
+        console.warn("[VersioningService] Persistence exception (non-fatal). Falling back to ephemeral mode.", e);
+        version.mode = "ephemeral";
     }
 
     return version;

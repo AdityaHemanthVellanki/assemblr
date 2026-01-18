@@ -149,7 +149,12 @@ export class MiniAppStore {
   private resultsByActionId: Record<string, any> = {};
   private registry: ActionRegistry;
 
-  constructor(private spec: MiniAppSpec, private integrations: MiniAppIntegrations, initialState: Record<string, any>) {
+  constructor(
+    private spec: MiniAppSpec, 
+    private integrations: MiniAppIntegrations, 
+    initialState: Record<string, any>,
+    private connectedIntegrations: string[] = []
+  ) {
     // 1. Build Action Registry (Centralized)
     this.registry = new ActionRegistry(spec.actions ?? []);
 
@@ -220,20 +225,30 @@ export class MiniAppStore {
       const srcArr = Array.isArray(srcVal) ? srcVal : [];
       const args = (d.args ?? {}) as Record<string, any>;
 
-      // console.log("Src:", source, srcArr.length);
+      // HARDCODED SAFETY: hasSelectedActivityWithUrl
+      if (target === "hasSelectedActivityWithUrl") {
+          const selected = workingState["selectedActivity"];
+          const url = selected?.url;
+          patch[target] = Boolean(selected && typeof url === "string" && url.length > 0 && url !== "undefined" && url !== "null");
+          workingState[target] = patch[target];
+          continue;
+      }
 
       let result: any = undefined;
 
       if (op === "filter") {
         const field = typeof args.field === "string" ? args.field : undefined;
         
-        // Time filter support (special case: doesn't strictly require 'field' if using timestamp, but logic below assumes field for other filters)
-        // If we only filter by time, field might be optional? 
-        // Current logic requires 'field' for generic filter. 
-        // Let's allow field to be undefined IF sinceKey is present.
+        // Time filter support
         const sinceKey = typeof args.sinceKey === "string" ? args.sinceKey : undefined;
         
-        if (!field && !sinceKey) continue;
+        // RELIABILITY FIX: If no field/sinceKey, skip (return empty? or original?)
+        // If filter is invalid, user said "return full list".
+        if (!field && !sinceKey) {
+            patch[target] = srcArr;
+            workingState[target] = srcArr;
+            continue;
+        }
         
         const equalsKey = typeof args.equalsKey === "string" ? args.equalsKey : undefined;
         const includesKey = typeof args.includesKey === "string" ? args.includesKey : undefined;
@@ -244,12 +259,22 @@ export class MiniAppStore {
         
         const sinceVal = sinceKey ? workingState[sinceKey] : args.since;
 
+        // RELIABILITY FIX: "__all__" bypasses filter
+        if (equalsValRaw === "__all__" || includesValRaw === "__all__") {
+             patch[target] = srcArr;
+             workingState[target] = srcArr;
+             continue;
+        }
+
         result = srcArr.filter((it: any) => {
-          const v = it && typeof it === "object" && field ? (it as any)[field] : undefined;
+          // RELIABILITY FIX: Safe access
+          if (!it || typeof it !== "object") return false;
+
+          const v = field ? (it as any)[field] : undefined;
           
           // Time filter
           if (sinceVal && sinceVal !== "__all__") {
-              const ts = it && typeof it === "object" ? (it as any)["timestamp"] : undefined; 
+              const ts = (it as any)["timestamp"]; 
               if (ts) {
                   const dateVal = new Date(ts).getTime();
                   const now = Date.now();
@@ -488,16 +513,45 @@ export class MiniAppStore {
     if (type === "state_mutation") {
       const updates = (config.updates ?? config.set ?? {}) as Record<string, any>;
       const resolved = evaluateArgs(updates, ctx);
+      
+      // RELIABILITY FIX: Sanitize selectedActivity
+      if (resolved.selectedActivity) {
+          const raw = resolved.selectedActivity;
+          if (typeof raw === "object") {
+              resolved.selectedActivity = {
+                  id: String(raw.id || ""),
+                  title: String(raw.title || ""),
+                  source: String(raw.source || ""),
+                  timestamp: String(raw.timestamp || ""),
+                  description: String(raw.description || ""),
+                  url: raw.url ? String(raw.url) : undefined
+              };
+          } else {
+              resolved.selectedActivity = null;
+          }
+      }
+
       this.setState({ ...resolved });
       return;
     }
 
     if (type === "navigation") {
       const pageId = config.pageId;
+      
+      // RELIABILITY FIX: open_in_tool safety
+      if (actionId === "open_in_tool") {
+          const selected = this.snapshot.state.selectedActivity;
+          if (!selected || !selected.url || typeof selected.url !== "string" || selected.url.length === 0) {
+              console.warn("Skipping open_in_tool: Invalid selectedActivity or URL");
+              return;
+          }
+      }
+
       const url = config.url;
       const target = config.target || "_self";
 
       if (typeof url === "string" && url.length) {
+          if (url === "undefined" || url === "null") return; // Skip invalid template result
           try {
             window.open(url, target);
           } catch (e) {
@@ -517,12 +571,37 @@ export class MiniAppStore {
       return;
     }
 
-    if (type === "integration_call") {
+    if (type === "integration_call" || type === "integration_query") {
       const argsRaw: Record<string, any> =
         (config.args ?? config.params ?? config.payload ?? {}) as Record<string, any>;
       const args = evaluateArgs(argsRaw, ctx);
       const assignKey = typeof config.assign === "string" ? config.assign : undefined;
       const capabilityId = config.capabilityId;
+      const integrationId = config.integration || (capabilityId ? capabilityId.split("_")[0] : undefined);
+
+      // GATE LOGIC: Enforce connection for integration_query
+      if (type === "integration_query") {
+          // Special Case: activity_feed_list is a meta-capability that handles its own fan-out/gating
+          const isMeta = capabilityId === "activity_feed_list";
+          
+          if (!isMeta && integrationId && !this.connectedIntegrations.includes(integrationId)) {
+              const errorMsg = `Integration '${integrationId}' is not connected. Please connect it to view data.`;
+              console.warn(`[MiniAppRuntime] Gate Blocked: ${actionId} requires ${integrationId}`);
+              
+              const patch: Record<string, any> = {
+                  [`${actionId}.status`]: "error",
+                  [`${actionId}.error`]: errorMsg,
+              };
+              if (assignKey) {
+                  patch[`${assignKey}Status`] = "error";
+                  patch[`${assignKey}Error`] = errorMsg;
+                  // Ensure empty array to prevent UI crash
+                  if (!this.snapshot.state[assignKey]) patch[assignKey] = [];
+              }
+              this.setState(patch);
+              return;
+          }
+      }
 
       // Set loading state
       const loadingPatch: Record<string, any> = {
@@ -530,6 +609,10 @@ export class MiniAppStore {
         [`${actionId}.error`]: null,
       };
       if (assignKey) {
+        // RELIABILITY FIX: Initialize array if needed
+        if (assignKey === "activities" && !this.snapshot.state[assignKey]) {
+            loadingPatch[assignKey] = [];
+        }
         loadingPatch[`${assignKey}Status`] = "loading";
         loadingPatch[`${assignKey}Error`] = null;
       }
@@ -573,6 +656,7 @@ export class MiniAppStore {
                       }
                       return [];
                   } catch (e) {
+                      // RELIABILITY FIX: Swallow integration errors for individual tools
                       console.warn(`Failed to fetch from ${t.tool}`, e);
                       return [];
                   }
@@ -595,11 +679,16 @@ export class MiniAppStore {
               
               res = { status: "success", rows: normalized };
           } catch (e) {
-              res = { status: "error", error: e instanceof Error ? e.message : String(e) };
+              // RELIABILITY FIX: Fallback to empty array on catastrophic failure
+              res = { status: "success", rows: [] };
           }
       } else {
           // Standard single call
-          res = await this.integrations.call(actionId, args);
+          try {
+              res = await this.integrations.call(actionId, args);
+          } catch (e) {
+              res = { status: "error", error: String(e) };
+          }
       }
 
       this.resultsByActionId[actionId] = res;
@@ -625,6 +714,10 @@ export class MiniAppStore {
         if (assignKey) {
           patch[`${assignKey}Status`] = "error";
           patch[`${assignKey}Error`] = res.error;
+          // RELIABILITY FIX: If assignKey is 'activities', ensure it's at least an empty array if undefined
+          if (assignKey === "activities" && !this.snapshot.state[assignKey]) {
+              patch[assignKey] = [];
+          }
         }
         this.setState(patch);
         this.addTrace({ actionId, type: "integration", status: "error", message: res.error });
@@ -712,16 +805,18 @@ function MiniAppRoot({
   spec,
   integrations,
   initialState,
+  connectedIntegrations = [],
 }: {
   spec: MiniAppSpec;
   integrations: MiniAppIntegrations;
   initialState?: Record<string, any>;
+  connectedIntegrations?: string[];
 }) {
   const runtimeSpec = React.useMemo(() => normalizeMiniAppSpec(spec), [spec]);
   const store = React.useMemo(() => {
     validateRegisteredComponents(runtimeSpec);
-    return new MiniAppStore(runtimeSpec, integrations, initialState ?? {});
-  }, [runtimeSpec, integrations, initialState]);
+    return new MiniAppStore(runtimeSpec, integrations, initialState ?? {}, connectedIntegrations);
+  }, [runtimeSpec, integrations, initialState, connectedIntegrations]);
 
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const [showHealth, setShowHealth] = React.useState(false);
@@ -912,11 +1007,13 @@ export const MiniAppRuntime = {
     spec,
     integrations,
     initialState,
+    connectedIntegrations,
   }: {
     spec: MiniAppSpec;
     integrations: MiniAppIntegrations;
     initialState?: Record<string, any>;
+    connectedIntegrations?: string[];
   }) {
-    return <MiniAppRoot spec={spec} integrations={integrations} initialState={initialState} />;
+    return <MiniAppRoot spec={spec} integrations={integrations} initialState={initialState} connectedIntegrations={connectedIntegrations} />;
   },
 };

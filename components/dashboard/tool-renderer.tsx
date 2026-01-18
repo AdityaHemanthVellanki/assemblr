@@ -34,9 +34,10 @@ interface ToolRendererProps {
   spec: ToolSpec;
   executionResults?: Record<string, ExecutionResult>;
   isLoading?: boolean;
+  connectedIntegrations?: string[];
 }
 
-export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }: ToolRendererProps) {
+export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, connectedIntegrations }: ToolRendererProps) {
   if (!spec) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -55,7 +56,7 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading }:
         return { status: "error" as const, error: result.error || "Unknown error" };
       },
     };
-    return MiniAppRuntime.run({ spec, integrations });
+    return MiniAppRuntime.run({ spec, integrations, connectedIntegrations });
   }
 
   // Dashboard Mode (Legacy)

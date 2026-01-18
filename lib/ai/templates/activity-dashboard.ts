@@ -185,7 +185,7 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
   actions: [
     {
       id: "fetch_activities",
-      type: "integration_call",
+      type: "integration_query",
       triggeredBy: { type: "lifecycle", event: "onPageLoad" },
       config: {
         capabilityId: "activity_feed_list", // Canonical capability (virtual)
@@ -214,40 +214,6 @@ export const ACTIVITY_DASHBOARD_TEMPLATE: MiniAppSpec = {
         target: "_blank"
       }
     },
-    // Filter actions are implicit via bindKey?
-    // User said: "Internal Actions: set_tool_filter, set_activity_type_filter..."
-    // But also: "A Select component MUST use exactly one of: bindKey (controlled) OR stateUpdate."
-    // If we use bindKey, we don't need explicit actions for setting state, the runtime handles it.
-    // However, the user listed "set_tool_filter" as an Internal Action in the prompt.
-    // If I use bindKey, the runtime does `setState({ [bindKey]: val })` automatically.
-    // Does that count as an action? In `runtime.tsx`, `TextInputComponent` and `DropdownComponent` do:
-    // `if (bindKey) setState({ [bindKey]: next }); emit("onChange", ...)`
-    // If I want to be strict and explicit, I should maybe use `stateUpdate` event instead of `bindKey`?
-    // But `bindKey` is the "controlled" mode.
-    // The user said: "A Select component MUST use exactly one of: bindKey (controlled) OR stateUpdate."
-    // If I use bindKey, I don't need an action.
-    // BUT the user listed `set_tool_filter` in "Internal Actions".
-    // Maybe the user wants me to use `stateUpdate` via an action?
-    // Or maybe the user implies that `bindKey` IS the action mechanism?
-    // Let's stick to `bindKey` as it's cleaner for form inputs, and it's "Canonical".
-    // I will NOT add explicit `set_tool_filter` actions if `bindKey` covers it, 
-    // UNLESS the user explicitly wants them in the execution graph.
-    // "All actions must appear in the execution graph".
-    // `bindKey` updates state directly in runtime, it doesn't go through `dispatch` (except for `emit("onChange")`).
-    // If I want it in the graph, I should use `onChange` -> `set_tool_filter`.
-    // Let's use `bindKey` for simplicity and standard form behavior, but if strictness requires actions, I'll switch.
-    // User said: "Internal Actions ... set_tool_filter ... All actions MUST appear in the execution graph".
-    // This suggests I should use the Action Registry for these updates.
-    // So: Select component -> NO bindKey -> `onChange` event -> `set_tool_filter` action -> updates state.
-    // Wait, "Select component MUST use exactly one of: bindKey... OR stateUpdate".
-    // If I use `stateUpdate` (which is an inline definition?), wait.
-    // "UI components MUST NOT declare inline actions".
-    // So I must use `actionId`.
-    // So: Select component -> `onChange` -> actionId: `set_tool_filter`.
-    // `set_tool_filter` -> type: `internal`, config: { updates: { "filters.tool": "{{payload.value}}" } }
-    // AND `properties: { value: "{{state.filters.tool}}" }` (Controlled via prop, not bindKey).
-    // This satisfies "All actions must appear in the execution graph".
-    
     {
       id: "set_tool_filter",
       type: "internal",

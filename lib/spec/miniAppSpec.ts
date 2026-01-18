@@ -32,7 +32,7 @@ export const miniAppActionStepSchema = z
 export const miniAppActionSchema = z
   .object({
     id: z.string().min(1),
-    type: z.enum(["integration_call", "internal", "navigation", "workflow"]),
+    type: z.enum(["integration_call", "integration_query", "internal", "navigation", "workflow"]),
     config: z.record(z.string(), z.any()).optional(),
     steps: z.array(miniAppActionStepSchema).optional(),
     triggeredBy: z

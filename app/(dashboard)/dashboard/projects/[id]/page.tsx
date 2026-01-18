@@ -5,6 +5,7 @@ import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/
 import { getServerEnv } from "@/lib/env";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 
 export default async function ProjectPage({
   params,
@@ -65,10 +66,19 @@ export default async function ProjectPage({
       | undefined,
   }));
 
+  let connectedIntegrations: string[] = [];
+  try {
+      const connections = await loadIntegrationConnections({ supabase, orgId: ctx.orgId });
+      connectedIntegrations = connections.map(c => c.integration_id);
+  } catch (e) {
+      console.warn("Failed to load connections", e);
+  }
+
   return (
     <ProjectWorkspace
       project={{ id: projectRes.data.id, spec }}
       initialMessages={messages}
+      connectedIntegrations={connectedIntegrations}
     />
   );
 }

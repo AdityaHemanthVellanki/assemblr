@@ -7,6 +7,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { encryptJson } from "@/lib/security/encryption";
 
 import { fetchAndPersistSchemas } from "@/lib/schema/store";
+import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
 export async function GET(
   req: Request,
@@ -352,7 +353,17 @@ export async function GET(
       return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
     }
 
-    // 4. Trigger Schema Discovery
+    // 4. Run Health Check & Persist Status
+    // The user explicitly requested "Run a live test API call" and "Persist integration state: connected: true, healthy: true | false".
+    // We already have identity info which proves connectivity, but let's run the formal health check to populate integration_health table.
+    try {
+        await testIntegrationConnection({ orgId: storedState.orgId, integrationId: providerId });
+    } catch (healthErr) {
+        console.warn("Health check failed during callback (non-fatal for auth)", healthErr);
+        // We still consider it "active" because we got tokens, but health table will show error.
+    }
+
+    // 5. Trigger Schema Discovery
     try {
       console.log(`Triggering schema discovery for ${providerId} (Org: ${storedState.orgId})...`);
       // We pass the full token set so discoverers can use what they need (e.g. refresh tokens if implemented later)

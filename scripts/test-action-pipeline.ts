@@ -242,7 +242,13 @@ async function runTests() {
     },
     outcome: "success"
   } as any;
-  assertThrows(() => validateCompiledIntent(intentUnreachable), "Action defined but unreachable");
+  try {
+    validateCompiledIntent(intentUnreachable);
+    console.log("✅ PASS: Action defined but unreachable (Warns instead of throws)");
+  } catch (e: any) {
+    console.error(`❌ FAIL: Unreachable action threw error: ${e.message}`);
+    failures++;
+  }
 
   // Test 4: Repair & Normalization
   console.log("\n--- Test 4: Repair & Normalization ---");

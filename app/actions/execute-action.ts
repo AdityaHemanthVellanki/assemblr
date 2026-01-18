@@ -77,20 +77,45 @@ export async function executeToolAction(
     // 2. Parse Spec
     const parsedSpec = parseToolSpec(spec);
     const actions = (parsedSpec as any).actions as Array<any> | undefined;
-    const action = (actions ?? []).find((a) => a.id === actionId);
+    let action = (actions ?? []).find((a) => a.id === actionId);
 
+    // SYSTEM FIX: Support Virtual/Ephemeral Actions (for Runtime Fan-Out)
+    // If action is not in spec, but looks like a capability ID, allow it if it maps to a known capability.
+    // This allows the runtime to spawn sub-tasks like "github_commits_list" from "activity_feed_list".
     if (!action) {
-        throw new Error(`Action ${actionId} not found`);
+        const parts = actionId.split("_");
+        if (parts.length >= 2) {
+             // Heuristic: valid capability ID?
+             // We can check against a registry, but for now let's assume if it has an executor/runtime it's valid.
+             // We construct a synthetic action.
+             const integrationId = parts[0];
+             // Verify integration is valid/supported
+             if (RUNTIMES[integrationId] || EXECUTORS[integrationId] || assemblrABI.capabilities.get(actionId)) {
+                 action = {
+                     id: actionId,
+                     type: "integration_query",
+                     config: {
+                         integrationId: integrationId,
+                         capabilityId: actionId,
+                         params: {}
+                     }
+                 };
+             }
+        }
     }
 
-    if (action.type !== "integration_call") {
-        throw new Error("Only integration_call actions can be executed on server");
+    if (!action) {
+        throw new Error(`Action ${actionId} not found in spec or capability registry`);
+    }
+
+    if (action.type !== "integration_call" && action.type !== "integration_query") {
+        throw new Error(`Action type '${action.type}' cannot be executed on server. Only 'integration_call' and 'integration_query' are supported.`);
     }
 
     const config = action.config || {};
-    const integrationId = config.integrationId;
-    const capabilityId = config.capability; 
-    const defaultParams = config.params;
+    const integrationId = config.integrationId || config.integration; // Support both keys
+    const capabilityId = config.capability || config.capabilityId; // Support both keys
+    const defaultParams = config.params || config.args || {}; // Support both keys
 
     if (!integrationId || !capabilityId) {
         throw new Error("Invalid action configuration: missing integrationId or capabilityId");

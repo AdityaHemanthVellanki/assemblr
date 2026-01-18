@@ -3,10 +3,7 @@ type IntegrationConnectionRow = { integration_id: string };
 type IntegrationConnectionsQuery = {
   from: (table: "integration_connections") => {
     select: (columns: "integration_id") => {
-      eq: (
-        column: "org_id",
-        value: string,
-      ) => Promise<{ data: unknown; error: unknown }>;
+      eq: (column: string, value: string) => any;
     };
   };
 };
@@ -19,7 +16,8 @@ export async function loadIntegrationConnections(input: {
   const { data, error } = await supabase
     .from("integration_connections")
     .select("integration_id")
-    .eq("org_id", input.orgId);
+    .eq("org_id", input.orgId)
+    .eq("status", "active");
 
   if (error) {
     console.error("Failed to load integration connections", error);

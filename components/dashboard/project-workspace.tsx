@@ -24,6 +24,7 @@ interface ProjectWorkspaceProps {
       action?: "connect_integration";
     };
   }>;
+  connectedIntegrations?: string[];
 }
 
 type RuntimeStatus = {
@@ -36,6 +37,7 @@ type RuntimeStatus = {
 export function ProjectWorkspace({
   project,
   initialMessages,
+  connectedIntegrations,
 }: ProjectWorkspaceProps) {
   // State
   const [inputValue, setInputValue] = React.useState("");
@@ -256,7 +258,7 @@ export function ProjectWorkspace({
 
             <div className="hidden h-full min-w-[320px] max-w-xl flex-1 bg-muted/5 lg:flex lg:flex-col">
               {currentSpec && toolId ? (
-                <ToolRenderer toolId={toolId} spec={currentSpec} />
+                <ToolRenderer toolId={toolId} spec={currentSpec} connectedIntegrations={connectedIntegrations} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   Describe the tool you want to build to see a live preview.

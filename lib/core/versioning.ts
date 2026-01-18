@@ -17,6 +17,7 @@ export type ToolVersion = {
   execution_policy?: any;
   status: VersionStatus;
   diff?: VersionDiff;
+  mode?: "persistent" | "ephemeral";
 };
 
 export type VersionDiff = {
