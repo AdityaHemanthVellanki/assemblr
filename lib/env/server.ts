@@ -48,36 +48,36 @@ const serverEnvSchema = z
     }),
 
     // --------------------------------------------------------------------------
-    // OAUTH PROVIDERS (OPTIONAL AT STARTUP)
+    // OAUTH PROVIDERS (MANDATORY FOR PRODUCTION)
     // --------------------------------------------------------------------------
-    // These are required only when a user attempts to connect the specific integration.
-    // We allow the app to boot without them to simplify self-hosting and development.
+    // As per strict production-readiness directive, these are now REQUIRED.
+    // The system will crash if any are missing.
     // --------------------------------------------------------------------------
     
     // GitHub
-    GITHUB_CLIENT_ID: z.string().optional(),
-    GITHUB_CLIENT_SECRET: z.string().optional(),
+    GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required"),
+    GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required"),
 
     // Slack
-    SLACK_CLIENT_ID: z.string().optional(),
-    SLACK_CLIENT_SECRET: z.string().optional(),
+    SLACK_CLIENT_ID: z.string().min(1, "SLACK_CLIENT_ID is required"),
+    SLACK_CLIENT_SECRET: z.string().min(1, "SLACK_CLIENT_SECRET is required"),
 
     // Notion
-    NOTION_CLIENT_ID: z.string().optional(),
-    NOTION_CLIENT_SECRET: z.string().optional(),
+    NOTION_CLIENT_ID: z.string().min(1, "NOTION_CLIENT_ID is required"),
+    NOTION_CLIENT_SECRET: z.string().min(1, "NOTION_CLIENT_SECRET is required"),
 
     // Linear
-    LINEAR_CLIENT_ID: z.string().optional(),
-    LINEAR_CLIENT_SECRET: z.string().optional(),
+    LINEAR_CLIENT_ID: z.string().min(1, "LINEAR_CLIENT_ID is required"),
+    LINEAR_CLIENT_SECRET: z.string().min(1, "LINEAR_CLIENT_SECRET is required"),
 
     // Google
-    GOOGLE_CLIENT_ID: z.string().optional(),
-    GOOGLE_CLIENT_SECRET: z.string().optional(),
+    GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
+    GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required"),
 
     EMAIL_FROM: optionalString(),
     EMAIL_SERVER: optionalString(),
 
-    DATA_ENCRYPTION_KEY: optionalString(),
+    DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
   })
   .superRefine((env, ctx) => {
     const isProd = env.NODE_ENV === "production";
@@ -88,13 +88,6 @@ const serverEnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ["NEXT_PUBLIC_SITE_URL"],
         message: "NEXT_PUBLIC_SITE_URL is required in production",
-      });
-    }
-    if (!env.DATA_ENCRYPTION_KEY) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["DATA_ENCRYPTION_KEY"],
-        message: "DATA_ENCRYPTION_KEY is required",
       });
     }
     if (env.APP_BASE_URL?.startsWith("http://")) {

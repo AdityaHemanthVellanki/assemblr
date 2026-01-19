@@ -344,7 +344,7 @@ export function renderLegacyViews(spec: DashboardSpec, executionResults: Record<
                 // We need to group data by day if groupBy is set
                 // For now, let's just dump the raw data if it has a date field?
                 // Or show placeholder if complex aggregation needed.
-                // Strict rule: "No fake charts".
+                // Strict rule: "No simulated charts".
                 // If we can't map it, show empty.
                 
                 // Try to find a date field

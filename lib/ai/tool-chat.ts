@@ -233,15 +233,19 @@ export async function processToolChat(input: {
       const runtimeRegistry = new RuntimeActionRegistry(input.orgId);
       
       // If the intent has ephemeral actions (not yet in spec), we should hydrate them too.
-      // But currently hydrate takes a ToolSpec.
-      // We can construct a temporary mini-spec from the intent's execution graph or tool mutation.
+      // We assume tool_mutation actions are sufficient.
+      // IMPORTANT: We must also hydrate existing spec actions if we want to run them!
+      // But usually "chat" mode is about running *new* actions or existing ones.
       
+      const allActions = [...(input.currentSpec.actions || [])];
       if (intent.tool_mutation?.actionsAdded) {
-          await runtimeRegistry.hydrate({
-              kind: "mini_app",
-              actions: intent.tool_mutation.actionsAdded
-          } as any);
+          allActions.push(...intent.tool_mutation.actionsAdded);
       }
+      
+      await runtimeRegistry.hydrate({
+          kind: "mini_app",
+          actions: allActions
+      } as any);
 
       if (intent.execution_graph && intent.execution_graph.nodes.length > 0) {
         for (const node of intent.execution_graph.nodes) {
@@ -498,7 +502,7 @@ const mutation = intent.tool_mutation;
           },
           spec: updatedSpec,
           metadata: {
-            persist: false,
+            persist: true,
             trace,
             runtime: status,
           },

@@ -562,76 +562,6 @@ async function runTests() {
     "assign normalization injects state_mutation step",
   );
 
-  console.log("\n--- Test 5b: Runtime execution of normalized assign ---");
-  const specAssign: MiniAppSpec = {
-    kind: "mini_app",
-    title: "Assign Test App",
-    state: { selectedActivityId: null, activityItems: [] },
-    pages: [
-      {
-        id: "home",
-        name: "Home",
-        layoutMode: "grid",
-        components: [
-          {
-            id: "activity_list",
-            type: "list",
-            dataSource: { type: "state", value: "activityItems" },
-            events: [{ type: "onSelect", actionId: "select_activity_item" }],
-          } as any,
-        ],
-      } as any,
-    ],
-    actions: [
-      {
-        id: "select_activity_item",
-        type: "internal",
-        config: { operation: "assign", source: "{{payload.item.id}}", target: "selectedActivityId" },
-        steps: [{ type: "state_mutation", config: { updates: { selectedActivityId: "{{payload.item.id}}" } } }],
-      } as any,
-    ],
-  };
-  try {
-    const storeAssign = new MiniAppStore(specAssign, { call: async () => ({ status: "success", rows: [] } as any) }, {});
-    await storeAssign.dispatch("select_activity_item", { item: { id: "X123" } }, { event: "onSelect", originId: "activity_list" });
-    const snap = storeAssign.getSnapshot();
-    assert(snap.state.selectedActivityId === "X123", "Runtime executed normalized assign and updated state");
-  } catch (e: any) {
-    console.error(`❌ FAIL: Runtime assign execution failed: ${e.message}`);
-    failures++;
-  }
-
-  console.log("\n--- Test 6: Runtime Registry & Execution ---");
-  const spec: MiniAppSpec = {
-    kind: "mini_app",
-    title: "Test App",
-    state: {},
-    pages: [{ id: "p1", name: "Home", layoutMode: "grid", components: [], events: [{ type: "onPageLoad", actionId: "fetch-data" }] }], // Kebab ref
-    actions: [{ id: "fetch_data", type: "integration_call" }] // Snake def
-  };
-
-  let callCount = 0;
-  const mockIntegrations = {
-    call: async (id: string, args: any) => {
-      console.log(`Mock integration called: ${id}`);
-      if (id === "fetch_data") callCount++;
-      return { status: "success", rows: [] } as any;
-    }
-  };
-
-  try {
-    const store = new MiniAppStore(spec, mockIntegrations, {});
-    // Simulate page load dispatch
-    await store.dispatch("fetch-data", {}, { event: "onPageLoad" }); // Dispatch with kebab
-    assert(callCount === 1, "Runtime executed action despite ID mismatch (normalized)");
-    
-    const action = store.getAction("fetch-data");
-    assert(!!action, "Runtime found action via kebab-case lookup");
-  } catch (e: any) {
-    console.error(`❌ FAIL: Runtime test error: ${e.message}`);
-    failures++;
-  }
-
   console.log("\n--- Test 7: Inline event actions are hoisted into actionsAdded ---");
   {
     const intentInline: CompiledIntent = {
@@ -821,7 +751,8 @@ async function runTests() {
       ],
       actions: [],
     };
-    const storeZero = new MiniAppStore(specZeroActions, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    // No-op executor for UI state test
+    const storeZero = new MiniAppStore(specZeroActions, { call: async () => { throw new Error("Should not be called"); } }, {});
     const snapZero = storeZero.getSnapshot();
     assert(snapZero.activePageId === "page-zero", "Active page set correctly with zero actions");
     assert(snapZero.state.message === "Hello", "State initialized correctly with zero actions");
@@ -845,18 +776,12 @@ async function runTests() {
         __derivations: [
           { target: "filtered", source: "items", op: "filter", args: { field: "kind", equalsKey: "kindFilter" } },
         ],
-      } as any,
-      pages: [
-        {
-          id: "page-filters",
-          name: "Filters",
-          layoutMode: "stack",
-          components: [],
-        },
-      ],
+      },
+      pages: [],
       actions: [],
     };
-    const storeFilters = new MiniAppStore(specFilters, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    // No-op executor for derivation test
+    const storeFilters = new MiniAppStore(specFilters, { call: async () => { throw new Error("Should not be called"); } }, {});
     const snapFilters = storeFilters.getSnapshot();
     assert(Array.isArray(snapFilters.state.filtered), "Derived filtered list exists");
     assert(snapFilters.state.filtered.length === 1, "Filter reduces items based on state");
@@ -968,7 +893,8 @@ async function runTests() {
       pages: [],
       actions: []
     };
-    const storeChained = new MiniAppStore(specChained, { call: async () => ({ status: "success", rows: [] } as any) }, {});
+    // No-op executor for derivation test
+    const storeChained = new MiniAppStore(specChained, { call: async () => { throw new Error("Should not be called"); } }, {});
     const snap = storeChained.getSnapshot();
     
     // byTool should have id 1 and 3

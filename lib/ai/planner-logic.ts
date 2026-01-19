@@ -1137,6 +1137,7 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
     // Validate Action Types
     const allowedActionTypes = new Set<ActionType>([
       ACTION_TYPES.INTEGRATION_CALL,
+      ACTION_TYPES.INTEGRATION_QUERY,
       ACTION_TYPES.INTERNAL,
       ACTION_TYPES.NAVIGATION,
       ACTION_TYPES.WORKFLOW,

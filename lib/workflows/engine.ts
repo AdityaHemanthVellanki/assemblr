@@ -68,17 +68,16 @@ export async function runWorkflow(workflow: Workflow, runId: string, context: an
 
 async function executeAction(action: WorkflowAction, context: any) {
   // Dispatch to integrations
-  // For Phase 8, we implement stubs/logs
   console.log(`[WORKFLOW EXECUTION] Action: ${action.type}`, { config: action.config, context });
   
   switch (action.type) {
     case "slack":
       // Call Slack API using context.value, context.metricName, etc.
-      break;
+      throw new Error("Slack workflow action not implemented yet");
     case "email":
-      break;
+      throw new Error("Email workflow action not implemented yet");
     case "github_issue":
-      break;
+      throw new Error("GitHub workflow action not implemented yet");
     default:
       throw new Error(`Unsupported action type: ${action.type}`);
   }

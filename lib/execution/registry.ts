@@ -4,6 +4,7 @@ import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
+import { getCapability } from "@/lib/capabilities/registry";
 
 export type ExecutableAction = {
   id: string;
@@ -28,34 +29,67 @@ export class RuntimeActionRegistry {
     const mini = spec as any;
     const actions = mini.actions || [];
 
+    console.log(`[RuntimeRegistry] Hydrating ${actions.length} actions for Org ${this.orgId}`);
+
     for (const actionSpec of actions) {
-      if (actionSpec.type === "integration_call" || actionSpec.type === "integration_query") {
-        await this.registerIntegrationAction(actionSpec);
-      }
-      // TODO: Handle other action types (internal, navigation, etc.) if needed here
-      // For now, we focus on Integration Actions which are the core failure point.
+      await this.registerAction(actionSpec);
+    }
+  }
+
+  async registerAction(spec: any) {
+    if (spec.type === "integration_call" || spec.type === "integration_query") {
+      await this.registerIntegrationAction(spec);
+    } else {
+      // Internal/UI/State actions
+      // These are primarily client-side but must be registered to pass validation
+      const id = normalizeActionId(spec.id);
+      const run = async (trace?: ExecutionTracer) => {
+          console.log(`[RuntimeRegistry] Executing internal action ${id} (noop on server)`);
+          return {};
+      };
+      this.actions.set(id, { id, run });
     }
   }
 
   private async registerIntegrationAction(spec: any) {
     const id = normalizeActionId(spec.id);
-    const { capabilityId, integration } = spec.config || {};
+    let { capabilityId, integration } = spec.config || {};
     const staticParams = spec.config?.params || {};
 
+    // 1. Infer Integration if missing but capabilityId exists
+    if (capabilityId && !integration) {
+        const capDef = getCapability(capabilityId);
+        if (capDef) {
+            integration = capDef.integrationId;
+            console.log(`[RuntimeRegistry] Auto-inferred integration '${integration}' for action '${id}' (capability: ${capabilityId})`);
+        } else {
+            // Fallback: heuristic check (e.g. google_gmail_list -> google)
+            const parts = capabilityId.split("_");
+            if (parts.length > 0) {
+                integration = parts[0];
+                console.warn(`[RuntimeRegistry] Heuristic inference used for action '${id}': ${integration}`);
+            }
+        }
+    }
+
     if (!capabilityId || !integration) {
-      console.warn(`[RuntimeRegistry] Action ${id} missing capabilityId or integration`);
+      console.warn(`[RuntimeRegistry] REJECTED Action ${id}: missing capabilityId or integration (cap=${capabilityId}, int=${integration})`);
       return;
     }
 
     const runtime = RUNTIMES[integration];
     if (!runtime) {
-      console.warn(`[RuntimeRegistry] No runtime found for integration ${integration}`);
+      console.warn(`[RuntimeRegistry] REJECTED Action ${id}: No runtime found for integration ${integration}`);
       return;
     }
 
+    // Relaxed Check: Runtime capabilities map might be partial or lazy.
+    // If the runtime exists, we assume it can handle the capability via `execute`
+    // unless strictly typed. 
+    // BUT `runtime.capabilities` IS the registry of executable logic.
     const capability = runtime.capabilities[capabilityId];
     if (!capability) {
-      console.warn(`[RuntimeRegistry] Capability ${capabilityId} not found in runtime ${integration}`);
+      console.warn(`[RuntimeRegistry] REJECTED Action ${id}: Capability ${capabilityId} not found in runtime ${integration}. Available: ${Object.keys(runtime.capabilities).join(", ")}`);
       return;
     }
 
@@ -78,7 +112,7 @@ export class RuntimeActionRegistry {
     };
 
     this.actions.set(id, { id, run });
-    console.log(`[RuntimeRegistry] Registered executable action: ${id}`);
+    console.log(`[RuntimeRegistry] REGISTERED executable action: ${id}`);
   }
 
   get(id: string): ExecutableAction | undefined {
@@ -87,5 +121,16 @@ export class RuntimeActionRegistry {
 
   has(id: string): boolean {
     return this.actions.has(normalizeActionId(id));
+  }
+
+  async executeAction(id: string, params: any, context: { orgId: string; userId: string }) {
+      const action = this.get(id);
+      if (!action) {
+          throw new Error(`Action ${id} not found in registry`);
+      }
+      // Note: We ignore params passed here for now as they are static in the action definition
+      // But in a real runtime, we might merge them.
+      // We ignore context passed here because the registry was initialized with orgId
+      return action.run();
   }
 }

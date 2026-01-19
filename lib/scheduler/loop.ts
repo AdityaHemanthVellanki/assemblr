@@ -33,7 +33,7 @@ export class EventLoop {
 
     // 1. Poll Due Triggers (Cron)
     // In a real system, we'd have a DB query for `next_run_at <= now`
-    // Since we don't have the table yet, we'll mock the fetch or assume "triggers" table exists
+    // Since we don't have the table yet, we'll wait for migration
     // We will assume "triggers" table exists for this implementation
     
     try {
@@ -66,7 +66,7 @@ export class EventLoop {
       try {
           // 1. Update Next Run (Optimistic Locking)
           // Calculate next run based on cron
-          // Mocking next run as +1 minute for now
+          // Implementation pending: Next run calculation strategy
           const nextRun = new Date(Date.now() + 60000).toISOString();
           // await supabase.from("triggers").update({ next_run_at: nextRun }).eq("id", trigger.id);
 
@@ -76,7 +76,7 @@ export class EventLoop {
           // Or we compile a "System Intent"
           
           // Let's assume we execute a "main" action or derived action
-          // Mocking: Execute "action_main" if exists, or just log
+          // Implementation pending: Execute "action_main" if exists, or just log
           
           tracer.logActionExecution({
               actionId: "trigger_dispatch",

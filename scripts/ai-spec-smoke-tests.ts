@@ -1,30 +1,34 @@
 import {
   generateDashboardSpec,
-  type LlmGenerate,
   parseAndValidateDashboardSpecFromJsonText,
 } from "@/lib/ai/generateDashboardSpec";
+import { getServerEnv } from "@/lib/env";
 
 async function run() {
-  const mockLlmForTests: LlmGenerate = async () => {
-    // Return a minimal valid spec for schema validation testing only.
-    // This mock is ONLY for testing the spec generator, not for runtime execution.
-    return JSON.stringify({
-      title: "Test Spec",
-      metrics: [],
-      views: [],
-    });
-  };
+  console.log("Running AI Spec Smoke Test (Real AI)...");
+  
+  // Ensure Environment
+  try {
+      getServerEnv();
+  } catch (e) {
+      console.error("❌ Skipped: Missing AI Environment Variables", e);
+      process.exit(1);
+  }
 
   const spec1 = await generateDashboardSpec(
-    { prompt: "test prompt" },
-    { llm: mockLlmForTests },
+    { prompt: "Create a dashboard for tracking github issues and prs" }
   );
+  
   console.log(
-    "ok: prompt test 1",
+    "ok: generated spec",
     spec1.title,
-    spec1.metrics.length,
-    spec1.views.length,
+    "Metrics:", spec1.metrics.length,
+    "Views:", spec1.views.length,
   );
+
+  if (spec1.metrics.length === 0 && spec1.views.length === 0) {
+      console.warn("⚠️ Warning: AI returned empty spec (technically valid JSON but useless)");
+  }
 
   try {
     parseAndValidateDashboardSpecFromJsonText("{not json");

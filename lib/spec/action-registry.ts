@@ -36,15 +36,7 @@ export class ActionRegistry {
     if (!rawId) return;
     const id = normalizeActionId(rawId);
     if (!this.actions.has(id)) {
-      const fallback = {
-        id,
-        type: "internal",
-        config: {
-          __semantic: "noop",
-          __origin: context,
-        },
-      };
-      this.register(fallback);
+      throw new Error(`Action Registry Validation Failed: Action '${id}' (referenced in ${context}) is not registered. All actions must be declared in 'actions'.`);
     }
   }
 

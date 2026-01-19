@@ -247,12 +247,24 @@ export async function compileIntent(
     // Check if suggested capabilities were used
     if (discoveryMatches.length > 0) {
         const topCap = discoveryMatches[0].capabilityId;
-        const usedTop = parsed.execution_graph?.nodes?.some((n: any) => n.capabilityId === topCap);
-        if (usedTop) {
+        
+        // Check Execution Graph
+        const usedInGraph = parsed.execution_graph?.nodes?.some((n: any) => n.capabilityId === topCap);
+        
+        // Check Tool Mutation (Actions)
+        const usedInMutation = parsed.tool_mutation?.actionsAdded?.some((a: any) => 
+            a.config?.capabilityId === topCap || a.config?.capability === topCap
+        );
+
+        if (usedInGraph || usedInMutation) {
             reasons.push(`Used top-ranked capability: ${topCap}`);
         } else {
             // Not necessarily bad, but noteworthy
             reasons.push("Did not use top-ranked capability");
+            // Penalize slightly if we had a strong match but ignored it
+            if (discoveryMatches[0].score > 0.8) {
+                confidence -= 0.1;
+            }
         }
     }
 
