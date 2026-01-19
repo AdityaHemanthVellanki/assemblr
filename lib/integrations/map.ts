@@ -9,6 +9,7 @@ import { NotionExecutor } from "@/lib/integrations/executors/notion";
 import { GoogleExecutor } from "@/lib/integrations/executors/google";
 
 import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
+import { GoogleRuntime } from "@/lib/integrations/runtimes/google";
 
 export const EXECUTORS: Record<string, IntegrationExecutor> = {
   github: new GitHubExecutor(),
@@ -20,4 +21,5 @@ export const EXECUTORS: Record<string, IntegrationExecutor> = {
 
 export const RUNTIMES: Record<string, IntegrationRuntime> = {
   github: new GitHubRuntime(),
+  google: new GoogleRuntime(),
 };

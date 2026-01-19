@@ -22,6 +22,7 @@ import { validateCompiledIntent } from "./planner-logic";
 import { saveDraftRuntime, DraftRuntimeStatus } from "@/lib/observability/store";
 import type { PlannerContext } from "@/lib/ai/types";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
+import { RuntimeActionRegistry } from "@/lib/execution/registry";
 
 const versioningService = new VersioningService();
 
@@ -215,58 +216,119 @@ export async function processToolChat(input: {
     const executionResults: any[] = [];
 
     if (intent.intent_type === "chat" || intent.intent_type === "execute") {
+      // Hydrate Runtime Registry
+      const runtimeRegistry = new RuntimeActionRegistry(input.orgId);
+      
+      // If the intent has ephemeral actions (not yet in spec), we should hydrate them too.
+      // But currently hydrate takes a ToolSpec.
+      // We can construct a temporary mini-spec from the intent's execution graph or tool mutation.
+      
+      if (intent.tool_mutation?.actionsAdded) {
+          await runtimeRegistry.hydrate({
+              kind: "mini_app",
+              actions: intent.tool_mutation.actionsAdded
+          } as any);
+      }
+
       if (intent.execution_graph && intent.execution_graph.nodes.length > 0) {
         for (const node of intent.execution_graph.nodes) {
-          if (node.type !== "integration_call" || !node.capabilityId) continue;
+          if (node.type !== "integration_call") continue;
 
-          // Resolve Runtime
-          const integrationId = node.capabilityId.split("_")[0]; 
-          const runtime = RUNTIMES[integrationId];
+          // Deterministic Action Execution via Registry
+          // The planner (via compiler) should have generated a deterministic ID
+          // OR if this is a legacy node, we might need to fallback.
+          // But the requirement is STRICT: "Runtime may ONLY execute actions that exist in registry"
           
-          if (!runtime) {
-            console.warn(`No runtime for integration: ${integrationId}`);
-            continue;
+          // Check if we have an ID.
+          // If the node came from the execution graph, it might reference an action ID.
+          // The execution graph nodes in `CompiledIntent` have `id`, `type`, `capabilityId`, `params`.
+          // They don't explicitly link to `actionsAdded`.
+          // However, the `compileIntent` process now materializes actions.
+          
+          // If the node IS the action (which it often is in simple graphs), we should use its ID.
+          // But wait, `node.id` in execution graph might be "step_1", not "action_google_...".
+          // We need to look up the action.
+          
+          // Actually, `compileIntent` materializes `tool_mutation.actionsAdded`.
+          // The execution graph is a DAG of these actions.
+          // So we should look for the action in the registry that matches the node's intent.
+          
+          // Ideally, the execution graph node should reference the action ID.
+          // If node.id matches the action ID, we are good.
+          // Let's assume the planner sets node.id = action.id for 1:1 mapping.
+          
+          let actionId = node.id;
+          
+          // Try to find the action in the registry
+          let action = runtimeRegistry.get(actionId);
+          
+          if (!action && node.capabilityId) {
+              // Fallback: Try to generate the ID using the compiler logic (deterministic)
+              // This handles cases where the graph node ID differs from the action ID
+              // but semantically they are the same capability usage.
+              // BUT the registry was hydrated with `actionsAdded`.
+              // So we need to find which action in `actionsAdded` corresponds to this node.
+              // If `actionsAdded` used `materializeCapabilityAction`, they have canonical IDs.
+              // If the graph node uses the same canonical ID, it works.
+              
+              // Let's try to construct the canonical ID
+              // We need integrationId.
+              // The node has capabilityId (e.g. "google_gmail_list").
+              // We can infer integrationId from capabilityId (usually prefix).
+              // Or look it up.
+              
+              const parts = node.capabilityId.split("_");
+              const integrationId = parts[0]; // simplistic inference
+              // Better: use registry lookup, but we don't have it here easily without loading all runtimes.
+              // Wait, `RUNTIMES` is available.
+              
+              // Let's rely on the fact that `hydrate` registered the actions.
+              // If the node.id is not found, it means the planner didn't align them.
+              // But we can try to execute it ad-hoc if we allow "ephemeral" execution?
+              // The prompt says: "Runtime may ONLY execute actions that exist in registry".
+              // So we MUST have registered it.
+              
+              // If it's missing, it's a failure.
+              console.warn(`[Execution] Action ${actionId} not found in registry. Attempting heuristic lookup.`);
+              
+              // Try to find ANY action in the registry that matches the capability
+              // This is a "fuzzy match" fallback.
+              // We can iterate the registry (private map, but we can add public accessor or just debug)
+              // Actually, let's just log failure for now to enforce strictness.
+          }
+
+          if (!action) {
+             const error = `Fatal: Action ${actionId} not found in Runtime Registry. Plan execution aborted.`;
+             console.error(error);
+             tracer.finish("failure", error);
+             throw new Error(error);
           }
 
           const agentStart = Date.now();
           
           try {
-            const token = await getValidAccessToken(input.orgId, integrationId);
-            // Context Resolution
-            const context = await runtime.resolveContext(token);
-            const capability = runtime.capabilities[node.capabilityId];
-            
-            if (!capability) {
-               throw new Error(`Capability ${node.capabilityId} not found in runtime ${integrationId}`);
-            }
-
-            // Enforce Permissions
-            if (runtime.checkPermissions) {
-                runtime.checkPermissions(node.capabilityId, DEV_PERMISSIONS);
-            }
-
-            // Execute with Trace
-            const result = await capability.execute(node.params, context, tracer);
+            // Execute via Registry
+            const result = await action.run(tracer);
             executionResults.push({ task: node, result });
             
             tracer.logAgentExecution({
-                agentId: integrationId, // Mapping Integration to Agent ID for now
-                task: node.capabilityId,
+                agentId: "runtime", 
+                task: actionId,
                 input: node.params,
-                output: "Success (Data Omitted)",
+                output: "Success",
                 duration_ms: Date.now() - agentStart
             });
 
           } catch (e) {
-            console.error(`Task ${node.id} failed:`, e);
+            console.error(`Action ${actionId} failed:`, e);
             tracer.logAgentExecution({
-                agentId: integrationId,
-                task: node.capabilityId ?? "unknown",
+                agentId: "runtime",
+                task: actionId,
                 input: node.params,
                 output: "Error",
                 duration_ms: Date.now() - agentStart
             });
-            throw e; // Bubble up to global catcher
+            throw e; 
           }
         }
       }
