@@ -616,9 +616,11 @@ export function buildExecutionGraph(intent: CompiledIntent, currentSpec?: ToolSp
   }
 
   if (nodes.length > 1 && edges.length === 0) {
-    console.warn("[GraphDebugWarning] Execution graph has multiple nodes but no edges", {
-      nodeIds: nodes.map((n) => n.id),
-    });
+    const errorMsg = `[GraphValidation] CRITICAL: Execution graph has ${nodes.length} nodes but ZERO edges. This means actions are disconnected from triggers (UI/Lifecycle). Compilation Rejected.`;
+    console.error(errorMsg, { nodeIds: nodes.map((n) => n.id) });
+    const e: any = new Error(errorMsg);
+    e.code = "InvalidIntentGraph";
+    throw e;
   }
   intent.execution_graph = { nodes, edges };
 }
@@ -722,6 +724,133 @@ export function normalizeIntentSpec(intent: CompiledIntent) {
     if (!intent.tool_mutation) return;
     const m = intent.tool_mutation;
 
+    // 0. CANONICALIZATION PASS (Strict Fix 1 & 3)
+    // Enforce actionId = ${integration}:${capability}
+    // Enforce config.integration presence
+    if (m.actionsAdded) {
+        const idMap = new Map<string, string>();
+        const finalIds = new Set<string>();
+        
+        // First pass: Calculate new IDs
+        for (const a of m.actionsAdded) {
+            if (a.type === "integration_call" || a.type === "integration_query") {
+                const capId = a.config?.capabilityId;
+                if (!capId) {
+                    throw new Error(`[PlannerStrict] Action ${a.id} is missing capabilityId. Integration calls must be capability-bound.`);
+                }
+                const cap = getCapability(capId);
+                if (!cap || !cap.integrationId) {
+                    throw new Error(`[PlannerStrict] Action ${a.id} references unknown capability '${capId}'. Cannot resolve integration.`);
+                }
+                
+                // Enforce explicit integration binding
+                a.config.integration = cap.integrationId;
+
+                const baseCanonicalId = `${cap.integrationId}:${capId}`;
+                // DO NOT MANGLE THE ID IF IT'S ALREADY CANONICAL
+                // The planner might have generated "google:google_gmail_list" already.
+                // We should respect that if possible, but we need to ensure uniqueness.
+                // But wait, the user says "Action ID and Capability ID are NOT the same thing".
+                // And "RuntimeRegistry is attempting to resolve a capability using action.id".
+                // So we should NOT be forcing the ID to look like the capability?
+                // Actually, the user says "Do not 'fix' this by renaming actions".
+                // "Action ID is an opaque runtime identifier".
+                // So we should STOP renaming the action ID to match the capability.
+                // We should JUST enforce that config.capabilityId is correct.
+                
+                // REVERTING CANONICAL ID ENFORCEMENT ON ACTION ID ITSELF
+                // We only ensure config.integration is set.
+                a.config.integration = cap.integrationId;
+
+                /* 
+                // Previous logic that renamed action ID to match capability - REMOVED per strict instructions
+                const baseCanonicalId = `${cap.integrationId}:${capId}`;
+                let newId = baseCanonicalId;
+                let counter = 2;
+                while (finalIds.has(newId)) {
+                    newId = `${baseCanonicalId}_${counter++}`;
+                }
+                
+                finalIds.add(newId);
+                if (a.id !== newId) {
+                    idMap.set(a.id, newId);
+                    a.id = newId; // Update in place
+                }
+                */
+               finalIds.add(normalizeActionId(a.id));
+            } else {
+                finalIds.add(normalizeActionId(a.id));
+            }
+        }
+
+        // Second pass: Update references if renames occurred
+        // (This block is now effectively disabled if we don't rename, but kept for safety if we ever need it)
+        if (idMap.size > 0) {
+            console.log(`[PlannerStrict] Canonicalized ${idMap.size} action IDs to enforce deterministic execution.`);
+            const rename = (id: string | undefined) => (id && idMap.has(id) ? idMap.get(id)! : id);
+
+            // 1. Page Events
+            if (m.pagesAdded) {
+                for (const p of m.pagesAdded) {
+                    if (p.events) p.events.forEach((e: any) => { e.actionId = rename(e.actionId); });
+                }
+            }
+            if (m.pagesUpdated) {
+                for (const u of m.pagesUpdated) {
+                    if (u.patch?.events) u.patch.events.forEach((e: any) => { e.actionId = rename(e.actionId); });
+                }
+            }
+
+            // 2. Component Events
+            const visitComponent = (c: any) => {
+                if (c.events) c.events.forEach((e: any) => { e.actionId = rename(e.actionId); });
+                if (c.children) c.children.forEach((child: any) => { if (typeof child !== "string") visitComponent(child); });
+            };
+            if (m.componentsAdded) m.componentsAdded.forEach(visitComponent);
+            if (m.pagesAdded) m.pagesAdded.forEach((p: any) => p.components?.forEach(visitComponent));
+
+            // 3. Action Triggers & Dependencies
+            for (const a of m.actionsAdded) {
+                if (a.triggeredBy) {
+                    const triggers = Array.isArray(a.triggeredBy) ? a.triggeredBy : [a.triggeredBy];
+                    triggers.forEach((t: any) => { if (t.actionId) t.actionId = rename(t.actionId); });
+                }
+                // Update state keys if they were implicit (e.g. "a1.data" -> "google:cap.data")
+                // Only if the action did NOT have an explicit assign key.
+                // But if we renamed the action, getMutatedKeys() will naturally derive the new key.
+                // The problem is if *other* things (components) reference the OLD key "a1.data".
+                // We need to find those references and update them.
+                // This is hard to do perfectly with regex, but let's try.
+            }
+            
+            // 4. Update State References (Brute Force Text Replacement in known fields)
+            // This is risky but necessary if components bound to "a1.data"
+            // Actually, if the planner produced "a1", it likely produced "a1.data" in bindings.
+            // We should iterate components and update common binding fields.
+            const updateBindings = (obj: any) => {
+                if (!obj) return;
+                for (const key in obj) {
+                    if (typeof obj[key] === "string") {
+                        for (const [oldId, newId] of idMap) {
+                            // Replace "oldId.data" with "newId.data"
+                            // Replace "oldId.status" with "newId.status"
+                            // Be careful not to replace partial matches?
+                            // oldId is "a1". "a11" should not be touched.
+                            // Regex: \b${oldId}\.
+                            if (obj[key].includes(oldId)) {
+                                obj[key] = obj[key].replace(new RegExp(`\\b${oldId}\\.`, "g"), `${newId}.`);
+                            }
+                        }
+                    } else if (typeof obj[key] === "object") {
+                        updateBindings(obj[key]);
+                    }
+                }
+            };
+            if (m.componentsAdded) updateBindings(m.componentsAdded);
+            if (m.pagesAdded) updateBindings(m.pagesAdded);
+        }
+    }
+
     // 1. Normalize Derivations (Array -> Object)
     if (m.stateAdded && m.stateAdded.__derivations) {
         if (Array.isArray(m.stateAdded.__derivations)) {
@@ -768,6 +897,31 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   // 0. SYSTEMIC FIX: Normalization Pass
   // Enforce canonical spec shape before any validation or execution
   normalizeIntentSpec(intent);
+
+  // 1️⃣ SINGLE OWNER RULE: Deduplication Pass
+  // If a component is defined in 'componentsAdded', it MUST NOT appear as a stub in 'pagesAdded.components'.
+  // We remove such stubs to prevent double-insertion.
+  if (intent.tool_mutation) {
+      const mutation = intent.tool_mutation;
+      if (mutation.componentsAdded && mutation.pagesAdded) {
+          const definedIds = new Set(mutation.componentsAdded.map((c: any) => c.id));
+          for (const p of mutation.pagesAdded) {
+              if (p.components) {
+                  const originalCount = p.components.length;
+                  p.components = p.components.filter((c: any) => {
+                      const id = typeof c === "string" ? c : c.id;
+                      if (definedIds.has(id)) {
+                          return false;
+                      }
+                      return true;
+                  });
+                  if (p.components.length < originalCount) {
+                      console.log(`[SpecBuilder] Removed ${originalCount - p.components.length} duplicate stubs from page ${p.id} (defined in componentsAdded).`);
+                  }
+              }
+          }
+      }
+  }
 
   // 0. SYSTEMIC FIX: Graph Validation & Healing (Part 1)
   // This runs before standard validation to ensure the graph is connected and valid.
@@ -1256,18 +1410,11 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         // But here we check specific action A.
         
         // 4️⃣ CANONICAL COMPONENT ID GENERATION
-        // Deterministic ID: auto_list_<actionId>_<hash>
-        // Use a simple hash of actionId to keep it short but unique
-        const simpleHash = (str: string) => {
-            let hash = 0;
-            for (let i = 0; i < str.length; i++) {
-                const char = str.charCodeAt(i);
-                hash = (hash << 5) - hash + char;
-                hash = hash & hash; // Convert to 32bit integer
-            }
-            return Math.abs(hash).toString(36).slice(0, 4);
-        };
-        const componentId = `auto_list_${normalizeActionId(a.id)}_${simpleHash(normalizeActionId(a.id))}`;
+        // Deterministic ID: auto_list_<actionId>
+        // Use actionId directly since it is the runtime identity.
+        // sanitize for ID safety (replace : with _)
+        const safeActionId = normalizeActionId(a.id).replace(/:/g, "_");
+        const componentId = `auto_list_${safeActionId}`;
         
         // 2️⃣ SYSTEM AUTO-WIRING MUST BE THE *ONLY* COMPONENT CREATOR
         // Check if ANY component already consumes this data key.
@@ -2083,6 +2230,31 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   }
 
   ensureEveryActionHasTrigger(mutation);
+  
+  // 1️⃣ Enforce Single Component Ownership: Pre-Deduplication Pass
+  // Before resolving page references, ensure no ID exists in both `componentsAdded` AND `pagesAdded.components`.
+  // If an ID is in `componentsAdded` (fully defined), it MUST be removed from `pagesAdded.components` (stub).
+  if (mutation.componentsAdded && mutation.pagesAdded) {
+      const definedIds = new Set(mutation.componentsAdded.map((c: any) => c.id));
+      for (const p of mutation.pagesAdded) {
+          if (p.components) {
+              const originalCount = p.components.length;
+              p.components = p.components.filter((c: any) => {
+                  const id = typeof c === "string" ? c : c.id;
+                  if (definedIds.has(id)) {
+                      // It's defined in componentsAdded, so remove the stub from page.
+                      // The resolver will re-attach it correctly.
+                      return false;
+                  }
+                  return true;
+              });
+              if (p.components.length < originalCount) {
+                  console.log(`[SpecBuilder] Removed ${originalCount - p.components.length} duplicate stubs from page ${p.id} (defined in componentsAdded).`);
+              }
+          }
+      }
+  }
+
   resolvePageReferences(mutation);
   cleanupDuplicateComponents(mutation);
 }
@@ -2090,6 +2262,7 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
 function resolvePageReferences(mutation: any) {
   if (!mutation.componentsAdded || !Array.isArray(mutation.componentsAdded)) return;
 
+  console.log(`[Resolver] Starting page reference resolution for ${mutation.componentsAdded.length} components.`);
   const pendingByPage = new Map<string, string[]>();
 
   for (const c of mutation.componentsAdded) {
@@ -2102,15 +2275,22 @@ function resolvePageReferences(mutation: any) {
   // Resolve against pagesAdded
   if (mutation.pagesAdded) {
     for (const p of mutation.pagesAdded) {
+      // 4️⃣ Resolver Guard: NEVER inject stubs for already-attached components
+      // First, gather IDs that are ALREADY on the page
+      p.components = p.components || [];
+      const existingIds = new Set(p.components.map((x: any) => (typeof x === "string" ? x : x.id)));
+      
       if (pendingByPage.has(p.id)) {
         const needed = pendingByPage.get(p.id)!;
-        p.components = p.components || [];
-        const currentIds = new Set(p.components.map((x: any) => (typeof x === "string" ? x : x.id)));
-
+        
         for (const id of needed) {
-          if (!currentIds.has(id)) {
+          if (!existingIds.has(id)) {
+            // Only attach if NOT present
             p.components.push({ id });
             console.log(`[Resolver] Implicitly attached component ${id} to page ${p.id}`);
+            existingIds.add(id); // Update local set
+          } else {
+             // Already present, do nothing. This is the correct behavior.
           }
         }
         pendingByPage.delete(p.id);

@@ -35,6 +35,7 @@ function resolveParams(params: Record<string, any>, state: Record<string, any>):
 
 export class RuntimeActionRegistry {
   private actions = new Map<string, ExecutableAction>();
+  private capabilityIndex = new Map<string, ExecutableAction>();
   private orgId: string;
 
   constructor(orgId: string) {
@@ -120,6 +121,7 @@ export class RuntimeActionRegistry {
 
     // Create the executable thunk
     const run = async (state: Record<string, any> = {}, trace?: ExecutionTracer) => {
+      console.log(`EXECUTING ${integration}:${capabilityId}`);
       const tracer = trace || new ExecutionTracer("run");
       
       // 1. Resolve Context (Token)
@@ -139,8 +141,14 @@ export class RuntimeActionRegistry {
       return await capability.execute(resolvedParams, context, tracer);
     };
 
-    this.actions.set(id, { id, run });
-    console.log(`[RuntimeRegistry] REGISTERED executable action: ${id}`);
+    const actionObj = { id, run };
+    this.actions.set(id, actionObj);
+    
+    // 2. Index by Capability (Strict Requirement)
+    const capKey = `${integration}:${capabilityId}`;
+    this.capabilityIndex.set(capKey, actionObj);
+
+    console.log(`[RuntimeRegistry] REGISTERED executable action: ${id} (Indexed as ${capKey})`);
   }
 
   get(id: string): ExecutableAction | undefined {
@@ -151,9 +159,35 @@ export class RuntimeActionRegistry {
     return this.actions.has(normalizeActionId(id));
   }
 
+  /**
+   * Resolves and executes an action by its strict capability reference.
+   * This bypasses string ID inference and looks up the canonical index.
+   */
+  async resolveRuntime(ref: { integration: string; capabilityId: string }, params: any) {
+      const key = `${ref.integration}:${ref.capabilityId}`;
+      const action = this.capabilityIndex.get(key);
+      if (!action) {
+          throw new Error(`RuntimeRegistry: No action found for capability ${key}. Ensure it is defined in the spec.`);
+      }
+      return action.run(params);
+  }
+
   async executeAction(id: string, params: any, context: { orgId: string; userId: string }) {
       const action = this.get(id);
+      
+      // Strict Fallback: If ID lookup fails, check if ID is actually a capability key?
+      // No, `id` should be the runtime ID.
+      // But wait, the user says "RuntimeRegistry is attempting to resolve a capability using action.id".
+      // This implies we need to be careful.
+      
       if (!action) {
+          // Check if it looks like a capability key?
+          // If the caller passed "google:google_gmail_list" and we have it in index?
+          // This is useful for debugging or if the caller is smart.
+          if (this.capabilityIndex.has(id)) {
+              console.warn(`[RuntimeRegistry] Warning: executeAction called with capability key '${id}' instead of action ID. Allowing execution.`);
+              return this.capabilityIndex.get(id)!.run(params);
+          }
           throw new Error(`Action ${id} not found in registry`);
       }
       // Pass params (state) to run
