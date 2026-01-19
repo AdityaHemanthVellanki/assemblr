@@ -14,6 +14,7 @@ import type { ToolSpec } from "@/lib/spec/toolSpec";
 import type { PlannerContext } from "@/lib/ai/types";
 import { Capability } from "@/lib/capabilities/definitions";
 import { materializeCapabilityAction } from "@/lib/runtime/capabilityCompiler";
+import { CapabilityDiscoveryEngine } from "@/lib/ai/discovery";
 
 import { SYSTEM_PROMPT } from "@/lib/ai/prompts";
 
@@ -122,9 +123,10 @@ export async function compileIntent(
   plannerContext: PlannerContext,
   schemas: DiscoveredSchema[],
   availableMetrics: Metric[] = [],
-  mode: "create" | "chat" = "create",
+  mode: "create" | "chat" | "repair" = "create",
   policies: OrgPolicy[] = [], // Added policies
   currentSpec?: ToolSpec,
+  failureContext?: { actionId: string; error: string; originalIntent: CompiledIntent },
 ): Promise<CompiledIntent> {
   getServerEnv();
 
@@ -169,11 +171,20 @@ export async function compileIntent(
 
   const installedText = `INSTALLED_INTEGRATIONS (Use these for UI filter options, do NOT rely on runtime data):\n${JSON.stringify(installedIntegrations)}`;
 
-  // 0. Hard-Map Common User Intents (Deterministic Resolver)
-  let deterministicHint = "";
-  if (userMessage.toLowerCase().includes("email") && plannerContext.integrations.google?.connected) {
-    console.log("[Planner] Hard-mapping 'email' intent to 'google_gmail_list'");
-    deterministicHint = "\n\nHINT: User is asking for emails. You MUST use 'google_gmail_list' capability.";
+  // 0. Capability Discovery (Dynamic Ranking)
+  const discoveryEngine = new CapabilityDiscoveryEngine(plannerContext);
+  const discoveryMatches = discoveryEngine.discover(userMessage);
+  
+  let discoveryHint = "";
+  if (discoveryMatches.length > 0) {
+      const topMatches = discoveryMatches.slice(0, 3);
+      discoveryHint = `\n\nDISCOVERY_HINT: Based on the user's request, the following capabilities are most relevant:\n${topMatches.map(m => `- ${m.capabilityId} (Score: ${m.score.toFixed(2)})`).join("\n")}\nPrefer these if they match the intent.`;
+  }
+
+  let recoveryPrompt = "";
+  if (failureContext) {
+      console.log(`[Planner] Entering RECOVERY MODE for action ${failureContext.actionId}`);
+      recoveryPrompt = `\n\n🔴 RECOVERY MODE ACTIVATED 🔴\nPrevious execution FAILED.\nAction: ${failureContext.actionId}\nError: "${failureContext.error}"\n\nYour task is to FIX the previous plan. Do NOT repeat the same mistake.\n- If the error is "Permission denied", check scopes.\n- If "Invalid params", adjust params.\n- If "Empty data", try a broader query or different capability.\n- If "Action not found", ensure you are using a valid capability ID from the list above.`;
   }
 
   // 0. Check for Canonical Templates (Bypass AI)
@@ -197,7 +208,7 @@ export async function compileIntent(
   const toolMemory = buildToolMemory(currentSpec);
   const prompt =
     SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsText) +
-    `\n\n${installedText}\n\nMODE HINT: ${mode.toUpperCase()}${deterministicHint}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
+    `\n\n${installedText}\n\nMODE HINT: ${mode.toUpperCase()}${discoveryHint}${recoveryPrompt}\n\nTOOL_MEMORY (authoritative; reuse this structure):\n${JSON.stringify(toolMemory, null, 2)}`;
 
   try {
     const contextMessages = history.map(m => ({
@@ -220,6 +231,36 @@ export async function compileIntent(
     if (!content) throw new Error("No response from AI");
 
     const parsed = JSON.parse(content);
+    
+    // Calculate Confidence Score
+    let confidence = 1.0;
+    const reasons: string[] = [];
+    
+    if (parsed.tool_mutation?.actionsAdded?.length > 0) {
+        // High confidence if actions are added
+        reasons.push("Actions generated successfully");
+    } else if (parsed.intent_type === "create" || parsed.intent_type === "modify") {
+        confidence -= 0.2;
+        reasons.push("No actions generated for mutation");
+    }
+
+    // Check if suggested capabilities were used
+    if (discoveryMatches.length > 0) {
+        const topCap = discoveryMatches[0].capabilityId;
+        const usedTop = parsed.execution_graph?.nodes?.some((n: any) => n.capabilityId === topCap);
+        if (usedTop) {
+            reasons.push(`Used top-ranked capability: ${topCap}`);
+        } else {
+            // Not necessarily bad, but noteworthy
+            reasons.push("Did not use top-ranked capability");
+        }
+    }
+
+    parsed.confidence_score = {
+        value: confidence,
+        reasoning: reasons
+    };
+
     try {
       const allowedCapabilityIds = new Set(connectedCapabilities.map((c) => c.id));
       sanitizeIntegrationsForIntent(parsed, allowedCapabilityIds);

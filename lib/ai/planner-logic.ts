@@ -762,8 +762,8 @@ export function normalizeIntentSpec(intent: CompiledIntent) {
     }
 }
 
-export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec, options?: { mode?: "create" | "chat" | "modify" }) {
-  if (intent.intent_type !== "create" && intent.intent_type !== "modify") return;
+export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: ToolSpec, options?: { mode?: "create" | "chat" | "modify" | "repair" }) {
+  if (intent.intent_type !== "create" && intent.intent_type !== "modify" && intent.intent_type !== "repair" as any) return;
 
   // 0. SYSTEMIC FIX: Normalization Pass
   // Enforce canonical spec shape before any validation or execution

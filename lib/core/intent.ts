@@ -32,6 +32,12 @@ export type CompiledIntent = {
     parallelizable: boolean;
     retries: number;
   };
+
+  // Confidence Scoring
+  confidence_score?: {
+    value: number; // 0-1
+    reasoning: string[];
+  };
 };
 
 export type ExecutionNode = {
