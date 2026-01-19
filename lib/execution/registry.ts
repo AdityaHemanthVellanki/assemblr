@@ -75,28 +75,28 @@ export class RuntimeActionRegistry {
 
   private async registerIntegrationAction(spec: any) {
     const id = normalizeActionId(spec.id);
-    let { capabilityId, integration } = spec.config || {};
+    let { capabilityId } = spec.config || {};
     const staticParams = spec.config?.params || {};
 
-    // 1. Infer Integration if missing but capabilityId exists
-    if (capabilityId && !integration) {
-        const capDef = getCapability(capabilityId);
-        if (capDef) {
-            integration = capDef.integrationId;
-            console.log(`[RuntimeRegistry] Auto-inferred integration '${integration}' for action '${id}' (capability: ${capabilityId})`);
-        } else {
-            // Fallback: heuristic check (e.g. google_gmail_list -> google)
-            const parts = capabilityId.split("_");
-            if (parts.length > 0) {
-                integration = parts[0];
-                console.warn(`[RuntimeRegistry] Heuristic inference used for action '${id}': ${integration}`);
-            }
-        }
+    // 1. Strict Resolution via Capability Registry
+    if (!capabilityId) {
+        const errorMsg = `[RuntimeRegistry] CRITICAL: Action ${id} is missing capabilityId. Heuristics are disabled for integration_call.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
     }
 
-    if (!capabilityId || !integration) {
-      console.warn(`[RuntimeRegistry] REJECTED Action ${id}: missing capabilityId or integration (cap=${capabilityId}, int=${integration})`);
-      return;
+    const capDef = getCapability(capabilityId);
+    if (!capDef) {
+        const errorMsg = `[RuntimeRegistry] CRITICAL: Action ${id} references unknown capability '${capabilityId}'.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+    }
+
+    const integration = capDef.integrationId;
+    if (!integration) {
+        const errorMsg = `[RuntimeRegistry] CRITICAL: Capability '${capabilityId}' has no bound integration.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
     }
 
     const runtime = RUNTIMES[integration];
@@ -114,6 +114,9 @@ export class RuntimeActionRegistry {
       console.warn(`[RuntimeRegistry] REJECTED Action ${id}: Capability ${capabilityId} not found in runtime ${integration}. Available: ${Object.keys(runtime.capabilities).join(", ")}`);
       return;
     }
+
+    // Explicit Registration Log
+    console.log(`[RuntimeRegistry] REGISTER action ${id}\n  → capability ${capabilityId}\n  → integration ${integration}\n  → executor ${capability.constructor.name || "AnonymousExecutor"}`);
 
     // Create the executable thunk
     const run = async (state: Record<string, any> = {}, trace?: ExecutionTracer) => {

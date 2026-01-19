@@ -814,6 +814,71 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
   const mutation = intent.tool_mutation;
   if (!mutation) return;
 
+  // 1️⃣ SINGLE OWNER RULE: Strict Cleanup
+  // Remove ALL planner-generated auto-components immediately.
+  // We trust ONLY SystemAutoWiring to generate these.
+  if (mutation.componentsAdded) {
+      const originalCount = mutation.componentsAdded.length;
+      mutation.componentsAdded = mutation.componentsAdded.filter((c: any) => {
+          const id = typeof c === "string" ? c : c.id;
+          if (typeof id === "string" && id.startsWith("auto_")) {
+              return false;
+          }
+          return true;
+      });
+      if (mutation.componentsAdded.length < originalCount) {
+          console.warn(`[PlannerSanity] Removed ${originalCount - mutation.componentsAdded.length} planner-generated auto-components. Enforcing Single-Owner Rule.`);
+      }
+  }
+
+  // Remove references from pagesAdded
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          if (Array.isArray(p.components)) {
+              p.components = p.components.filter((c: any) => {
+                  const id = typeof c === "string" ? c : c.id;
+                  if (typeof id === "string" && id.startsWith("auto_")) {
+                      console.warn(`[PlannerValidation] Dropped illegal auto-component stub '${id}' from page '${p.id}'.`);
+                      return false;
+                  }
+                  return true;
+              });
+          }
+      }
+  }
+  // Remove references from pagesUpdated
+  if (mutation.pagesUpdated) {
+      for (const u of mutation.pagesUpdated) {
+          if (u.patch && Array.isArray(u.patch.components)) {
+              u.patch.components = u.patch.components.filter((c: any) => {
+                  const id = typeof c === "string" ? c : c.id;
+                  if (typeof id === "string" && id.startsWith("auto_")) {
+                      console.warn(`[PlannerValidation] Dropped illegal auto-component stub '${id}' from page update '${u.pageId}'.`);
+                      return false;
+                  }
+                  return true;
+              });
+          }
+      }
+  }
+  
+  // Recursively remove from children of added components
+  const removeAutoRefs = (list: any[]) => {
+      if (!Array.isArray(list)) return list;
+      return list.filter((child: any) => {
+          const id = typeof child === "string" ? child : child?.id;
+          return !(typeof id === "string" && id.startsWith("auto_"));
+      });
+  };
+  
+  if (mutation.componentsAdded) {
+      for (const c of mutation.componentsAdded) {
+          if (c.children) {
+              c.children = removeAutoRefs(c.children);
+          }
+      }
+  }
+
   const existingMini = currentSpec && (currentSpec as any).kind === "mini_app" ? (currentSpec as any) : null;
   const existingComponents = existingMini ? flattenMiniAppComponents(existingMini).map((x) => x.component) : [];
   const existingPages = existingMini ? (existingMini.pages ?? []) : [];
@@ -834,42 +899,29 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
     }
 
     if (c.children != null) {
-      const normalizedChildren: string[] = [];
-      const rawChildren: any = c.children as any;
-
-      const pushChild = (val: any) => {
-        if (typeof val === "string") {
-          normalizedChildren.push(val);
-          return;
-        }
-        if (val && typeof val === "object") {
-          const childId = typeof (val as any).id === "string" ? (val as any).id : undefined;
-          if (childId) {
-            normalizedChildren.push(childId);
-          } else {
-            console.warn("[PlannerValidation] Dropped child without id on component", { parentId: c.id, child: val });
-          }
-          return;
-        }
-        console.warn("[PlannerValidation] Dropped non-object child on component", { parentId: c.id, child: val });
-      };
-
-      if (Array.isArray(rawChildren)) {
-        for (const child of rawChildren) pushChild(child);
-      } else if (rawChildren && typeof rawChildren === "object") {
-        const keys = Object.keys(rawChildren);
-        const indexKeys = keys.filter((k) => /^\d+$/.test(k));
-        if (indexKeys.length && indexKeys.length === keys.length) {
-          indexKeys.sort((a, b) => Number(a) - Number(b));
-          for (const k of indexKeys) pushChild((rawChildren as any)[k]);
-        } else {
-          pushChild(rawChildren);
-        }
-      } else {
-        console.warn("[PlannerValidation] Dropped invalid children payload on component", { parentId: c.id, children: rawChildren });
+      // 1️⃣ SINGLE OWNER RULE: Planner must NEVER pre-insert auto-generated components.
+      if (Array.isArray(c.children)) {
+          c.children = c.children.filter((child: any) => {
+              const childId = typeof child === "string" ? child : child?.id;
+              if (childId && typeof childId === "string" && childId.startsWith("auto_")) {
+                  console.warn(`[PlannerValidation] Dropped pre-inserted auto-component '${childId}' from planner. Auto-wiring is the sole authority.`);
+                  return false;
+              }
+              return true;
+          });
       }
 
-      c.children = normalizedChildren.length ? normalizedChildren : undefined;
+      if (Array.isArray(c.children)) {
+          c.children = c.children.map((child: any) => {
+              if (typeof child === "string") return child;
+              if (child.id) return child.id;
+              return null;
+          }).filter(Boolean);
+      } else if (c.children != null) {
+          // STRICT FIX: Fail on object coercion.
+          console.error(`[PlannerValidation] Component ${c.id} has invalid children format (object). Expected string[] or null.`, c.children);
+          throw new Error(`PlannerValidation: Component ${c.id} has invalid 'children' property. It must be an array of strings (IDs), not an object.`);
+      }
     }
 
     // Fix: itemTemplate.onClick
@@ -1148,28 +1200,34 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
       );
     }
 
+    // 2️⃣ Strict Validation at CREATE TIME
+    if (a.type === ACTION_TYPES.INTEGRATION_CALL || a.type === ACTION_TYPES.INTEGRATION_QUERY) {
+      const capId = a.config?.capabilityId;
+      if (!capId) {
+        throw new Error(`PlannerInvariantError: Action '${a.id}' (integration_call) is missing 'capabilityId'. Runtime requires explicit capability binding.`);
+      }
+      const cap = getCapability(capId);
+      if (!cap) {
+         // Fail hard instead of downgrading
+         throw new Error(`PlannerInvariantError: Action '${a.id}' references unknown capability '${capId}'. Action cannot be executed.`);
+      }
+    }
+
     if (a.type === ACTION_TYPES.INTEGRATION_CALL) {
       const capId = a.config?.capabilityId;
+      // Re-validate just in case logic splits (redundant but safe)
       if (typeof capId === "string" && capId.length > 0) {
         const cap = getCapability(capId);
-        if (!cap) {
-          a.type = ACTION_TYPES.INTERNAL;
-          a.config = { ...(a.config ?? {}), ephemeral_internal: true };
-          if (a.config.capabilityId) {
-            delete a.config.capabilityId;
-          }
-        }
+        // ...
       }
     }
 
     if (a.type === "integration_call") {
       const isInternal = a.config?.ephemeral_internal === true;
       const assignKey = a.config?.assign;
-      if (assignKey) {
-        continue;
-      }
-      const statusKey = a.effectOnly ? undefined : `${a.id}.status`;
-      const errorKey = a.effectOnly ? undefined : `${a.id}.error`;
+      
+      const statusKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Status` : `${a.id}.status`);
+      const errorKey = a.effectOnly ? undefined : (assignKey ? `${assignKey}Error` : `${a.id}.error`);
 
       const internalConsumes = (key: string | undefined) => {
         if (!key) return false;
@@ -1181,7 +1239,7 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         });
       };
 
-      const dataKey = `${a.id}.data`;
+      const dataKey = assignKey || `${a.id}.data`;
       const dataConsumed = stateKeysRead.has(dataKey) || internalConsumes(dataKey);
 
       const statusConsumed =
@@ -1191,9 +1249,83 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
         internalConsumes(errorKey);
 
       if (!dataConsumed && !statusConsumed && !isInternal && !a.effectOnly) {
-        throw new Error(
-          `Integration action ${a.id} appears to be effect-only. If intentional, mark it as effectOnly: true.`,
-        );
+        // 3️⃣ AUTO-WIRING MUST BE IDEMPOTENT
+        // Check if ANY component already consumes this data key (even if just added by auto-wiring in a previous pass? No, this function runs once)
+        // But we must check against the *current* state of components list, which might have grown?
+        // Actually, we iterate actions. If action A and B both assign to 'X', and we auto-wire for A, then B is covered.
+        // But here we check specific action A.
+        
+        // 4️⃣ CANONICAL COMPONENT ID GENERATION
+        // Deterministic ID: auto_list_<actionId>_<hash>
+        // Use a simple hash of actionId to keep it short but unique
+        const simpleHash = (str: string) => {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = (hash << 5) - hash + char;
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return Math.abs(hash).toString(36).slice(0, 4);
+        };
+        const componentId = `auto_list_${normalizeActionId(a.id)}_${simpleHash(normalizeActionId(a.id))}`;
+        
+        // 2️⃣ SYSTEM AUTO-WIRING MUST BE THE *ONLY* COMPONENT CREATOR
+        // Check if ANY component already consumes this data key.
+        const isConsumed = (c: any) => {
+            if (c.dataSource?.type === "state" && c.dataSource.value === dataKey) return true;
+            // Heuristic fallback for simple bindings
+            if (c.dataSource?.value === dataKey) return true;
+            return false;
+        };
+
+        const consumedByNew = (mutation.componentsAdded || []).some(isConsumed);
+        const consumedByExisting = existingComponents.some(isConsumed);
+
+        if (consumedByNew || consumedByExisting) {
+             console.warn(`[SystemAutoWiring] Skipping auto-wiring for ${a.id} because data '${dataKey}' is already consumed.`);
+             continue;
+        }
+
+        // 3️⃣ HARD DEDUPLICATION GUARD (ID Check)
+        const idExists = (mutation.componentsAdded || []).some((c: any) => c.id === componentId);
+        if (idExists) {
+             console.warn(`[SystemAutoWiring] Skipping auto-wiring for ${a.id} because component ${componentId} already exists.`);
+             continue;
+        }
+
+        console.warn(`[SystemAutoWiring] Action ${a.id} assigns to '${dataKey}' but is unconsumed. Auto-wiring a List component (${componentId}).`);
+        
+        // Attach to first available page
+        const firstPageId = (mutation.pagesAdded && mutation.pagesAdded[0]?.id) || (existingPages && existingPages[0]?.id) || "main";
+        
+        const autoList = {
+            id: componentId,
+            type: "list",
+            pageId: firstPageId, // 1️⃣ Enforce Single Ownership: Add ONLY to componentsAdded with pageId
+            label: `Results from ${a.id}`,
+            dataSource: { type: "state", value: dataKey },
+            properties: {
+                title: `Results for ${a.id}`,
+                itemProps: {
+                    title: "{{item.title}}", // Heuristic
+                    subtitle: "{{item.description}} {{item.snippet}} {{item.subject}}" // Heuristic fallback
+                },
+                loadingKey: statusKey,
+                errorKey: errorKey
+            }
+        };
+        
+        mutation.componentsAdded = mutation.componentsAdded || [];
+        mutation.componentsAdded.push(autoList);
+
+        // 3️⃣ Hard Guard: Fail Fast if we try to inject into page.components
+        if (mutation.pagesAdded) {
+            for (const p of mutation.pagesAdded) {
+                if (p.components && p.components.some((c: any) => (typeof c === "string" ? c : c.id) === componentId)) {
+                    throw new Error(`[SystemAutoWiring] CRITICAL: Component ${componentId} was illegally injected into page ${p.id}. SystemAutoWiring must ONLY use componentsAdded.`);
+                }
+            }
+        }
       }
     }
     if (a.type === "state_mutation") {
@@ -1561,6 +1693,10 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
               if (child.id) return child.id;
               return null;
           }).filter(Boolean);
+      } else if (c.children != null) {
+          // STRICT FIX: Fail on object coercion.
+          console.error(`[PlannerValidation] Component ${c.id} has invalid children format (object). Expected string[] or null.`, c.children);
+          throw new Error(`PlannerValidation: Component ${c.id} has invalid 'children' property. It must be an array of strings (IDs), not an object.`);
       }
 
       if (c.properties?.itemTemplate?.onClick) {
@@ -1947,6 +2083,81 @@ export function repairCompiledIntent(intent: CompiledIntent, currentSpec?: ToolS
   }
 
   ensureEveryActionHasTrigger(mutation);
+  resolvePageReferences(mutation);
+  cleanupDuplicateComponents(mutation);
+}
+
+function resolvePageReferences(mutation: any) {
+  if (!mutation.componentsAdded || !Array.isArray(mutation.componentsAdded)) return;
+
+  const pendingByPage = new Map<string, string[]>();
+
+  for (const c of mutation.componentsAdded) {
+    if (c.pageId) {
+      if (!pendingByPage.has(c.pageId)) pendingByPage.set(c.pageId, []);
+      pendingByPage.get(c.pageId)!.push(c.id);
+    }
+  }
+
+  // Resolve against pagesAdded
+  if (mutation.pagesAdded) {
+    for (const p of mutation.pagesAdded) {
+      if (pendingByPage.has(p.id)) {
+        const needed = pendingByPage.get(p.id)!;
+        p.components = p.components || [];
+        const currentIds = new Set(p.components.map((x: any) => (typeof x === "string" ? x : x.id)));
+
+        for (const id of needed) {
+          if (!currentIds.has(id)) {
+            p.components.push({ id });
+            console.log(`[Resolver] Implicitly attached component ${id} to page ${p.id}`);
+          }
+        }
+        pendingByPage.delete(p.id);
+      }
+    }
+  }
+
+  // Resolve against pagesUpdated
+  if (mutation.pagesUpdated) {
+    for (const u of mutation.pagesUpdated) {
+      if (pendingByPage.has(u.pageId)) {
+        const needed = pendingByPage.get(u.pageId)!;
+        u.patch = u.patch || {};
+        u.patch.components = u.patch.components || [];
+        const currentIds = new Set(u.patch.components.map((x: any) => (typeof x === "string" ? x : x.id)));
+
+        for (const id of needed) {
+          if (!currentIds.has(id)) {
+            u.patch.components.push({ id });
+            console.log(`[Resolver] Implicitly attached component ${id} to page update ${u.pageId}`);
+          }
+        }
+        pendingByPage.delete(u.pageId);
+      }
+    }
+  }
+
+  // Any remaining? If existing page, we need to create an update.
+  if (pendingByPage.size > 0) {
+    mutation.pagesUpdated = mutation.pagesUpdated || [];
+    for (const [pageId, ids] of pendingByPage) {
+      let update = mutation.pagesUpdated.find((u: any) => u.pageId === pageId);
+      if (!update) {
+        update = { pageId, patch: { components: [] } };
+        mutation.pagesUpdated.push(update);
+      }
+      update.patch = update.patch || {};
+      update.patch.components = update.patch.components || [];
+      const currentIds = new Set(update.patch.components.map((x: any) => (typeof x === "string" ? x : x.id)));
+      for (const id of ids) {
+        if (!currentIds.has(id)) {
+          update.patch.components.push({ id });
+          console.log(`[Resolver] Implicitly attached component ${id} to new page update for ${pageId}`);
+        }
+      }
+    }
+  }
 }
 
 function applyContainerPatchesToNewComponents(mutation: any) {
@@ -2129,6 +2340,49 @@ function tryAttachComponentTriggerFromSemantics(mutation: any, action: any): boo
     !!action.triggeredBy &&
     (!Array.isArray(action.triggeredBy) || (Array.isArray(action.triggeredBy) && action.triggeredBy.length > 0));
   return after;
+}
+
+function cleanupDuplicateComponents(mutation: any) {
+  if (!mutation.componentsAdded || !Array.isArray(mutation.componentsAdded)) return;
+  
+  const groups = new Map<string, any[]>();
+  for (const c of mutation.componentsAdded) {
+      if (c && c.id) {
+          if (!groups.has(c.id)) groups.set(c.id, []);
+          groups.get(c.id)!.push(c);
+      }
+  }
+  
+  const uniqueComponents: any[] = [];
+  
+  for (const [id, group] of groups) {
+      if (group.length === 1) {
+          uniqueComponents.push(group[0]);
+          continue;
+      }
+      
+      console.warn(`[MaterializerSafety] Found ${group.length} definitions for component '${id}'. Resolving...`);
+      
+      // Rank them: Has Type > Has Properties > Has DataSource
+      const ranked = group.sort((a, b) => {
+          const aScore = (a.type ? 2 : 0) + (a.properties ? 1 : 0) + (a.dataSource ? 1 : 0);
+          const bScore = (b.type ? 2 : 0) + (b.properties ? 1 : 0) + (b.dataSource ? 1 : 0);
+          return bScore - aScore; // Descending
+      });
+      
+      const winner = ranked[0];
+      
+      // Safety check: if winner has no type, it's a stub. We should warn.
+      if (!winner.type) {
+          console.error(`[MaterializerSafety] CRITICAL: Best definition for '${id}' has no type! Dropping entirely.`);
+          continue;
+      }
+      
+      console.warn(`[MaterializerSafety] Kept best definition for '${id}' (Type: ${winner.type})`);
+      uniqueComponents.push(winner);
+  }
+  
+  mutation.componentsAdded = uniqueComponents;
 }
 
 function hoistInlineEventActions(mutation: any) {
