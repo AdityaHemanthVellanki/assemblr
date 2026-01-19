@@ -60,7 +60,10 @@ export class NotionRuntime implements IntegrationRuntime {
                     page_size: 100
                 })
             });
-            if (!res.ok) throw new Error(`Notion API Error: ${res.statusText}`);
+            if (!res.ok) {
+                const errBody = await res.text();
+                throw new Error(`Notion API Error: ${res.statusText} - ${errBody}`);
+            }
             const json = await res.json();
             return json.results || [];
         }

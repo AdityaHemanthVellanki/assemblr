@@ -25,7 +25,16 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
     throw new Error(`Integration ${integrationId} not connected`);
   }
 
-  const credentials = decryptJson((connection as any).encrypted_credentials as any) as any;
+  let encrypted = (connection as any).encrypted_credentials;
+  if (typeof encrypted === "string") {
+    try {
+      encrypted = JSON.parse(encrypted);
+    } catch (e) {
+      throw new Error(`Failed to parse encrypted_credentials for ${integrationId}`);
+    }
+  }
+
+  const credentials = decryptJson(encrypted) as any;
   
   const accessToken = credentials.access_token;
   const refreshToken = credentials.refresh_token;

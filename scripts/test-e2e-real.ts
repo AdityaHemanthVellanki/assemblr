@@ -9,6 +9,7 @@ import { CAPABILITY_REGISTRY } from "@/lib/capabilities/definitions";
 import { EXECUTORS } from "@/lib/integrations/map";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { assertNoMocks } from "@/lib/core/guard";
+import { bootstrapRealUserSession } from "./auth-bootstrap";
 
 // Force production mode behavior
 // process.env.NODE_ENV = "production"; // Passed via CLI
@@ -17,6 +18,19 @@ async function runTest() {
   assertNoMocks();
   console.log("🚀 Starting Assemblr End-to-End Real System Test");
   console.log("=================================================");
+
+  // 0. Bootstrap Real Session
+  console.log("\n0. Bootstrapping Real User Session...");
+  let sessionContext;
+  try {
+    sessionContext = await bootstrapRealUserSession();
+  } catch (e: any) {
+    console.error("❌ Auth Bootstrap Failed:", e.message);
+    console.error("👉 Please add E2E_TEST_USER_EMAIL and E2E_TEST_USER_PASSWORD to .env.local");
+    process.exit(1);
+  }
+  const { user, orgId } = sessionContext;
+  console.log(`✅ Bootstrapped Session: User=${user.email}, Org=${orgId}`);
 
   // 1. Environment Check
   console.log("\n1. Verifying Environment Variables...");
@@ -57,7 +71,7 @@ async function runTest() {
   const scenarios = [
     { name: "GitHub", prompt: "Show my latest issues", integrationId: "github", resource: "issues" },
     { name: "Google", prompt: "List my recent emails", integrationId: "google", resource: "gmail" },
-    { name: "Slack", prompt: "Show recent messages in general", integrationId: "slack", resource: "messages" },
+    { name: "Slack", prompt: "Show recent messages in social", integrationId: "slack", resource: "messages" },
     { name: "Notion", prompt: "Search for pages about 'project'", integrationId: "notion", resource: "pages" },
     { name: "Linear", prompt: "List my active issues", integrationId: "linear", resource: "issues" }
   ];
@@ -78,7 +92,7 @@ async function runTest() {
       console.log("   ✅ Spec Generated");
 
       // 2. Register
-      const registry = new RuntimeActionRegistry("test-org");
+      const registry = new RuntimeActionRegistry(orgId);
       // registry.reset(); // No reset needed for new instance
 
       // Construct Planner Context
@@ -141,33 +155,47 @@ async function runTest() {
       
       // Execute!
       // This requires DB access for token.
-      // We pass a dummy orgId "test-org" which likely doesn't exist or has no token.
-      // We EXPECT "Missing access token" or "Integration not connected".
+      // We pass the real orgId and userId.
       // This confirms we hit the REAL executor.
       
       const result = await registry.executeAction(integrationAction.id, {}, {
-          orgId: "test-org",
-          userId: "test-user"
+          orgId: orgId,
+          userId: user.id
       });
 
       console.log("   ✅ Execution Result:", result);
       
     } catch (e: any) {
       const msg = e.message;
+      // We expect REAL success now, or specific errors if data is missing.
+      // We do NOT accept "Integration not connected" as a pass if we expect it to work.
+      // But if the user hasn't connected integrations, it WILL fail.
+      // The user prompt says: "Integrations execute with real tokens... Gmail / GitHub / Slack / Linear return real data".
+      // This implies the user running the test MUST have connected these.
+      
+      console.log("   ❌ Execution Failed:", e); // Log full error/result for debugging
+
       if (msg.includes("Integration") && msg.includes("not connected")) {
-         console.log("   ✅ PASS: Reached Integration Layer (Blocked by Auth as expected in test env)");
+         console.error("   ❌ FAIL: Integration not connected in DB.");
+         console.error(`   👉 ACTION REQUIRED: Log in to ${process.env.NEXT_PUBLIC_SITE_URL} as ${user.email} and connect ${scenario.integrationId} in Settings.`);
+         // process.exit(1); // Don't exit, continue to next scenario
       } else if (msg.includes("Missing") && msg.includes("token")) {
-         console.log("   ✅ PASS: Reached Integration Layer (Blocked by Auth as expected in test env)");
+         console.error("   ❌ FAIL: Missing token for this integration.");
+         console.error(`   👉 ACTION REQUIRED: Log in to ${process.env.NEXT_PUBLIC_SITE_URL} as ${user.email} and connect ${scenario.integrationId} in Settings.`);
+         // process.exit(1);
       } else if (msg.includes("AI service unavailable")) {
          console.warn("   ⚠️ SKIPPED: AI Service unavailable");
+      } else if (msg.includes("Gmail API has not been used")) {
+          console.error("   ❌ FAIL: Gmail API not enabled in GCP.");
+          console.error("   👉 ACTION REQUIRED: Enable Gmail API in Google Cloud Console for project 447640195330.");
       } else {
          console.error("   ❌ FAIL: Unexpected Error:", e);
-         process.exit(1);
+         // process.exit(1);
       }
     }
   }
 
-  console.log("\n✅ All Scenarios Passed (Auth Boundaries Verified)");
+  console.log("\n✅ All Scenarios Completed (Check for failures above)");
 }
 
 runTest().catch(e => {

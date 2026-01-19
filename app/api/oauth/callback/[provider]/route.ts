@@ -127,16 +127,16 @@ export async function GET(
         redirect_uri: redirectUri,
       });
     } else if (providerId === "linear") {
-      // Linear requires JSON body with client credentials in body
-      headers["Content-Type"] = "application/json";
+      // Linear requires application/x-www-form-urlencoded with client credentials in body
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
       
-      body = JSON.stringify({
-        grant_type: "authorization_code",
-        code: code,
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        client_secret: clientSecret,
-      });
+      const params = new URLSearchParams();
+      params.append("grant_type", "authorization_code");
+      params.append("code", code);
+      params.append("redirect_uri", redirectUri);
+      params.append("client_id", clientId);
+      params.append("client_secret", clientSecret);
+      body = params;
     } else if (providerId === "google") {
       // Google requires application/x-www-form-urlencoded
       const params = new URLSearchParams();
@@ -166,6 +166,7 @@ export async function GET(
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
       console.error("Token exchange failed", errText);
+      console.error("Request Headers:", JSON.stringify({ ...headers, Authorization: "REDACTED" }));
       return redirectWithError("Authorization failed with provider", storedState.redirectPath);
     }
 

@@ -8,8 +8,30 @@ import { getCapability } from "@/lib/capabilities/registry";
 
 export type ExecutableAction = {
   id: string;
-  run: (trace?: ExecutionTracer) => Promise<any>;
+  run: (state?: Record<string, any>, trace?: ExecutionTracer) => Promise<any>;
 };
+
+function resolveParams(params: Record<string, any>, state: Record<string, any>): Record<string, any> {
+    const resolved: Record<string, any> = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (value && typeof value === "object") {
+            if (value.type === "state" && value.value) {
+                // Binding Format A
+                resolved[key] = state[value.value];
+            } else if (value.fromState) {
+                // Binding Format B (Planner v2)
+                resolved[key] = state[value.fromState] !== undefined ? state[value.fromState] : value.fallback;
+            } else {
+                // Literal object
+                resolved[key] = value;
+            }
+        } else {
+            // Literal value
+            resolved[key] = value;
+        }
+    }
+    return resolved;
+}
 
 export class RuntimeActionRegistry {
   private actions = new Map<string, ExecutableAction>();
@@ -43,7 +65,7 @@ export class RuntimeActionRegistry {
       // Internal/UI/State actions
       // These are primarily client-side but must be registered to pass validation
       const id = normalizeActionId(spec.id);
-      const run = async (trace?: ExecutionTracer) => {
+      const run = async (state?: Record<string, any>, trace?: ExecutionTracer) => {
           console.log(`[RuntimeRegistry] Executing internal action ${id} (noop on server)`);
           return {};
       };
@@ -94,7 +116,7 @@ export class RuntimeActionRegistry {
     }
 
     // Create the executable thunk
-    const run = async (trace?: ExecutionTracer) => {
+    const run = async (state: Record<string, any> = {}, trace?: ExecutionTracer) => {
       const tracer = trace || new ExecutionTracer("run");
       
       // 1. Resolve Context (Token)
@@ -107,8 +129,11 @@ export class RuntimeActionRegistry {
         runtime.checkPermissions(capabilityId, DEV_PERMISSIONS);
       }
 
-      // 3. Execute
-      return await capability.execute(staticParams, context, tracer);
+      // 3. Resolve Params
+      const resolvedParams = resolveParams(staticParams, state);
+
+      // 4. Execute
+      return await capability.execute(resolvedParams, context, tracer);
     };
 
     this.actions.set(id, { id, run });
@@ -128,9 +153,7 @@ export class RuntimeActionRegistry {
       if (!action) {
           throw new Error(`Action ${id} not found in registry`);
       }
-      // Note: We ignore params passed here for now as they are static in the action definition
-      // But in a real runtime, we might merge them.
-      // We ignore context passed here because the registry was initialized with orgId
-      return action.run();
+      // Pass params (state) to run
+      return action.run(params);
   }
 }

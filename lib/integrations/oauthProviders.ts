@@ -31,7 +31,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     name: "Slack",
     authUrl: "https://slack.com/oauth/v2/authorize",
     tokenUrl: "https://slack.com/api/oauth.v2.access",
-    scopes: ["channels:read", "chat:write", "files:read"],
+    scopes: ["channels:read", "channels:history", "groups:read", "im:read", "mpim:read", "chat:write", "files:read", "users:read"],
     supportsRefreshToken: false,
     connectionMode: "hosted_oauth",
   },
@@ -50,7 +50,7 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     authUrl: "https://linear.app/oauth/authorize",
     tokenUrl: "https://api.linear.app/oauth/token",
     scopes: ["read", "write"],
-    supportsRefreshToken: false,
+    supportsRefreshToken: true,
     connectionMode: "hosted_oauth",
   },
   google: {

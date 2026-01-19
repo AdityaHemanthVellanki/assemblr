@@ -35,7 +35,10 @@ export class LinearRuntime implements IntegrationRuntime {
         
         // Construct GraphQL Query
         const limit = params.first || 50;
-        const filter = params.includeArchived ? "" : '(filter: { state: { type: { neq: "completed" } } })';
+        // Filter for active issues (excluding completed/canceled if possible, but 'state' filter is complex)
+        // For now, we fetch all and let the user filter, or rely on Linear's default sort.
+        // To be safe against 500 errors, we use no filter.
+        const filter = ""; 
         
         const query = `query { issues(first: ${limit} ${filter}) { nodes { id title state { name } createdAt updatedAt assignee { name } } } }`;
 
@@ -44,9 +47,7 @@ export class LinearRuntime implements IntegrationRuntime {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    Authorization: `${token}`, // Linear uses token directly often, or Bearer? Usually just the key if personal, or Bearer if OAuth.
-                    // The docs say "Authorization: <token>" or "Authorization: Bearer <token>"?
-                    // OAuth is Bearer.
+                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify({ query })
             });

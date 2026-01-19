@@ -54,7 +54,8 @@ export class GoogleRuntime implements IntegrationRuntime {
             
             if (!res.ok) {
                 status = "error";
-                throw new Error(`Gmail API error: ${res.statusText}`);
+                const errorBody = await res.text();
+                throw new Error(`Gmail API error: ${res.status} ${res.statusText} - ${errorBody}`);
             }
             
             const data = await res.json();

@@ -24,9 +24,11 @@ export class SlackRuntime implements IntegrationRuntime {
       execute: async (params, context) => {
         const { token } = context;
         const limit = params.limit || 100;
-        const types = params.types || "public_channel,private_channel";
+        const types = params.types || "public_channel";
         
-        const res = await fetch(`https://slack.com/api/conversations.list?limit=${limit}&types=${types}`, {
+        const url = `https://slack.com/api/conversations.list?limit=${limit}&types=${types}`;
+        console.log(`[Slack] Fetching channels: ${url}`);
+        const res = await fetch(url, {
             headers: { Authorization: `Bearer ${token}` }
         });
         const json = await res.json();
@@ -43,9 +45,45 @@ export class SlackRuntime implements IntegrationRuntime {
             limit: z.number().optional()
         }),
         execute: async (params, context) => {
-            // Need channel ID. If not provided, we can't list messages easily without listing channels first.
-            // But let's assume channel ID is passed or we default to something.
-            throw new Error("Channel ID required for messages list");
+            const { token } = context;
+            let channelId = params.channel;
+
+            // 1. Resolve Channel ID if missing or name
+            if (!channelId || !channelId.startsWith("C")) {
+                 const listRes = await fetch(`https://slack.com/api/conversations.list?limit=100&types=public_channel`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const listJson = await listRes.json();
+                if (!listJson.ok) throw new Error(`Slack API Error (List Channels): ${listJson.error}`);
+                
+                const channels = listJson.channels || [];
+                
+                if (channelId) {
+                    // Find by name
+                    const match = channels.find((c: any) => c.name === channelId || c.name === channelId.replace("#", ""));
+                    if (match) channelId = match.id;
+                    else {
+                        const available = channels.map((c: any) => c.name).join(", ");
+                        throw new Error(`Channel '${channelId}' not found. Available public channels: ${available}`);
+                    }
+                } else {
+                    // Default to 'general' or first
+                    const general = channels.find((c: any) => c.name === "general");
+                    channelId = general ? general.id : channels[0]?.id;
+                }
+            }
+
+            if (!channelId) throw new Error("No channel found to list messages from");
+
+            // 2. Fetch History
+            const limit = params.limit || 20;
+            const res = await fetch(`https://slack.com/api/conversations.history?channel=${channelId}&limit=${limit}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (History): ${json.error}`);
+            
+            return json.messages || [];
         }
     }
   }
