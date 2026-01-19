@@ -266,7 +266,11 @@ const ListComponent: MiniAppComponent = {
     // Feedback Loop Support
     const loadingKey = component.properties?.loadingKey;
     const errorKey = component.properties?.errorKey;
-    const isLoading = loadingKey ? state[loadingKey] === "loading" : false;
+    
+    const status = loadingKey ? state[loadingKey] : "success"; // Default to success/ready if no status tracking
+    const isLoading = status === "loading";
+    const isIdle = loadingKey && (status === "idle" || status === undefined);
+    
     const error = errorKey ? state[errorKey] : null;
     const emptyMessage = component.properties?.emptyMessage ?? "No items found.";
 
@@ -285,6 +289,10 @@ const ListComponent: MiniAppComponent = {
                <div className="h-8 bg-muted rounded" />
                <div className="h-8 bg-muted rounded" />
                <div className="h-8 bg-muted rounded" />
+             </div>
+          ) : isIdle ? (
+             <div className="text-sm text-muted-foreground p-4 text-center italic">
+               Waiting to load...
              </div>
           ) : items.length === 0 ? (
             <div className="text-sm text-muted-foreground p-4 text-center border-2 border-dashed rounded-lg">

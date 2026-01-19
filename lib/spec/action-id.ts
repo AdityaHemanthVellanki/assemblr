@@ -11,10 +11,5 @@
  */
 export function normalizeActionId(id: string): string {
   if (!id) return "";
-  return id
-    .toLowerCase()
-    .trim()
-    .replace(/-/g, "_")
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_]/g, "");
+  return String(id).toLowerCase().trim().replace(/\s+/g, "_");
 }

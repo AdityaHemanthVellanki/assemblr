@@ -19,6 +19,7 @@ import { materializeSpec } from "@/lib/spec/materializer";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { validateCompiledIntent } from "./planner-logic";
+import { validateIntentExecution } from "@/lib/execution/validator-intent";
 import { saveDraftRuntime, DraftRuntimeStatus } from "@/lib/observability/store";
 import type { PlannerContext } from "@/lib/ai/types";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
@@ -211,6 +212,18 @@ export async function processToolChat(input: {
 
     tracer.setIntent(intent);
     console.log("[Orchestrator] Compiled Intent:", JSON.stringify(intent, null, 2));
+
+    // Pre-Execution Validation (CRITICAL)
+    const validation = validateIntentExecution(intent, plannerContext, input.currentSpec);
+    if (!validation.valid) {
+      console.warn(`[ExecutionValidator] Blocked execution: ${validation.error}`);
+      tracer.finish("failure", validation.error);
+      return {
+        explanation: `I couldn't complete that request. ${validation.error}`,
+        message: { type: "text", content: validation.correctiveAction || "Please check your integrations." },
+        spec: input.currentSpec,
+      };
+    }
 
     // 2. Dispatch & Execute
     const executionResults: any[] = [];

@@ -3,5 +3,10 @@ export type PlannerContext = {
     connected: boolean;
     capabilities: string[]; // List of capability IDs
     scopes?: string[];
+    health?: {
+      tokenValid: boolean;
+      error?: string;
+      lastCheckedAt?: string;
+    };
   }>;
 };

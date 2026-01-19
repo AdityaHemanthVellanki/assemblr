@@ -116,16 +116,22 @@ export class GitHubRuntime implements IntegrationRuntime {
         integrationId: "github",
         paramsSchema: z.object({
             owner: z.string().optional(), // Inferred from context if missing
-            repo: z.string(),
+            repo: z.string().optional(),
             state: z.enum(["open", "closed", "all"]).optional()
         }),
         autoResolvedParams: ["owner"],
         execute: async (params, context, trace) => {
             const owner = params.owner ?? context.owner;
-            if (!owner) throw new Error("Missing owner and unable to infer from context");
+            // if (!owner) throw new Error("Missing owner and unable to infer from context"); // Relaxed for user/issues
             const { repo, state } = params;
             const { token } = context;
-            const url = `https://api.github.com/repos/${owner}/${repo}/issues?state=${state || "all"}`;
+            
+            let url;
+            if (repo && owner) {
+                url = `https://api.github.com/repos/${owner}/${repo}/issues?state=${state || "all"}`;
+            } else {
+                url = `https://api.github.com/user/issues?filter=all&state=${state || "all"}`;
+            }
             
             const startTime = Date.now();
             let status: "success" | "error" = "success";

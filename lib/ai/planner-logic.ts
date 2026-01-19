@@ -798,6 +798,14 @@ export function validateCompiledIntent(intent: CompiledIntent, currentSpec?: Too
       // Ideally we could attach these logs to the intent for the runtime to display in a debug panel.
   }
 
+  // 0.2 VALIDATE UI REFERENCES (Strict Mode)
+  try {
+      validateUIReferences(intent, currentSpec);
+  } catch (e) {
+      console.error("[Compiler] UI Reference Validation Failed:", e);
+      throw e; 
+  }
+
   const sandbox = runIntentInSandbox(intent);
   if (!sandbox.ok) {
       console.warn("[SandboxValidation] Non-fatal execution graph issue detected", sandbox.error);
@@ -2245,5 +2253,65 @@ export function sanitizeIntegrationsForIntent(intent: CompiledIntent, allowedCap
         delete action.config.capabilityId;
       }
     }
+  }
+}
+
+export function validateUIReferences(intent: CompiledIntent, currentSpec?: ToolSpec) {
+  const mutation = intent.tool_mutation;
+  if (!mutation) return;
+
+  const allActionIds = new Set<string>();
+  
+  // Collect all valid action IDs (existing + added)
+  if (currentSpec && (currentSpec as any).actions) {
+      (currentSpec as any).actions.forEach((a: any) => allActionIds.add(normalizeActionId(a.id)));
+  }
+  if (mutation.actionsAdded) {
+      mutation.actionsAdded.forEach((a: any) => allActionIds.add(normalizeActionId(a.id)));
+  }
+
+  // Helper to validate a node's events
+  const validateNode = (node: any, context: string) => {
+      if (node.events) {
+          for (const e of node.events) {
+              if (e.actionId) {
+                  const aid = normalizeActionId(e.actionId);
+                  if (!allActionIds.has(aid)) {
+                      throw new Error(`[Compiler Error] UI Component '${context}' references missing action '${e.actionId}'. Action must exist.`);
+                  }
+              }
+          }
+      }
+      if (node.children) {
+          for (const ch of node.children) validateNode(ch, `Child of ${context}`);
+      }
+  };
+
+  // Validate Pages Added
+  if (mutation.pagesAdded) {
+      for (const p of mutation.pagesAdded) {
+          validateNode(p, `Page(${p.id || p.name})`);
+          if (p.components) {
+              for (const c of p.components) validateNode(c, `Component(${c.id || c.type})`);
+          }
+      }
+  }
+
+  // Validate Components Added
+  if (mutation.componentsAdded) {
+      for (const c of mutation.componentsAdded) validateNode(c, `Component(${c.id || c.type})`);
+  }
+
+  // Validate Updates (Patches)
+  if (mutation.componentsUpdated) {
+      for (const u of mutation.componentsUpdated) {
+           if (u.patch) validateNode(u.patch, `Update(${u.componentRef || u.id})`);
+      }
+  }
+  
+  if (mutation.pagesUpdated) {
+      for (const u of mutation.pagesUpdated) {
+          if (u.patch) validateNode(u.patch, `Update(${u.pageId || u.id})`);
+      }
   }
 }

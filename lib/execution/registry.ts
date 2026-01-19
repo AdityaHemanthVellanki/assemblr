@@ -61,7 +61,7 @@ export class RuntimeActionRegistry {
 
     // Create the executable thunk
     const run = async (trace?: ExecutionTracer) => {
-      const tracer = trace || new ExecutionTracer("runtime_adhoc");
+      const tracer = trace || new ExecutionTracer("run");
       
       // 1. Resolve Context (Token)
       // We do this lazily at execution time to ensure freshness
