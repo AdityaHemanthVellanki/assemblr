@@ -208,7 +208,7 @@ export default function IntegrationsPage() {
     // CRITICAL FIX: Direct OAuth Redirect
     // If it's an OAuth integration, skip the modal and redirect immediately.
     // The "connectionMode" logic might vary, but all 5 supported tools are "hosted_oauth".
-    if (current.connectionMode === "hosted_oauth" || current.auth.type === "oauth") {
+    if (current.connectionMode === ("hosted_oauth" as any) || current.auth.type === "oauth") {
         try {
             // Set local loading state (optimistic)
             setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));

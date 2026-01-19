@@ -9,12 +9,13 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
+import { CompiledTool } from "@/lib/compiler/ToolCompiler";
 import { ToolRenderer } from "@/components/dashboard/tool-renderer";
 
 interface ProjectWorkspaceProps {
   project?: {
     id: string;
-    spec: ToolSpec | null;
+    spec: ToolSpec | CompiledTool | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -44,7 +45,7 @@ export function ProjectWorkspace({
   const [messages, setMessages] = React.useState<any[]>(initialMessages || []);
   const [executionSteps, setExecutionSteps] = React.useState<TimelineStep[]>([]);
   const [isExecuting, setIsExecuting] = React.useState(false);
-  const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
+  const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | CompiledTool | null>(project?.spec || null);
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
   const [runtimeStatus, setRuntimeStatus] = React.useState<RuntimeStatus | null>(null);
 
@@ -52,7 +53,10 @@ export function ProjectWorkspace({
   const isZeroState = messages.length === 0;
 
   // Dynamic Header Title
-  const headerTitle = currentSpec?.title || "New Chat";
+  const headerTitle =
+    (currentSpec as any)?.title ||
+    (currentSpec as any)?.name ||
+    "New Chat";
 
   const handleShare = React.useCallback(async () => {
     try {
@@ -160,7 +164,7 @@ export function ProjectWorkspace({
 
         // Update Spec
         if (response.spec) {
-            setCurrentSpec(response.spec);
+            setCurrentSpec(response.spec as ToolSpec | CompiledTool);
         }
 
         // Add Assistant Message

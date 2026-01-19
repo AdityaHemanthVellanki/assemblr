@@ -2,14 +2,13 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { ToolSpec } from "@/lib/spec/toolSpec";
-import { createDefaultDashboardSpec } from "@/lib/dashboard/spec";
+import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
 
 export async function sendChatMessage(
   toolId: string | undefined,
   message: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
-  currentSpec: ToolSpec | null
+  currentSpec: unknown | null
 ) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -27,12 +26,10 @@ export async function sendChatMessage(
     if (!org) throw new Error("No organization found");
     orgId = org.org_id;
 
-    effectiveSpec = createDefaultDashboardSpec({ title: "New Tool" }) as unknown as ToolSpec;
-    
     const { data: newProject, error } = await supabase.from("projects").insert({
         org_id: orgId,
         name: "New Tool",
-        spec: effectiveSpec as any
+        spec: {} as any
     }).select("id").single();
 
     if (error || !newProject) throw new Error("Failed to create project");
@@ -41,7 +38,7 @@ export async function sendChatMessage(
     const { data: project } = await supabase.from("projects").select("org_id, spec").eq("id", effectiveToolId).single();
     if (!project) throw new Error("Project not found");
     orgId = project.org_id;
-    if (!effectiveSpec) effectiveSpec = project.spec as ToolSpec;
+    if (!effectiveSpec) effectiveSpec = project.spec as any;
   }
 
   // 2. Fetch Integrations (Real)
@@ -58,13 +55,20 @@ export async function sendChatMessage(
   const response = await processToolChat({
     orgId,
     toolId: effectiveToolId,
-    currentSpec: effectiveSpec as ToolSpec,
+    currentSpec: effectiveSpec as any,
     messages: history,
     userMessage: message,
     connectedIntegrationIds,
     mode: "create", // Default to create for builder
     integrationMode: "auto",
   });
+
+  if (response.spec && isCompiledTool(response.spec)) {
+    await supabase
+      .from("projects")
+      .update({ spec: response.spec as any })
+      .eq("id", effectiveToolId);
+  }
 
   return {
     ...response,

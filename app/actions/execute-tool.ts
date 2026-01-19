@@ -1,9 +1,9 @@
 "use server";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
-import { executeDashboard } from "@/lib/execution/engine";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import { RuntimeActionRegistry } from "@/lib/execution/registry";
+import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
 
 export async function runToolExecution(toolId: string) {
   try {
@@ -22,12 +22,15 @@ export async function runToolExecution(toolId: string) {
       throw new Error("Tool not found or has no spec");
     }
 
-    const spec = tool.spec as unknown as DashboardSpec;
+    const spec = tool.spec;
+    if (!isCompiledTool(spec)) {
+      throw new Error("Tool is not compiled");
+    }
 
-    // 2. Execute
-    const results = await executeDashboard(ctx.orgId, spec);
+    const registry = new RuntimeActionRegistry(ctx.orgId);
+    const state = await runCompiledTool({ tool: spec, registry });
 
-    return { success: true, results };
+    return { success: true, state };
   } catch (err) {
     console.error("Tool execution failed", err);
     return {

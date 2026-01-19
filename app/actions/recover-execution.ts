@@ -59,7 +59,7 @@ export async function recoverExecution(input: {
     );
 
     // Materialize the new spec
-    const newSpec = materializeSpec(intent, input.currentSpec);
+    const newSpec = materializeSpec(intent as any, input.currentSpec as any);
 
     return {
         success: true,

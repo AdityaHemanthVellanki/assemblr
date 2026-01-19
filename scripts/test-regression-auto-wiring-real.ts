@@ -1,18 +1,17 @@
 
-// Patch server-only to be a no-op in this test environment
-const Module = require("module");
-const originalLoad = Module._load;
-Module._load = function (request: string, parent: any, isMain: boolean) {
+import Module from "module";
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
+
+const ModuleCtor = Module as any;
+const originalLoad = ModuleCtor._load;
+ModuleCtor._load = function (request: string, parent: any, isMain: boolean) {
   if (request === "server-only") {
     return {};
   }
   return originalLoad(request, parent, isMain);
 };
-
-// Load env vars
-const fs = require("fs");
-const path = require("path");
-const dotenv = require("dotenv");
 
 // Try .env.local first, then .env
 const envLocal = path.resolve(__dirname, "../.env.local");
@@ -23,7 +22,7 @@ if (fs.existsSync(envLocal)) {
 }
 
 // Force production mode behavior
-process.env.NODE_ENV = "production";
+Object.assign(process.env, { NODE_ENV: "production" });
 
 // Dynamic imports to allow patch to take effect
 async function runDeterministicTest() {
@@ -74,7 +73,6 @@ async function runDeterministicTest() {
 async function runRegressionTest() {
   const { compileIntent } = await import("../lib/ai/planner");
   const { assertNoMocks } = await import("../lib/core/guard");
-  const { PlannerContext } = await import("../lib/ai/types"); // Type import only, but we need it for TS to be happy? No, types are elided.
   
   console.log("🚀 Starting Auto-Wiring Regression Test (Production Mode)");
   

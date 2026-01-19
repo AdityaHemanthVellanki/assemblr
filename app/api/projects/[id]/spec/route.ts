@@ -6,6 +6,7 @@ import {
   requireRole,
 } from "@/lib/auth/permissions.server";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
+import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -45,11 +46,12 @@ export async function PATCH(
   const supabase = await createSupabaseServerClient();
 
   try {
-    const spec = parseDashboardSpec(bodyResult.data.spec);
+    const incoming = bodyResult.data.spec;
+    const spec = isCompiledTool(incoming) ? incoming : parseDashboardSpec(incoming);
 
     const updatedRes = await supabase
       .from("projects")
-      .update({ spec })
+      .update({ spec: spec as any })
       .eq("id", id)
       .eq("org_id", ctx.orgId)
       .select("id, name, spec, created_at, updated_at")

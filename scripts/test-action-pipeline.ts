@@ -828,6 +828,7 @@ async function runTests() {
     // __init__ + downgrade action
     assert(nodes.length === 2, "Execution graph has two nodes (init + downgraded action)");
     const downgraded = nodes.find((n: any) => n.id !== "__init__");
+    if (!downgraded) throw new Error("Missing downgraded node");
     assert(downgraded.type === "emit_event", "Invalid capability action downgraded to emit_event");
     assert(!downgraded.capabilityId, "Execution node does not carry invalid capabilityId");
     console.log("✅ PASS: Invalid capability IDs are downgraded without throwing InvalidIntentGraph");

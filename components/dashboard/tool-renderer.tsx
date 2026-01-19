@@ -23,15 +23,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
+import type { MiniAppSpec } from "@/lib/spec/miniAppSpec";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 import type { ExecutionResult } from "@/lib/execution/types";
 
 import { executeToolAction } from "@/app/actions/execute-action";
 import { MiniAppRuntime } from "@/components/miniapp/runtime";
+import { CompiledTool, isCompiledTool } from "@/lib/compiler/ToolCompiler";
 
 interface ToolRendererProps {
   toolId: string;
-  spec: ToolSpec;
+  spec: ToolSpec | CompiledTool;
   executionResults?: Record<string, ExecutionResult>;
   isLoading?: boolean;
   connectedIntegrations?: string[];
@@ -46,7 +48,12 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
     );
   }
 
-  if (spec.kind === "mini_app") {
+  if (isCompiledTool(spec)) {
+    return <CompiledToolRenderer toolId={toolId} tool={spec} />;
+  }
+
+  const toolSpec = spec as ToolSpec;
+  if (isMiniAppSpec(toolSpec)) {
     const integrations = {
       call: async (actionId: string, args: Record<string, any>) => {
         const result = await executeToolAction(toolId, actionId, args);
@@ -56,11 +63,18 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
         return { status: "error" as const, error: result.error || "Unknown error" };
       },
     };
-    return MiniAppRuntime.run({ spec, integrations, connectedIntegrations });
+    return MiniAppRuntime.run({ spec: toolSpec, integrations, connectedIntegrations });
   }
 
-  // Dashboard Mode (Legacy)
-  const hasLegacyViews = spec.views?.length > 0;
+  if (!isDashboardSpec(toolSpec)) {
+    return (
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        No tool specification found. Start chatting to build one.
+      </div>
+    );
+  }
+
+  const hasLegacyViews = toolSpec.views?.length > 0;
   
   // A tool has "real data" only if we have at least one successful execution result
   // AND views/components are defined.
@@ -71,9 +85,9 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
   return (
     <div className="h-full overflow-auto bg-muted/5 p-6">
       <div className="mb-8 space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">{spec.title}</h1>
-        {spec.description && (
-          <p className="text-muted-foreground">{spec.description}</p>
+        <h1 className="text-2xl font-bold tracking-tight">{toolSpec.title}</h1>
+        {toolSpec.description && (
+          <p className="text-muted-foreground">{toolSpec.description}</p>
         )}
       </div>
 
@@ -88,7 +102,7 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
           <p className="text-sm">
             Connect integrations and define queries to see real data.
           </p>
-          {spec.views?.length > 0 && (
+          {toolSpec.views?.length > 0 && (
              <div className="mt-4 max-w-md text-xs text-red-500">
                {Object.values(executionResults).map(r => r.error).filter(Boolean).map((err, i) => (
                  <div key={i}>Error: {err}</div>
@@ -97,10 +111,195 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
           )}
         </div>
       ) : (
-        renderLegacyViews(spec, executionResults)
+        renderLegacyViews(toolSpec, executionResults)
       )}
     </div>
   );
+}
+
+function CompiledToolRenderer({ toolId, tool }: { toolId: string; tool: CompiledTool }) {
+  const [state, setState] = React.useState<Record<string, any> | null>(null);
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const run = React.useCallback(async () => {
+    setIsRunning(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/run`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json?.error || "Execution failed");
+      }
+      setState(json.state || {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Execution failed");
+    } finally {
+      setIsRunning(false);
+    }
+  }, [toolId]);
+
+  React.useEffect(() => {
+    const shouldRun = tool.runtime.actions.some((a) => a.trigger === "onLoad");
+    if (shouldRun) {
+      run();
+    }
+  }, [tool.runtime.actions, run]);
+
+  const dataKey = tool.ui.dataKey;
+  const data = state ? state[dataKey] : undefined;
+  const content = error ? (
+    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+      {error}
+    </div>
+  ) : isRunning ? (
+    <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
+      Loading...
+    </div>
+  ) : (
+    renderCompiledData(tool, data)
+  );
+
+  const manual = tool.runtime.actions.every((a) => a.trigger === "manual");
+
+  return (
+    <div className="h-full overflow-auto bg-muted/5 p-6">
+      <div className="mb-6 space-y-1">
+        <h1 className="text-2xl font-bold tracking-tight">{tool.name}</h1>
+        {tool.description ? <p className="text-muted-foreground">{tool.description}</p> : null}
+        {manual ? (
+          <button
+            className="mt-3 inline-flex items-center rounded-md border px-3 py-1 text-sm"
+            onClick={run}
+            disabled={isRunning}
+          >
+            Run
+          </button>
+        ) : null}
+      </div>
+      {content}
+    </div>
+  );
+}
+
+function renderCompiledData(tool: CompiledTool, data: any) {
+  if (tool.ui.type === "text") {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm">{typeof data === "string" ? data : JSON.stringify(data)}</div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (tool.ui.type === "card") {
+    const entries =
+      data && typeof data === "object" && !Array.isArray(data) ? Object.entries(data) : [];
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {entries.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No data</div>
+          ) : (
+            <div className="space-y-2 text-sm">
+              {entries.map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between">
+                  <span className="text-muted-foreground">{k}</span>
+                  <span>{typeof v === "string" ? v : JSON.stringify(v)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  if (tool.ui.type === "list") {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No data</div>
+          ) : (
+            rows.map((row, idx) => (
+              <div key={idx} className="rounded-md border px-3 py-2 text-sm">
+                {typeof row === "string" ? row : JSON.stringify(row)}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const columns =
+    tool.ui.fields && tool.ui.fields.length > 0
+      ? tool.ui.fields
+      : rows.length > 0 && typeof rows[0] === "object"
+        ? Object.keys(rows[0] as object).slice(0, 6)
+        : ["value"];
+
+  return (
+    <Card className="h-full">
+      <CardHeader className="py-3">
+        <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="max-h-[400px] overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {columns.map((key) => (
+                  <TableHead key={key}>{key}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.length > 0 ? (
+                rows.slice(0, 50).map((row, i) => (
+                  <TableRow key={i}>
+                    {columns.map((key) => (
+                      <TableCell key={key}>
+                        {typeof (row as any)[key] === "object"
+                          ? JSON.stringify((row as any)[key])
+                          : String((row as any)[key] ?? "")}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={columns.length} className="text-center h-24 text-muted-foreground">
+                    No data available
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function isMiniAppSpec(spec: ToolSpec): spec is MiniAppSpec {
+  return (spec as any).kind === "mini_app";
+}
+
+function isDashboardSpec(spec: ToolSpec): spec is DashboardSpec {
+  return (spec as any).kind === "dashboard";
 }
 
 export function renderLegacyViews(spec: DashboardSpec, executionResults: Record<string, ExecutionResult>) {

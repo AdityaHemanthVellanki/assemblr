@@ -5,7 +5,6 @@ import { processToolChat } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
-import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const bodySchema = z.object({
@@ -46,6 +45,9 @@ export async function POST(
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
     const { message: userMessage, mode, integrationMode, selectedIntegrations } = parsed.data;
+    if (mode !== "create") {
+      return NextResponse.json({ error: "Only create mode is supported" }, { status: 400 });
+    }
     const selectedIntegrationIds = selectedIntegrations?.map((i) => i.id);
 
     const supabase = await createSupabaseServerClient();
@@ -81,10 +83,7 @@ export async function POST(
       return NextResponse.json({ error: "Failed to load chat history" }, { status: 500 });
     }
 
-    if (!projectRes.data.spec) {
-      throw new Error("Project spec is missing");
-    }
-    const currentSpec = parseToolSpec(projectRes.data.spec);
+    const currentSpec = projectRes.data.spec ?? {};
 
     if (!historyRes.data) {
       throw new Error("chat_messages returned null data");

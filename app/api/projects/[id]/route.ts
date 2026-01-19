@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { PermissionError, requireOrgMember } from "@/lib/auth/permissions.server";
 import { parseDashboardSpec } from "@/lib/dashboard/spec";
+import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -45,7 +46,8 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const spec = parseDashboardSpec(projectRes.data.spec);
+  const rawSpec = projectRes.data.spec;
+  const spec = isCompiledTool(rawSpec) ? rawSpec : parseDashboardSpec(rawSpec);
 
   return NextResponse.json({
     project: {

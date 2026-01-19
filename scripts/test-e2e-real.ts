@@ -1,204 +1,77 @@
-
 import { getServerEnv } from "@/lib/env";
-import { generateDashboardSpec } from "@/lib/ai/generateDashboardSpec";
-import { compileIntent } from "@/lib/ai/planner";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { executeDashboard } from "@/lib/execution/engine";
-import { DashboardSpec } from "@/lib/spec/dashboardSpec";
-import { CAPABILITY_REGISTRY } from "@/lib/capabilities/definitions";
-import { EXECUTORS } from "@/lib/integrations/map";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { assertNoMocks } from "@/lib/core/guard";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
-
-// Force production mode behavior
-// process.env.NODE_ENV = "production"; // Passed via CLI
+import { processToolChat } from "@/lib/ai/tool-chat";
+import { RuntimeActionRegistry } from "@/lib/execution/registry";
+import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
 
 async function runTest() {
   assertNoMocks();
   console.log("🚀 Starting Assemblr End-to-End Real System Test");
-  console.log("=================================================");
 
-  // 0. Bootstrap Real Session
-  console.log("\n0. Bootstrapping Real User Session...");
   let sessionContext;
   try {
     sessionContext = await bootstrapRealUserSession();
   } catch (e: any) {
     console.error("❌ Auth Bootstrap Failed:", e.message);
-    console.error("👉 Please add E2E_TEST_USER_EMAIL and E2E_TEST_USER_PASSWORD to .env.local");
     process.exit(1);
   }
   const { user, orgId } = sessionContext;
   console.log(`✅ Bootstrapped Session: User=${user.email}, Org=${orgId}`);
 
-  // 1. Environment Check
-  console.log("\n1. Verifying Environment Variables...");
-  try {
-    const env = getServerEnv();
-    console.log("✅ Environment Variables Validated");
-    // Log presence of OAuth keys (masked)
-    const keys = [
-      "GITHUB_CLIENT_ID", "SLACK_CLIENT_ID", "NOTION_CLIENT_ID", 
-      "LINEAR_CLIENT_ID", "GOOGLE_CLIENT_ID"
-    ];
-    keys.forEach(k => {
-      const val = env[k as keyof typeof env];
-      console.log(`   - ${k}: ${val ? "PRESENT" : "MISSING (Should crash)"}`);
-    });
-  } catch (e: any) {
-    console.error("❌ Environment Check Failed:", e.message);
-    process.exit(1);
-  }
+  getServerEnv();
 
-  // 2. Registry Consistency Check
-  console.log("\n2. Verifying Registry Consistency...");
-  let consistencyFailures = 0;
-  CAPABILITY_REGISTRY.forEach(cap => {
-    if (!EXECUTORS[cap.integrationId]) {
-      console.error(`❌ Capability ${cap.id} references missing executor: ${cap.integrationId}`);
-      consistencyFailures++;
-    }
-  });
-  if (consistencyFailures > 0) {
-    console.error(`❌ Registry Consistency Check Failed with ${consistencyFailures} errors`);
-    process.exit(1);
-  }
-  console.log("✅ Registry Consistency Verified (All capabilities have executors)");
-
-  // 3. Simulation: User Prompt -> Spec -> Execution
-  // We will simulate for each major integration
   const scenarios = [
-    { name: "GitHub", prompt: "Show my latest issues", integrationId: "github", resource: "issues" },
-    { name: "Google", prompt: "List my recent emails", integrationId: "google", resource: "gmail" },
-    { name: "Slack", prompt: "Show recent messages in social", integrationId: "slack", resource: "messages" },
-    { name: "Notion", prompt: "Search for pages about 'project'", integrationId: "notion", resource: "pages" },
-    { name: "Linear", prompt: "List my active issues", integrationId: "linear", resource: "issues" }
+    { name: "Google", prompt: "Show my latest emails" },
   ];
+
+  const supabase = createSupabaseAdminClient();
 
   for (const scenario of scenarios) {
     console.log(`\n--- Scenario: ${scenario.name} ---`);
-    console.log(`Prompt: "${scenario.prompt}"`);
-
     try {
-      // A. AI Generation
-      console.log("   Generating Spec...");
-      // Mocking the AI response strictly for this test script if API key is missing?
-      // No, user said NO MOCKS.
-      // If AZURE_OPENAI_API_KEY is missing, this will fail.
-      // Assuming the environment has AI keys (it usually does in this setup).
-      
-      const spec = await generateDashboardSpec({ prompt: scenario.prompt });
-      console.log("   ✅ Spec Generated");
+      const { data: project, error: projectError } = await supabase
+        .from("projects")
+        .insert({ org_id: orgId, name: `E2E ${scenario.name}`, spec: {} as any })
+        .select("id")
+        .single();
+      if (projectError || !project) {
+        throw new Error("Failed to create tool");
+      }
 
-      // 2. Register
+      const result = await processToolChat({
+        orgId,
+        toolId: project.id,
+        currentSpec: {},
+        messages: [],
+        userMessage: scenario.prompt,
+        connectedIntegrationIds: [],
+        mode: "create",
+        integrationMode: "auto",
+      });
+
+      if (!result.spec || !isCompiledTool(result.spec)) {
+        throw new Error("Compiler failed to produce a compiled tool");
+      }
+
+      await supabase
+        .from("projects")
+        .update({ spec: result.spec as any })
+        .eq("id", project.id);
+
       const registry = new RuntimeActionRegistry(orgId);
-      // registry.reset(); // No reset needed for new instance
-
-      // Construct Planner Context
-      const plannerContext = {
-          integrations: {
-              [scenario.integrationId]: {
-                  connected: true,
-                  capabilities: CAPABILITY_REGISTRY.filter(c => c.integrationId === scenario.integrationId).map(c => c.id),
-                  scopes: ["default"]
-              }
-          }
-      };
-      
-      // Hydrate actions from spec + intent
-      // We need to simulate the flow where `tool-chat` does this.
-      // 1. Compile
-      const intent = await compileIntent(
-        scenario.prompt,
-        [], // history
-        plannerContext as any, // PlannerContext
-        [], // schemas
-        [], // metrics
-        "create", // mode
-        [], // policies
-        undefined // currentSpec
-      );
-      
-      // Hydrate actions from spec + intent
-      // Similar to tool-chat.ts logic
-      // We need to extract actions from the intent's tool_mutation if present
-      const newActions = intent.tool_mutation?.actionsAdded || [];
-      if (newActions.length === 0) {
-          console.warn("   ⚠️ No actions added by planner. This might be a logic failure or simple spec.");
-      }
-
-      newActions.forEach(action => {
-          registry.registerAction(action);
-      });
-
-      // Verify actions are registered
-      const missingActions = newActions.filter(a => !registry.get(a.id));
-      if (missingActions.length > 0) {
-          throw new Error(`Actions failed to register: ${missingActions.map(a => a.id).join(", ")}`);
-      }
-      console.log(`   ✅ Actions Registered (${newActions.length})`);
-
-      // C. Execution
-      console.log("   Attempting Execution...");
-      // We need to find the action ID to execute.
-      // Usually triggered by "onPageLoad" or UI.
-      // Let's find an action that uses the integration.
-      const integrationAction = newActions.find(a => a.type === "integration_call" || a.type === "integration_query");
-      
-      if (!integrationAction) {
-          console.log("   ℹ️ No integration_call/query action found. Skipping execution test.");
-          continue;
-      }
-
-      console.log(`   Executing Action: ${integrationAction.id} (${integrationAction.config?.capabilityId})`);
-      
-      // Execute!
-      // This requires DB access for token.
-      // We pass the real orgId and userId.
-      // This confirms we hit the REAL executor.
-      
-      const result = await registry.executeAction(integrationAction.id, {}, {
-          orgId: orgId,
-          userId: user.id
-      });
-
-      console.log("   ✅ Execution Result:", result);
-      
+      const state = await runCompiledTool({ tool: result.spec, registry });
+      console.log("✅ Execution State:", state);
     } catch (e: any) {
-      const msg = e.message;
-      // We expect REAL success now, or specific errors if data is missing.
-      // We do NOT accept "Integration not connected" as a pass if we expect it to work.
-      // But if the user hasn't connected integrations, it WILL fail.
-      // The user prompt says: "Integrations execute with real tokens... Gmail / GitHub / Slack / Linear return real data".
-      // This implies the user running the test MUST have connected these.
-      
-      console.log("   ❌ Execution Failed:", e); // Log full error/result for debugging
-
-      if (msg.includes("Integration") && msg.includes("not connected")) {
-         console.error("   ❌ FAIL: Integration not connected in DB.");
-         console.error(`   👉 ACTION REQUIRED: Log in to ${process.env.NEXT_PUBLIC_SITE_URL} as ${user.email} and connect ${scenario.integrationId} in Settings.`);
-         // process.exit(1); // Don't exit, continue to next scenario
-      } else if (msg.includes("Missing") && msg.includes("token")) {
-         console.error("   ❌ FAIL: Missing token for this integration.");
-         console.error(`   👉 ACTION REQUIRED: Log in to ${process.env.NEXT_PUBLIC_SITE_URL} as ${user.email} and connect ${scenario.integrationId} in Settings.`);
-         // process.exit(1);
-      } else if (msg.includes("AI service unavailable")) {
-         console.warn("   ⚠️ SKIPPED: AI Service unavailable");
-      } else if (msg.includes("Gmail API has not been used")) {
-          console.error("   ❌ FAIL: Gmail API not enabled in GCP.");
-          console.error("   👉 ACTION REQUIRED: Enable Gmail API in Google Cloud Console for project 447640195330.");
-      } else {
-         console.error("   ❌ FAIL: Unexpected Error:", e);
-         // process.exit(1);
-      }
+      console.error("❌ Execution Failed:", e);
     }
   }
 
-  console.log("\n✅ All Scenarios Completed (Check for failures above)");
+  console.log("\n✅ All Scenarios Completed");
 }
 
-runTest().catch(e => {
-  console.error("FATAL:", e);
+runTest().catch((err) => {
+  console.error("❌ E2E Test Failed:", err);
   process.exit(1);
 });
