@@ -35,7 +35,10 @@ export async function POST(
     spec = version?.tool_spec ?? spec;
   }
   if (!isToolSystemSpec(spec)) {
-    return NextResponse.json({ error: "Tool spec is not a tool system" }, { status: 422 });
+    return NextResponse.json(
+      { error: "I need a few details before I can finish building this tool." },
+      { status: 422 },
+    );
   }
 
   const body = await req.json().catch(() => ({}));

@@ -30,7 +30,7 @@ export async function runToolExecution(toolId: string, actionId: string, input: 
       spec = version?.tool_spec ?? spec;
     }
     if (!isToolSystemSpec(spec)) {
-      throw new Error("Tool is not a system spec");
+      throw new Error("I need a few details before I can finish building this tool.");
     }
     const result = await executeToolAction({
       orgId: ctx.orgId,

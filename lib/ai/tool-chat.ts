@@ -5,7 +5,7 @@ import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
-import { compileToolSystem } from "@/lib/toolos/compiler";
+import { compileToolSystem, validateToolSystem } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
@@ -16,6 +16,8 @@ import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
+import { loadToolState } from "@/lib/toolos/state-store";
+import { linkEntities } from "@/lib/toolos/linking-engine";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -207,9 +209,64 @@ export async function processToolChat(
     }
 
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
+    const toolSystemValidation = validateToolSystem(spec);
+    if (
+      !toolSystemValidation.entitiesResolved ||
+      !toolSystemValidation.integrationsResolved ||
+      !toolSystemValidation.actionsBound ||
+      !toolSystemValidation.workflowsBound ||
+      !toolSystemValidation.viewsBound
+    ) {
+      const clarifications = limitClarifications(toolSystemValidation.errors);
+      markStep(steps, "compile", "error", "Tool system incomplete");
+      machine.transition("AWAITING_CLARIFICATION", "Tool system incomplete", "warn");
+      await saveMemory({
+        scope: builderScope,
+        namespace: builderNamespace,
+        key: "pending_questions",
+        value: clarifications,
+      });
+      await saveMemory({
+        scope: builderScope,
+        namespace: builderNamespace,
+        key: "base_prompt",
+        value: input.userMessage,
+      });
+      return {
+        explanation: "Clarifications needed",
+        message: { type: "text", content: formatClarificationPrompt(clarifications) },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          clarifications,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
+      };
+    }
     compileToolSystem(spec);
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
+
+    const lowConfidenceEntities = spec.entities.filter((entity) => (entity.confidence ?? 1) < 0.7);
+    const lowConfidenceActions = spec.actions.filter((action) => (action.confidence ?? 1) < 0.7);
+    if (lowConfidenceEntities.length > 0) {
+      lowConfidenceEntities.forEach((entity) => {
+        appendStep(
+          stepsById.get("entities"),
+          `Low confidence ${entity.name} (${(entity.confidence ?? 0).toFixed(2)})`,
+        );
+      });
+    }
+    if (lowConfidenceActions.length > 0) {
+      lowConfidenceActions.forEach((action) => {
+        appendStep(
+          stepsById.get("actions"),
+          `Low confidence ${action.name} (${(action.confidence ?? 0).toFixed(2)})`,
+        );
+      });
+    }
 
     const confidenceQuestions = limitClarifications([
       ...collectLowConfidenceQuestions(spec),
@@ -338,6 +395,34 @@ export async function processToolChat(
     const execution = await runInitialFetches(spec, input.orgId, input.toolId, builderScope);
     latestEvidence = execution.evidence;
     execution.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
+    const correlation = await runEntityCorrelation(spec, input.orgId, input.toolId);
+    correlation.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
+    if (correlation.linksByPair) {
+      await saveMemory({
+        scope: builderScope,
+        namespace: builderNamespace,
+        key: "entity_links",
+        value: correlation.linksByPair,
+      });
+    }
+    const readinessGate = resolveDataReadinessGate(spec);
+    const readinessCheck = evaluateDataReadinessGate(readinessGate, execution.evidence);
+    if (!readinessCheck.ready) {
+      appendStep(stepsById.get("runtime"), "Waiting for initial data fetch");
+      return {
+        explanation: "Waiting for initial data fetch",
+        message: { type: "text", content: "Waiting for initial data fetch…" },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          state: machine.state,
+          build_logs: machine.logs,
+          data_evidence: execution.evidence,
+          data_readiness: readinessCheck,
+        },
+      };
+    }
     const missingEvidence = missingEvidenceForViews(spec, execution.evidence);
     if (missingEvidence.length > 0) {
       markStep(steps, "runtime", "error", "Data evidence missing");
@@ -839,6 +924,98 @@ function buildEvidenceForAction(
     confidenceScore,
   };
   return evidence;
+}
+
+function resolveDataReadinessGate(spec: ToolSystemSpec) {
+  if (spec.dataReadiness) return spec.dataReadiness;
+  return {
+    requiredEntities: spec.entities.map((entity) => entity.name),
+    minimumRecords: 1,
+  };
+}
+
+function evaluateDataReadinessGate(
+  gate: { requiredEntities: string[]; minimumRecords: number },
+  evidence: Record<string, DataEvidence>,
+) {
+  const countsByEntity = new Map<string, number>();
+  for (const entry of Object.values(evidence)) {
+    countsByEntity.set(entry.entity, Math.max(countsByEntity.get(entry.entity) ?? 0, entry.sampleCount));
+  }
+  const missing = gate.requiredEntities.filter(
+    (entity) => (countsByEntity.get(entity) ?? 0) < gate.minimumRecords,
+  );
+  return {
+    ready: missing.length === 0,
+    missingEntities: missing,
+    minimumRecords: gate.minimumRecords,
+  };
+}
+
+async function runEntityCorrelation(
+  spec: ToolSystemSpec,
+  orgId: string,
+  toolId: string,
+): Promise<{ logs: string[]; linksByPair: Record<string, any[]> | null }> {
+  const logs: string[] = [];
+  const entityStatePaths = new Map<string, string>();
+  for (const view of spec.views) {
+    if (!entityStatePaths.has(view.source.entity)) {
+      entityStatePaths.set(view.source.entity, view.source.statePath);
+    }
+  }
+  const state = await loadToolState(toolId, orgId);
+  const entityData = new Map<string, Array<Record<string, any>>>();
+  for (const entity of spec.entities) {
+    const path = entityStatePaths.get(entity.name);
+    if (!path) continue;
+    const raw = readStateValue(state, path);
+    const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    entityData.set(entity.name, rows);
+  }
+
+  const linksByPair: Record<string, any[]> = {};
+  for (let i = 0; i < spec.entities.length; i += 1) {
+    for (let j = i + 1; j < spec.entities.length; j += 1) {
+      const source = spec.entities[i];
+      const target = spec.entities[j];
+      const sourceRows = entityData.get(source.name) ?? [];
+      const targetRows = entityData.get(target.name) ?? [];
+      const sourceField = source.identifiers?.[0];
+      const targetField = target.identifiers?.[0];
+      if (!sourceField || !targetField) {
+        logs.push(`Skipped correlation between ${source.name} and ${target.name}.`);
+        continue;
+      }
+      if (sourceRows.length === 0 || targetRows.length === 0) {
+        logs.push(`No data to correlate for ${source.name} and ${target.name}.`);
+        continue;
+      }
+      const links = linkEntities({
+        source: sourceRows,
+        target: targetRows,
+        sourceField,
+        targetField,
+      });
+      if (links.length > 0) {
+        const key = `${source.name}::${target.name}`;
+        linksByPair[key] = links;
+        logs.push(`Linked ${links.length} records between ${source.name} and ${target.name}.`);
+      } else {
+        logs.push(`No correlations found for ${source.name} and ${target.name}.`);
+      }
+    }
+  }
+
+  return { logs, linksByPair: Object.keys(linksByPair).length > 0 ? linksByPair : null };
+}
+
+function readStateValue(state: Record<string, any>, path: string) {
+  if (path in state) return state[path];
+  return path.split(".").reduce((value: any, key) => {
+    if (value && typeof value === "object") return value[key];
+    return undefined;
+  }, state);
 }
 
 function missingEvidenceForViews(spec: ToolSystemSpec, evidence: Record<string, DataEvidence>) {

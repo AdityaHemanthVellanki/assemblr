@@ -7,6 +7,7 @@ import { ToolSystemSpec, StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
+import { requestCoordinator } from "@/lib/security/rate-limit";
 
 export type ToolExecutionResult = {
   state: Record<string, any>;
@@ -35,123 +36,125 @@ export async function executeToolAction(params: {
     throw new Error(`Action ${actionId} requires approval`);
   }
 
-  const runtime = RUNTIMES[action.integrationId];
-  if (!runtime) {
-    throw new Error(`Runtime not found for integration ${action.integrationId}`);
-  }
-  await enforceRateLimit({
-    orgId,
-    toolId,
-    integrationId: action.integrationId,
-    maxPerMinute: 60,
-  });
-  const executor = runtime.capabilities[action.capabilityId];
-  if (!executor) {
-    throw new Error(`Capability ${action.capabilityId} not found for ${action.integrationId}`);
-  }
-
-  const snapshot = recordRun ? await loadToolState(toolId, orgId) : null;
-  const run = recordRun
-    ? await createExecutionRun({
-        orgId,
-        toolId,
-        triggerId: triggerId ?? "manual",
-        actionId: action.id,
-        input,
-        stateSnapshot: snapshot ?? {},
-      })
-    : null;
-  const runLogs: Array<Record<string, any>> = [];
-  if (run) {
-    const startedAt = new Date().toISOString();
-    runLogs.push({
-      id: `${action.id}:start`,
-      timestamp: startedAt,
-      status: "running",
-      actionId: action.id,
+  return requestCoordinator.run(`tool:${toolId}`, async () => {
+    const runtime = RUNTIMES[action.integrationId];
+    if (!runtime) {
+      throw new Error(`Runtime not found for integration ${action.integrationId}`);
+    }
+    await enforceRateLimit({
+      orgId,
+      toolId,
       integrationId: action.integrationId,
-      capabilityId: action.capabilityId,
-      input: sanitizeLogData(input),
-      retries: 0,
+      maxPerMinute: 60,
     });
-    await updateExecutionRun({ runId: run.id, status: "running", currentStep: action.id, logs: runLogs });
-  }
-
-  let output: any;
-  try {
-    const startedAt = Date.now();
-    const token = await getValidAccessToken(orgId, action.integrationId);
-    const context = await runtime.resolveContext(token);
-    if (runtime.checkPermissions) {
-      runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
+    const executor = runtime.capabilities[action.capabilityId];
+    if (!executor) {
+      throw new Error(`Capability ${action.capabilityId} not found for ${action.integrationId}`);
     }
-    const tracer = new ExecutionTracer("run");
-    output = await executor.execute(input, context, tracer);
+
+    const snapshot = recordRun ? await loadToolState(toolId, orgId) : null;
+    const run = recordRun
+      ? await createExecutionRun({
+          orgId,
+          toolId,
+          triggerId: triggerId ?? "manual",
+          actionId: action.id,
+          input,
+          stateSnapshot: snapshot ?? {},
+        })
+      : null;
+    const runLogs: Array<Record<string, any>> = [];
     if (run) {
-      const durationMs = Date.now() - startedAt;
+      const startedAt = new Date().toISOString();
       runLogs.push({
-        id: `${action.id}:done`,
-        timestamp: new Date().toISOString(),
-        status: "done",
+        id: `${action.id}:start`,
+        timestamp: startedAt,
+        status: "running",
         actionId: action.id,
         integrationId: action.integrationId,
         capabilityId: action.capabilityId,
-        durationMs,
-        output: summarizeOutput(output),
+        input: sanitizeLogData(input),
+        retries: 0,
       });
-      await updateExecutionRun({ runId: run.id, status: "completed", currentStep: action.id, logs: runLogs });
+      await updateExecutionRun({ runId: run.id, status: "running", currentStep: action.id, logs: runLogs });
     }
-  } catch (err) {
-    if (run) {
-      const durationMs = runLogs.length ? Date.now() - Date.parse(runLogs[0].timestamp) : undefined;
-      runLogs.push({
-        id: `${action.id}:failed`,
-        timestamp: new Date().toISOString(),
-        status: "failed",
-        actionId: action.id,
-        integrationId: action.integrationId,
-        capabilityId: action.capabilityId,
-        durationMs,
-        error: err instanceof Error ? err.message : "error",
-      });
-      await updateExecutionRun({ runId: run.id, status: "failed", currentStep: action.id, logs: runLogs });
-    }
-    throw err;
-  }
 
-  const state = await loadToolState(toolId, orgId);
-  const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);
-  await saveToolState(toolId, orgId, nextState);
-  const snapshots = (await loadMemory({
-    scope: toolScope,
-    namespace: "tool_builder",
-    key: "state_snapshots",
-  })) as Array<{ timestamp: string; state: Record<string, any> }> | null;
-  const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(-4) : [];
-  nextSnapshots.push({ timestamp: new Date().toISOString(), state: nextState });
-  await saveMemory({
-    scope: toolScope,
-    namespace: "tool_builder",
-    key: "state_snapshots",
-    value: nextSnapshots,
-  });
-  await saveMemory({
-    scope: toolScope,
-    namespace: spec.memory.tool.namespace,
-    key: actionId,
-    value: output,
-  });
-  if (userId) {
+    let output: any;
+    try {
+      const startedAt = Date.now();
+      const token = await getValidAccessToken(orgId, action.integrationId);
+      const context = await runtime.resolveContext(token);
+      if (runtime.checkPermissions) {
+        runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
+      }
+      const tracer = new ExecutionTracer("run");
+      output = await executor.execute(input, context, tracer);
+      if (run) {
+        const durationMs = Date.now() - startedAt;
+        runLogs.push({
+          id: `${action.id}:done`,
+          timestamp: new Date().toISOString(),
+          status: "done",
+          actionId: action.id,
+          integrationId: action.integrationId,
+          capabilityId: action.capabilityId,
+          durationMs,
+          output: summarizeOutput(output),
+        });
+        await updateExecutionRun({ runId: run.id, status: "completed", currentStep: action.id, logs: runLogs });
+      }
+    } catch (err) {
+      if (run) {
+        const durationMs = runLogs.length ? Date.now() - Date.parse(runLogs[0].timestamp) : undefined;
+        runLogs.push({
+          id: `${action.id}:failed`,
+          timestamp: new Date().toISOString(),
+          status: "failed",
+          actionId: action.id,
+          integrationId: action.integrationId,
+          capabilityId: action.capabilityId,
+          durationMs,
+          error: err instanceof Error ? err.message : "error",
+        });
+        await updateExecutionRun({ runId: run.id, status: "failed", currentStep: action.id, logs: runLogs });
+      }
+      throw err;
+    }
+
+    const state = await loadToolState(toolId, orgId);
+    const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);
+    await saveToolState(toolId, orgId, nextState);
+    const snapshots = (await loadMemory({
+      scope: toolScope,
+      namespace: "tool_builder",
+      key: "state_snapshots",
+    })) as Array<{ timestamp: string; state: Record<string, any> }> | null;
+    const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(-4) : [];
+    nextSnapshots.push({ timestamp: new Date().toISOString(), state: nextState });
     await saveMemory({
-      scope: { type: "tool_user", toolId, userId },
-      namespace: spec.memory.user.namespace,
+      scope: toolScope,
+      namespace: "tool_builder",
+      key: "state_snapshots",
+      value: nextSnapshots,
+    });
+    await saveMemory({
+      scope: toolScope,
+      namespace: spec.memory.tool.namespace,
       key: actionId,
       value: output,
     });
-  }
+    if (userId) {
+      await saveMemory({
+        scope: { type: "tool_user", toolId, userId },
+        namespace: spec.memory.user.namespace,
+        key: actionId,
+        value: output,
+      });
+    }
 
-  const events = action.emits?.map((type) => ({ type, payload: { actionId, output } })) ?? [];
-  return { state: nextState, output, events } satisfies ToolExecutionResult;
+    const events = action.emits?.map((type) => ({ type, payload: { actionId, output } })) ?? [];
+    return { state: nextState, output, events } satisfies ToolExecutionResult;
+  });
 }
 
 async function enforceRateLimit(params: {

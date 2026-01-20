@@ -55,6 +55,7 @@ type BudgetSummary = {
 
 export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec | null }) {
   const [activeViewId, setActiveViewId] = React.useState<string | null>(null);
+  const [activeEntityId, setActiveEntityId] = React.useState<string | null>(null);
   const [projection, setProjection] = React.useState<ViewProjection | null>(null);
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -78,12 +79,30 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [budgetLoading, setBudgetLoading] = React.useState(false);
   const [budgetDraft, setBudgetDraft] = React.useState<{ monthlyLimit: number; perRunLimit: number } | null>(null);
 
+  const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
+
   React.useEffect(() => {
-    if (!spec || !isToolSystemSpec(spec)) return;
-    if (!activeViewId && spec.views.length > 0) {
-      setActiveViewId(spec.views[0].id);
+    if (!systemSpec) return;
+    if (systemSpec.entities.length > 0) {
+      const firstEntity = systemSpec.entities[0]?.name ?? null;
+      const currentEntity = activeEntityId ?? firstEntity;
+      if (!activeEntityId && firstEntity) {
+        setActiveEntityId(firstEntity);
+      }
+      if (currentEntity) {
+        const viewsForEntity = systemSpec.views.filter((view) => view.source.entity === currentEntity);
+        if (viewsForEntity.length > 0) {
+          if (!activeViewId || !viewsForEntity.some((view) => view.id === activeViewId)) {
+            setActiveViewId(viewsForEntity[0].id);
+          }
+          return;
+        }
+      }
     }
-  }, [spec, activeViewId]);
+    if (!activeViewId && systemSpec.views.length > 0) {
+      setActiveViewId(systemSpec.views[0].id);
+    }
+  }, [systemSpec, activeEntityId, activeViewId]);
 
   const fetchView = React.useCallback(async (viewId: string) => {
     setIsLoading(true);
@@ -281,7 +300,6 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     void fetchRunDetails(selectedRunId);
   }, [runInspectorOpen, selectedRunId, fetchRunDetails]);
 
-  const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
     () => systemSpec?.views.find((v) => v.id === activeViewId),
     [systemSpec, activeViewId],
@@ -416,20 +434,41 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           <div className="text-lg font-semibold">{systemSpec.purpose}</div>
         </div>
         <div className="flex items-center gap-2">
-          {systemSpec.views.map((view) => (
-            <button
-              key={view.id}
-              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                activeViewId === view.id
-                  ? "bg-primary text-primary-foreground"
-                  : "border border-border/60 text-muted-foreground hover:text-foreground"
-              }`}
-              onClick={() => setActiveViewId(view.id)}
-              type="button"
-            >
-              {view.name}
-            </button>
-          ))}
+          {systemSpec.entities.length > 0
+            ? systemSpec.entities.map((entity) => (
+                <button
+                  key={entity.name}
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    activeEntityId === entity.name
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border/60 text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => {
+                    const viewsForEntity = systemSpec.views.filter(
+                      (view) => view.source.entity === entity.name,
+                    );
+                    setActiveEntityId(entity.name);
+                    setActiveViewId(viewsForEntity[0]?.id ?? null);
+                  }}
+                  type="button"
+                >
+                  {entity.name}
+                </button>
+              ))
+            : systemSpec.views.map((view) => (
+                <button
+                  key={view.id}
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    activeViewId === view.id
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-border/60 text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => setActiveViewId(view.id)}
+                  type="button"
+                >
+                  {view.name}
+                </button>
+              ))}
         </div>
       </div>
 

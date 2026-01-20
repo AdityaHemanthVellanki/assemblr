@@ -150,6 +150,12 @@ export const IntegrationSpecSchema = z.object({
 });
 export type IntegrationSpec = z.infer<typeof IntegrationSpecSchema>;
 
+export const DataReadinessGateSchema = z.object({
+  requiredEntities: z.array(z.string()).default([]),
+  minimumRecords: z.number().min(1).default(1),
+});
+export type DataReadinessGate = z.infer<typeof DataReadinessGateSchema>;
+
 export const AutomationCapabilitiesSchema = z.object({
   canRunWithoutUI: z.boolean(),
   supportedTriggers: z.array(z.string()).default([]),
@@ -195,6 +201,7 @@ export const ToolSystemSpecSchema = z.object({
     grants: z.array(PermissionSpecSchema).default([]),
   }),
   integrations: z.array(IntegrationSpecSchema),
+  dataReadiness: DataReadinessGateSchema.optional(),
   memory: MemorySpecSchema,
   automations: AutomationsSpecSchema.optional(),
   observability: ObservabilitySpecSchema.optional(),

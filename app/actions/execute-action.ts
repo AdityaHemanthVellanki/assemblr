@@ -56,7 +56,7 @@ export async function executeToolAction(
 
     if (!orgId) throw new Error("Organization not found");
     if (!isToolSystemSpec(spec)) {
-      throw new Error("Tool is not a system spec");
+      throw new Error("I need a few details before I can finish building this tool.");
     }
 
     const result = await executeToolSystemAction({

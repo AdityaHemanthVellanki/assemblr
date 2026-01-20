@@ -6,12 +6,38 @@ type Entry = { count: number; windowStartMs: number };
 
 const globalForRateLimit = globalThis as unknown as {
   __rateLimitStore?: Map<string, Entry>;
+  __requestCoordinator?: RequestCoordinator;
 };
 
 const store = (globalForRateLimit.__rateLimitStore ??= new Map<
   string,
   Entry
 >());
+
+export class RequestCoordinator {
+  private queues = new Map<string, Promise<void>>();
+
+  async run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(key) ?? Promise.resolve();
+    let release: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.queues.set(key, previous.then(() => current));
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release?.();
+      if (this.queues.get(key) === current) {
+        this.queues.delete(key);
+      }
+    }
+  }
+}
+
+export const requestCoordinator =
+  (globalForRateLimit.__requestCoordinator ??= new RequestCoordinator());
 
 export function checkRateLimit({
   key,

@@ -1,8 +1,10 @@
 import "server-only";
 
 import { cache } from "react";
+import { cookies } from "next/headers";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requestCoordinator } from "@/lib/security/rate-limit";
 import {
   ORG_ROLES,
   type OrgRole,
@@ -31,15 +33,26 @@ export type SessionContext = {
 };
 
 export const getCurrentUser = cache(async () => {
-  const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.auth.getUser();
-  if (error) {
-    console.error("supabase getUser failed", { message: error.message });
-  }
-  const user = data?.user;
-  if (!user) throw new PermissionError("Unauthorized", 401);
-  return user;
+  const cacheKey = await getSessionCacheKey();
+  return requestCoordinator.run(`supabase:getUser:${cacheKey}`, async () => {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error("supabase getUser failed", { message: error.message });
+    }
+    const user = data?.user;
+    if (!user) throw new PermissionError("Unauthorized", 401);
+    return user;
+  });
 });
+
+async function getSessionCacheKey() {
+  const cookieStore = await cookies();
+  const all = cookieStore.getAll();
+  const refresh = all.find((cookie) => cookie.name.includes("refresh-token"))?.value;
+  const access = all.find((cookie) => cookie.name.includes("access-token"))?.value;
+  return refresh ?? access ?? "anonymous";
+}
 
 export const getSessionContext = cache(async (): Promise<SessionContext> => {
   const supabase = await createSupabaseServerClient();
@@ -205,4 +218,3 @@ export {
 };
 
 export type { OrgRole };
-
