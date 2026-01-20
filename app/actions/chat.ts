@@ -49,6 +49,7 @@ export async function sendChatMessage(
   const response = await processToolChat({
     orgId,
     toolId: effectiveToolId,
+    userId: user.id,
     currentSpec: effectiveSpec as any,
     messages: history,
     userMessage: message,
@@ -57,10 +58,10 @@ export async function sendChatMessage(
     integrationMode: "auto",
   });
 
-  if (response.spec && isToolSystemSpec(response.spec)) {
+  if (response.spec && isToolSystemSpec(response.spec) && response.metadata?.active_version_id) {
     await supabase
       .from("projects")
-      .update({ spec: response.spec as any })
+      .update({ spec: response.spec as any, active_version_id: response.metadata.active_version_id })
       .eq("id", effectiveToolId);
   }
 

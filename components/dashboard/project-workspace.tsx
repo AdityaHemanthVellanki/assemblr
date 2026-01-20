@@ -38,6 +38,7 @@ export function ProjectWorkspace({
   const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
   const [showBuildSteps, setShowBuildSteps] = React.useState(true);
+  const [showChat, setShowChat] = React.useState(true);
 
   // Derived state
   const isZeroState = messages.length === 0;
@@ -136,6 +137,14 @@ export function ProjectWorkspace({
               variant="ghost"
               size="sm"
               className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={() => setShowChat((prev) => !prev)}
+            >
+              {showChat ? "Hide chat" : "Show chat"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
               onClick={handleShare}
             >
               <Share className="h-4 w-4" />
@@ -161,47 +170,49 @@ export function ProjectWorkspace({
           />
         ) : (
           <div className="flex h-full">
-            <div className="flex h-full w-[420px] flex-col border-r border-border/50">
-              <ScrollArea className="flex-1">
-                <div className="px-4 py-6 space-y-6">
-                  <BuildProgressPanel
-                    steps={buildSteps}
-                    collapsed={!showBuildSteps}
-                    onToggle={() => setShowBuildSteps((prev) => !prev)}
-                  />
-                  {messages.map((m, i) => (
-                    <div
-                      key={i}
-                      className="mb-4 flex w-full justify-start"
-                    >
+            {showChat && (
+              <div className="flex h-full w-[360px] flex-col border-r border-border/50">
+                <ScrollArea className="flex-1">
+                  <div className="px-4 py-6 space-y-6">
+                    <BuildProgressPanel
+                      steps={buildSteps}
+                      collapsed={!showBuildSteps}
+                      onToggle={() => setShowBuildSteps((prev) => !prev)}
+                    />
+                    {messages.map((m, i) => (
                       <div
-                        className={
-                          m.role === "user"
-                            ? "ml-auto max-w-[80%] rounded-2xl bg-primary text-primary-foreground px-4 py-3"
-                            : "mr-auto max-w-[80%] rounded-2xl bg-muted/40 border border-border/50 px-4 py-3"
-                        }
+                        key={i}
+                        className="mb-4 flex w-full justify-start"
                       >
-                        <div className="text-sm whitespace-pre-wrap">
-                          {m.content}
+                        <div
+                          className={
+                            m.role === "user"
+                              ? "ml-auto max-w-[80%] rounded-2xl bg-primary text-primary-foreground px-4 py-3"
+                              : "mr-auto max-w-[80%] rounded-2xl bg-muted/40 border border-border/50 px-4 py-3"
+                          }
+                        >
+                          <div className="text-sm whitespace-pre-wrap">
+                            {m.content}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
 
-                  <div className="h-10" />
+                    <div className="h-10" />
+                  </div>
+                </ScrollArea>
+
+                <div className="p-4 border-t border-border/50 bg-background/80 backdrop-blur-md">
+                  <PromptBar
+                    value={inputValue}
+                    onChange={setInputValue}
+                    onSubmit={handleSubmit}
+                    className="shadow-lg"
+                    isLoading={isExecuting}
+                  />
                 </div>
-              </ScrollArea>
-
-              <div className="p-4 border-t border-border/50 bg-background/80 backdrop-blur-md">
-                <PromptBar
-                  value={inputValue}
-                  onChange={setInputValue}
-                  onSubmit={handleSubmit}
-                  className="shadow-lg"
-                  isLoading={isExecuting}
-                />
               </div>
-            </div>
+            )}
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
               {currentSpec && toolId ? (

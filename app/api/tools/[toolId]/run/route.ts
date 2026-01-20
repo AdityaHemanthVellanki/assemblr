@@ -16,9 +16,8 @@ export async function POST(
   const { ctx } = await requireOrgMember();
   const supabase = await createSupabaseServerClient();
 
-  const { data: project, error } = await supabase
-    .from("projects")
-    .select("spec")
+  const { data: project, error } = await (supabase.from("projects") as any)
+    .select("spec, active_version_id")
     .eq("id", toolId)
     .eq("org_id", ctx.orgId)
     .single();
@@ -27,7 +26,14 @@ export async function POST(
     return NextResponse.json({ error: "Tool not found" }, { status: 404 });
   }
 
-  const spec = project.spec;
+  let spec = project.spec;
+  if (project.active_version_id) {
+    const { data: version } = await (supabase.from("tool_versions") as any)
+      .select("tool_spec")
+      .eq("id", project.active_version_id)
+      .single();
+    spec = version?.tool_spec ?? spec;
+  }
   if (!isToolSystemSpec(spec)) {
     return NextResponse.json({ error: "Tool spec is not a tool system" }, { status: 422 });
   }

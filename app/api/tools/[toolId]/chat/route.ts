@@ -94,6 +94,7 @@ export async function POST(
     const result = await processToolChat({
       orgId: ctx.orgId,
       toolId,
+      userId: ctx.userId,
       currentSpec,
       messages: history,
       userMessage,
@@ -106,7 +107,7 @@ export async function POST(
     if (mode === "create" && (result.metadata as any)?.persist === true) {
       const { error: updateError } = await supabase
         .from("projects")
-        .update({ spec: result.spec as any })
+        .update({ spec: result.spec as any, active_version_id: (result.metadata as any)?.active_version_id ?? null })
         .eq("id", toolId);
       if (updateError) {
         console.error("Failed to update tool spec", updateError);

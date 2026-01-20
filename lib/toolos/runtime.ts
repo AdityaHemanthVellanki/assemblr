@@ -6,6 +6,7 @@ import { compileToolSystem } from "@/lib/toolos/compiler";
 import { ToolSystemSpec, StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
 import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
+import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
 
 export type ToolExecutionResult = {
   state: Record<string, any>;
@@ -20,8 +21,10 @@ export async function executeToolAction(params: {
   actionId: string;
   input: Record<string, any>;
   userId?: string | null;
+  triggerId?: string | null;
+  recordRun?: boolean;
 }) {
-  const { orgId, toolId, spec, actionId, input, userId } = params;
+  const { orgId, toolId, spec, actionId, input, userId, triggerId, recordRun = true } = params;
   const compiled = compileToolSystem(spec);
   const action = compiled.actions.get(actionId);
   if (!action) {
@@ -46,13 +49,55 @@ export async function executeToolAction(params: {
     throw new Error(`Capability ${action.capabilityId} not found for ${action.integrationId}`);
   }
 
-  const token = await getValidAccessToken(orgId, action.integrationId);
-  const context = await runtime.resolveContext(token);
-  if (runtime.checkPermissions) {
-    runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
+  const snapshot = recordRun ? await loadToolState(toolId, orgId) : null;
+  const run = recordRun
+    ? await createExecutionRun({
+        orgId,
+        toolId,
+        triggerId: triggerId ?? "manual",
+        actionId: action.id,
+        input,
+        stateSnapshot: snapshot ?? {},
+      })
+    : null;
+  const runLogs: Array<Record<string, any>> = [];
+  if (run) {
+    runLogs.push({
+      timestamp: new Date().toISOString(),
+      status: "pending",
+      message: `Executing ${action.id}`,
+    });
+    await updateExecutionRun({ runId: run.id, status: "running", currentStep: action.id, logs: runLogs });
   }
-  const tracer = new ExecutionTracer("run");
-  const output = await executor.execute(input, context, tracer);
+
+  let output: any;
+  try {
+    const token = await getValidAccessToken(orgId, action.integrationId);
+    const context = await runtime.resolveContext(token);
+    if (runtime.checkPermissions) {
+      runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
+    }
+    const tracer = new ExecutionTracer("run");
+    output = await executor.execute(input, context, tracer);
+    if (run) {
+      runLogs.push({
+        timestamp: new Date().toISOString(),
+        status: "done",
+        message: `Completed ${action.id}`,
+      });
+      await updateExecutionRun({ runId: run.id, status: "completed", currentStep: action.id, logs: runLogs });
+    }
+  } catch (err) {
+    if (run) {
+      runLogs.push({
+        timestamp: new Date().toISOString(),
+        status: "failed",
+        message: `Failed ${action.id}: ${err instanceof Error ? err.message : "error"}`,
+      });
+      await updateExecutionRun({ runId: run.id, status: "failed", currentStep: action.id, logs: runLogs });
+    }
+    throw err;
+  }
 
   const state = await loadToolState(toolId, orgId);
   const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);

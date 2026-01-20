@@ -31,10 +31,17 @@ export class EventLoop {
     await ensureCorePluginsLoaded();
     console.log("[EventLoop] Tick");
     const supabase = createSupabaseAdminClient();
-    const { data: projects, error } = await supabase.from("projects").select("id, org_id, spec");
+    const { data: projects, error } = await (supabase.from("projects") as any).select("id, org_id, spec, active_version_id");
     if (error || !projects) return;
     for (const project of projects) {
-      const spec = project.spec;
+      let spec = project.spec;
+      if (project.active_version_id) {
+        const { data: version } = await (supabase.from("tool_versions") as any)
+          .select("tool_spec")
+          .eq("id", project.active_version_id)
+          .single();
+        spec = version?.tool_spec ?? spec;
+      }
       if (!isToolSystemSpec(spec)) continue;
       for (const trigger of spec.triggers) {
         if (!trigger.enabled) continue;
@@ -84,6 +91,7 @@ export class EventLoop {
           spec,
           actionId: trigger.actionId,
           input: trigger.condition ?? {},
+          triggerId: trigger.id,
         });
       } else if (trigger.workflowId) {
         await runWorkflow({

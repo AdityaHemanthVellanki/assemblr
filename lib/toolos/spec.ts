@@ -3,7 +3,7 @@ export const IntegrationIdSchema = z.enum(["google", "github", "slack", "notion"
 export type IntegrationId = z.infer<typeof IntegrationIdSchema>;
 
 export const EntityFieldSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).default("Tool"),
   type: z.string().min(1),
   required: z.boolean().optional(),
 });
@@ -20,6 +20,8 @@ export const EntitySpecSchema = z.object({
   name: z.string().min(1),
   fields: z.array(EntityFieldSchema),
   sourceIntegration: IntegrationIdSchema,
+  identifiers: z.array(z.string()).default([]),
+  supportedActions: z.array(z.string()).default([]),
   relations: z.array(EntityRelationSchema).optional(),
   behaviors: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
@@ -156,10 +158,29 @@ export const AutomationCapabilitiesSchema = z.object({
 });
 export type AutomationCapabilities = z.infer<typeof AutomationCapabilitiesSchema>;
 
+export const AutomationsSpecSchema = z.object({
+  enabled: z.boolean().default(true),
+  capabilities: AutomationCapabilitiesSchema,
+  lastRunAt: z.string().optional(),
+  nextRunAt: z.string().optional(),
+});
+export type AutomationsSpec = z.infer<typeof AutomationsSpecSchema>;
+
+export const ObservabilitySpecSchema = z.object({
+  executionTimeline: z.boolean(),
+  recentRuns: z.boolean(),
+  errorStates: z.boolean(),
+  integrationHealth: z.boolean(),
+  manualRetryControls: z.boolean(),
+});
+export type ObservabilitySpec = z.infer<typeof ObservabilitySpecSchema>;
+
 export const ToolSystemSpecSchema = z.object({
   id: z.string().min(1),
+  name: z.string().min(1),
   purpose: z.string().min(1),
   entities: z.array(EntitySpecSchema),
+  stateGraph: StateGraphSchema.optional(),
   state: z.object({
     initial: z.record(z.string(), z.any()).default({}),
     reducers: z.array(StateReducerSchema).default([]),
@@ -175,7 +196,8 @@ export const ToolSystemSpecSchema = z.object({
   }),
   integrations: z.array(IntegrationSpecSchema),
   memory: MemorySpecSchema,
-  automationCapabilities: AutomationCapabilitiesSchema.optional(),
+  automations: AutomationsSpecSchema.optional(),
+  observability: ObservabilitySpecSchema.optional(),
 });
 export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;
 

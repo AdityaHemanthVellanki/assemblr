@@ -27,7 +27,7 @@ export default async function ProjectPage({
   const supabase = await createSupabaseServerClient();
 
   // 2. Fetch Project & Messages
-  const projectResPromise = supabase.from("projects").select("id, spec").eq("id", toolId).single();
+  const projectResPromise = (supabase.from("projects") as any).select("id, spec, active_version_id").eq("id", toolId).single();
 
   const messagesRes = await supabase
     .from("chat_messages")
@@ -50,7 +50,15 @@ export default async function ProjectPage({
   let spec = null;
   if (projectRes.data.spec) {
     try {
-      spec = parseToolSpec(projectRes.data.spec);
+      if (projectRes.data.active_version_id) {
+        const { data: version } = await (supabase.from("tool_versions") as any)
+          .select("tool_spec")
+          .eq("id", projectRes.data.active_version_id)
+          .single();
+        spec = parseToolSpec(version?.tool_spec ?? projectRes.data.spec);
+      } else {
+        spec = parseToolSpec(projectRes.data.spec);
+      }
     } catch (e) {
       console.error("Failed to parse project spec", e);
       // Don't crash, just show empty/error state

@@ -23,11 +23,11 @@ export async function executeToolAction(
 
     if (versionId) {
       const { data: version } = await (supabase.from("tool_versions") as any)
-        .select("mini_app_spec, status, tool_id")
+        .select("tool_spec, status, tool_id")
         .eq("id", versionId)
         .single();
       if (!version) throw new Error("Version not found");
-      spec = version.mini_app_spec;
+      spec = version.tool_spec;
       const { data: project } = await supabase
         .from("projects")
         .select("org_id")
@@ -35,16 +35,23 @@ export async function executeToolAction(
         .single();
       orgId = project?.org_id;
     } else {
-      const { data: project } = await supabase
-        .from("projects")
-        .select("spec, org_id")
+      const { data: project } = await (supabase.from("projects") as any)
+        .select("spec, org_id, active_version_id")
         .eq("id", toolId)
         .single();
       if (!project || !project.spec) {
         throw new Error("Tool not found");
       }
-      spec = project.spec;
       orgId = project.org_id;
+      if (project.active_version_id) {
+        const { data: version } = await (supabase.from("tool_versions") as any)
+          .select("tool_spec")
+          .eq("id", project.active_version_id)
+          .single();
+        spec = version?.tool_spec ?? project.spec;
+      } else {
+        spec = project.spec;
+      }
     }
 
     if (!orgId) throw new Error("Organization not found");

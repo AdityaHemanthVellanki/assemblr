@@ -7,9 +7,12 @@ export type ExecutionRun = {
   orgId: string;
   toolId: string;
   triggerId?: string | null;
+  actionId?: string | null;
+  workflowId?: string | null;
   status: ExecutionRunStatus;
   currentStep?: string | null;
   stateSnapshot: Record<string, any>;
+  input: Record<string, any>;
   retries: number;
   logs: Array<Record<string, any>>;
   createdAt: string;
@@ -20,6 +23,9 @@ export async function createExecutionRun(params: {
   orgId: string;
   toolId: string;
   triggerId?: string | null;
+  actionId?: string | null;
+  workflowId?: string | null;
+  input?: Record<string, any>;
   stateSnapshot?: Record<string, any>;
 }) {
   const supabase = createSupabaseAdminClient();
@@ -28,6 +34,9 @@ export async function createExecutionRun(params: {
       org_id: params.orgId,
       tool_id: params.toolId,
       trigger_id: params.triggerId ?? null,
+      action_id: params.actionId ?? null,
+      workflow_id: params.workflowId ?? null,
+      input: params.input ?? {},
       status: "pending",
       current_step: null,
       state_snapshot: params.stateSnapshot ?? {},
@@ -85,9 +94,12 @@ function mapRowToRun(row: any): ExecutionRun {
     orgId: row.org_id,
     toolId: row.tool_id,
     triggerId: row.trigger_id,
+    actionId: row.action_id,
+    workflowId: row.workflow_id,
     status: row.status,
     currentStep: row.current_step,
     stateSnapshot: row.state_snapshot ?? {},
+    input: row.input ?? {},
     retries: row.retries ?? 0,
     logs: row.logs ?? [],
     createdAt: row.created_at,

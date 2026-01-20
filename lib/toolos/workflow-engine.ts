@@ -30,6 +30,8 @@ export async function runWorkflow(params: {
     orgId,
     toolId,
     triggerId: triggerId ?? null,
+    workflowId: workflowId,
+    input,
     stateSnapshot: initialState,
   });
   const runLogs: Array<Record<string, any>> = [];
@@ -63,6 +65,7 @@ export async function runWorkflow(params: {
             spec,
             actionId: node.actionId,
             input: { ...input, ...(nodeResults[node.id] ?? {}) },
+            recordRun: false,
           });
           nodeResults[node.id] = result.output;
           runLogs.push({

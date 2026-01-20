@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { compileToolSystem } from "@/lib/toolos/compiler";
 import { RUNTIMES } from "@/lib/integrations/map";
@@ -13,10 +13,12 @@ import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
+import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 
 export interface ToolChatRequest {
   orgId: string;
   toolId: string;
+  userId?: string | null;
   currentSpec?: unknown;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
@@ -57,8 +59,10 @@ const INTENT_SYSTEM_PROMPT = `
 You are a ToolSpec compiler. You must output a single JSON object that matches this schema:
 {
   "id": string,
+  "name": string,
   "purpose": string,
-  "entities": [{ "name": string, "fields": [{ "name": string, "type": string, "required": boolean? }], "sourceIntegration": "google" | "slack" | "github" | "linear" | "notion", "relations"?: [{ "name": string, "target": string, "type": "one_to_one" | "one_to_many" | "many_to_many" }], "behaviors": string[]? }],
+  "entities": [{ "name": string, "fields": [{ "name": string, "type": string, "required": boolean? }], "sourceIntegration": "google" | "slack" | "github" | "linear" | "notion", "identifiers": string[], "supportedActions": string[], "relations"?: [{ "name": string, "target": string, "type": "one_to_one" | "one_to_many" | "many_to_many" }], "behaviors": string[]? }],
+  "stateGraph": { "nodes": [{ "id": string, "kind": "state" | "action" | "workflow" }], "edges": [{ "from": string, "to": string, "actionId"?: string, "workflowId"?: string }] },
   "state": {
     "initial": object,
     "reducers": [{ "id": string, "type": "set" | "merge" | "append" | "remove", "target": string }],
@@ -71,7 +75,8 @@ You are a ToolSpec compiler. You must output a single JSON object that matches t
   "permissions": { "roles": [{ "id": string, "name": string, "inherits"?: string[] }], "grants": [{ "roleId": string, "scope": "entity" | "action" | "workflow" | "view", "targetId": string, "access": "read" | "write" | "execute" | "approve" }] },
   "integrations": [{ "id": "google" | "slack" | "github" | "linear" | "notion", "capabilities": string[] }],
   "memory": { "tool": { "namespace": string, "retentionDays": number, "schema": object }, "user": { "namespace": string, "retentionDays": number, "schema": object } },
-  "automationCapabilities": { "canRunWithoutUI": boolean, "supportedTriggers": string[], "maxFrequency": number, "safetyConstraints": string[] }
+  "automations": { "enabled": boolean, "capabilities": { "canRunWithoutUI": boolean, "supportedTriggers": string[], "maxFrequency": number, "safetyConstraints": string[] }, "lastRunAt"?: string, "nextRunAt"?: string },
+  "observability": { "executionTimeline": boolean, "recentRuns": boolean, "errorStates": boolean, "integrationHealth": boolean, "manualRetryControls": boolean }
 }
 Do not include any additional keys. Output JSON only.
 All requested integrations must appear in integrations and be used by entities and actions.
@@ -118,6 +123,7 @@ export async function processToolChat(
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
   let latestEvidence: Record<string, DataEvidence> = {};
+  let activeVersionId: string | null = null;
 
   try {
     markStep(steps, "intent", "running", "Parsing prompt and intent");
@@ -191,6 +197,36 @@ export async function processToolChat(
     }
 
     machine.transition("VALIDATING_INTEGRATIONS", "Validating integrations");
+    const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
+    const missingRequired = requiredIntegrations.filter(
+      (id) => !input.connectedIntegrationIds.includes(id),
+    );
+    if (missingRequired.length > 0) {
+      markStep(steps, "readiness", "error", `Missing integrations: ${missingRequired.join(", ")}`);
+      machine.transition("AWAITING_CLARIFICATION", "Missing integrations", "warn");
+      await saveToolMemory({
+        toolId: input.toolId,
+        orgId: input.orgId,
+        namespace: builderNamespace,
+        key: "pending_questions",
+        value: missingRequired.map((id) => `Connect ${id} to proceed.`),
+      });
+      return {
+        explanation: "Missing integrations",
+        message: {
+          type: "text",
+          content: `Connect these integrations to proceed: ${missingRequired.join(", ")}.`,
+        },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          missing_integrations: missingRequired,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
+      };
+    }
     const missingIntegrations = spec.integrations
       .map((i) => i.id)
       .filter((id) => !input.connectedIntegrationIds.includes(id));
@@ -320,6 +356,21 @@ export async function processToolChat(
       key: "pending_questions",
       value: null,
     });
+    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
+    const compiledTool = {
+      compiledAt: new Date().toISOString(),
+      specHash: createHash("sha256").update(JSON.stringify(spec)).digest("hex"),
+    };
+    const version = await createToolVersion({
+      orgId: input.orgId,
+      toolId: input.toolId,
+      userId: input.userId ?? null,
+      spec,
+      compiledTool,
+      baseSpec,
+    });
+    await promoteToolVersion({ toolId: input.toolId, versionId: version.id });
+    activeVersionId = version.id;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
@@ -342,6 +393,7 @@ export async function processToolChat(
       data_evidence: latestEvidence,
       state: machine.state,
       build_logs: machine.logs,
+      active_version_id: activeVersionId,
     },
   };
 }
@@ -403,7 +455,11 @@ function parseIntent(
   }
   try {
     const parsed = JSON.parse(content);
-    const validated = ToolSystemSpecSchema.parse(parsed) as ToolSystemSpec;
+    const hydrated = {
+      ...parsed,
+      name: parsed?.name ?? parsed?.purpose ?? "Tool",
+    };
+    const validated = ToolSystemSpecSchema.parse(hydrated) as ToolSystemSpec;
     return { ok: true, value: validated };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "invalid JSON";
@@ -591,6 +647,7 @@ async function runInitialFetches(
           spec,
           actionId: action.id,
           input,
+          recordRun: false,
         }),
         TIME_BUDGETS.initialFetchMs,
         "Fetch timeout",
@@ -794,11 +851,12 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     };
   });
 
-  const graphNodes = spec.state.graph.nodes.map((node) => ({
+  const baseGraph = spec.stateGraph ?? spec.state.graph;
+  const graphNodes = baseGraph.nodes.map((node) => ({
     ...node,
     id: actionMap.get(node.id) ?? reducerMap.get(node.id) ?? workflowMap.get(node.id) ?? node.id,
   }));
-  const graphEdges = spec.state.graph.edges.map((edge) => ({
+  const graphEdges = baseGraph.edges.map((edge) => ({
     ...edge,
     from: actionMap.get(edge.from) ?? reducerMap.get(edge.from) ?? workflowMap.get(edge.from) ?? edge.from,
     to: actionMap.get(edge.to) ?? reducerMap.get(edge.to) ?? workflowMap.get(edge.to) ?? edge.to,
@@ -806,24 +864,52 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     workflowId: edge.workflowId ? workflowMap.get(edge.workflowId) ?? edge.workflowId : undefined,
   }));
 
+  const defaultCapabilities = {
+    canRunWithoutUI: true,
+    supportedTriggers: spec.triggers.map((t) => t.type),
+    maxFrequency: 1440,
+    safetyConstraints: ["approval_required_for_writes"],
+  };
+  const legacyCapabilities = (spec as any).automationCapabilities;
+  const automations = spec.automations ?? {
+    enabled: true,
+    capabilities: legacyCapabilities ?? defaultCapabilities,
+  };
+  const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
+  const integrationIds = new Set([
+    ...spec.integrations.map((i) => i.id),
+    ...requiredIntegrations,
+  ]);
+  const integrations = Array.from(integrationIds).map((id) => ({
+    id,
+    capabilities: getCapabilitiesForIntegration(id).map((c) => c.id),
+  }));
+
   return {
     ...spec,
+    name: spec.name || spec.purpose,
     entities: [...spec.entities]
       .map((entity) => ({
         ...entity,
         confidence: entity.confidence ?? 0.8,
+        identifiers: entity.identifiers ?? [],
+        supportedActions: entity.supportedActions ?? [],
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     actions,
     workflows,
     triggers,
     views,
-    automationCapabilities: spec.automationCapabilities ?? {
-      canRunWithoutUI: true,
-      supportedTriggers: spec.triggers.map((t) => t.type),
-      maxFrequency: 1440,
-      safetyConstraints: ["approval_required_for_writes"],
+    integrations,
+    automations,
+    observability: spec.observability ?? {
+      executionTimeline: true,
+      recentRuns: true,
+      errorStates: true,
+      integrationHealth: true,
+      manualRetryControls: true,
     },
+    stateGraph: { nodes: graphNodes, edges: graphEdges },
     state: {
       ...spec.state,
       reducers,
@@ -845,6 +931,7 @@ function buildFallbackToolSpec(
 ): ToolSystemSpec {
   const normalized: IntegrationId[] = (integrations.length > 0 ? integrations : ["google"]) as IntegrationId[];
   const id = createHash("sha256").update(prompt).digest("hex");
+  const name = prompt.split("\n")[0]?.slice(0, 60) || "Tool";
   const actions = normalized.map((integration): ToolSystemSpec["actions"][number] => {
     if (integration === "google") {
       return {
@@ -920,6 +1007,8 @@ function buildFallbackToolSpec(
         name: "Email",
         sourceIntegration: "google",
         relations: [],
+        identifiers: ["id", "threadId"],
+        supportedActions: ["google.gmail.list", "google.gmail.reply"],
         fields: [
           { name: "id", type: "string", required: true },
           { name: "subject", type: "string" },
@@ -933,6 +1022,8 @@ function buildFallbackToolSpec(
         name: "Repo",
         sourceIntegration: "github",
         relations: [],
+        identifiers: ["id", "fullName"],
+        supportedActions: ["github.repos.list"],
         fields: [
           { name: "id", type: "string", required: true },
           { name: "name", type: "string" },
@@ -946,6 +1037,8 @@ function buildFallbackToolSpec(
         name: "Issue",
         sourceIntegration: "linear",
         relations: [],
+        identifiers: ["id"],
+        supportedActions: ["linear.issues.list"],
         fields: [
           { name: "id", type: "string", required: true },
           { name: "title", type: "string" },
@@ -959,6 +1052,8 @@ function buildFallbackToolSpec(
         name: "Message",
         sourceIntegration: "slack",
         relations: [],
+        identifiers: ["id", "timestamp"],
+        supportedActions: ["slack.messages.list", "slack.messages.post"],
         fields: [
           { name: "id", type: "string", required: true },
           { name: "channel", type: "string" },
@@ -971,6 +1066,8 @@ function buildFallbackToolSpec(
       name: "Page",
       sourceIntegration: "notion",
       relations: [],
+      identifiers: ["id"],
+      supportedActions: ["notion.pages.search", "notion.databases.list"],
       fields: [
         { name: "id", type: "string", required: true },
         { name: "title", type: "string" },
@@ -1033,8 +1130,18 @@ function buildFallbackToolSpec(
 
   return {
     id,
+    name,
     purpose: prompt,
     entities,
+    stateGraph: {
+      nodes: [
+        ...reducers.map((r) => ({ id: r.id, kind: "state" as const })),
+        ...actions.map((a) => ({ id: a.id, kind: "action" as const })),
+      ],
+      edges: actions
+        .filter((a) => a.reducerId)
+        .map((a) => ({ from: a.id, to: a.reducerId!, actionId: a.id })),
+    },
     state: {
       initial: {},
       reducers,
@@ -1061,11 +1168,21 @@ function buildFallbackToolSpec(
       tool: { namespace: id, retentionDays: 30, schema: {} },
       user: { namespace: id, retentionDays: 30, schema: {} },
     },
-    automationCapabilities: {
-      canRunWithoutUI: true,
-      supportedTriggers: [],
-      maxFrequency: 1440,
-      safetyConstraints: ["approval_required_for_writes"],
+    automations: {
+      enabled: true,
+      capabilities: {
+        canRunWithoutUI: true,
+        supportedTriggers: [],
+        maxFrequency: 1440,
+        safetyConstraints: ["approval_required_for_writes"],
+      },
+    },
+    observability: {
+      executionTimeline: true,
+      recentRuns: true,
+      errorStates: true,
+      integrationHealth: true,
+      manualRetryControls: true,
     },
   };
 }

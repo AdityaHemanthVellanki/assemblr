@@ -145,6 +145,26 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       { total: 0 } as Record<string, number>,
     );
   }, [runs]);
+  const errorHeatmap = React.useMemo(() => {
+    const days = Array.from({ length: 7 }).map((_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      return {
+        label: date.toLocaleDateString(),
+        key: date.toISOString().slice(0, 10),
+        count: 0,
+      };
+    });
+    const map = new Map(days.map((d) => [d.key, d]));
+    for (const run of runs) {
+      if (run.status !== "failed") continue;
+      const key = String(run.created_at).slice(0, 10);
+      const bucket = map.get(key);
+      if (bucket) bucket.count += 1;
+    }
+    const max = Math.max(1, ...days.map((d) => d.count));
+    return { days, max };
+  }, [runs]);
   const integrationHealth = React.useMemo(() => {
     if (!systemSpec) return [];
     const evidenceIntegrations = new Set(
@@ -328,13 +348,15 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         </div>
       </div>
 
-      {systemSpec.automationCapabilities && (
+      {systemSpec.automations && (
         <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
           <div className="mb-2 text-[11px] font-semibold uppercase">Automation</div>
           <div className="flex flex-wrap gap-4">
-            <div>Auto-ready: {systemSpec.automationCapabilities.canRunWithoutUI ? "yes" : "no"}</div>
-            <div>Max frequency: {systemSpec.automationCapabilities.maxFrequency}/day</div>
-            <div>Triggers: {systemSpec.automationCapabilities.supportedTriggers.join(", ") || "none"}</div>
+            <div>Auto-ready: {systemSpec.automations.capabilities.canRunWithoutUI ? "yes" : "no"}</div>
+            <div>Max frequency: {systemSpec.automations.capabilities.maxFrequency}/day</div>
+            <div>Triggers: {systemSpec.automations.capabilities.supportedTriggers.join(", ") || "none"}</div>
+            <div>Last run: {systemSpec.automations.lastRunAt ?? "unknown"}</div>
+            <div>Next run: {systemSpec.automations.nextRunAt ?? "unknown"}</div>
           </div>
           <div className="mt-3 flex items-center gap-2">
             <button
@@ -365,7 +387,21 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
             {runs.slice(0, 5).map((run) => (
               <div key={run.id} className="flex items-center justify-between">
                 <span>{run.status}</span>
-                <span>{new Date(run.created_at).toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                  <span>{new Date(run.created_at).toLocaleString()}</span>
+                  {run.status === "failed" && (
+                    <button
+                      className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                      type="button"
+                      onClick={async () => {
+                        await fetch(`/api/tools/${toolId}/runs/${run.id}/retry`, { method: "POST" });
+                        void fetchRuns();
+                      }}
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -374,6 +410,23 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           <span>Total: {runStats.total ?? 0}</span>
           <span>Failed: {runStats.failed ?? 0}</span>
           <span>Blocked: {runStats.blocked ?? 0}</span>
+        </div>
+      </div>
+
+      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+        <div className="mb-2 text-[11px] font-semibold uppercase">Error Heatmap</div>
+        <div className="flex gap-2">
+          {errorHeatmap.days.map((day) => (
+            <div key={day.key} className="flex flex-col items-center gap-1">
+              <div
+                className="h-6 w-6 rounded-sm"
+                style={{
+                  backgroundColor: `rgba(248, 113, 113, ${day.count / errorHeatmap.max})`,
+                }}
+              />
+              <span className="text-[10px]">{day.count}</span>
+            </div>
+          ))}
         </div>
       </div>
 

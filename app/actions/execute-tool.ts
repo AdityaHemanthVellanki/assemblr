@@ -11,9 +11,8 @@ export async function runToolExecution(toolId: string, actionId: string, input: 
     const supabase = await createSupabaseServerClient();
 
     // 1. Fetch Tool Spec
-    const { data: tool, error } = await supabase
-      .from("projects")
-      .select("spec")
+    const { data: tool, error } = await (supabase.from("projects") as any)
+      .select("spec, active_version_id")
       .eq("id", toolId)
       .eq("org_id", ctx.orgId)
       .single();
@@ -22,7 +21,14 @@ export async function runToolExecution(toolId: string, actionId: string, input: 
       throw new Error("Tool not found or has no spec");
     }
 
-    const spec = tool.spec;
+    let spec = tool.spec;
+    if (tool.active_version_id) {
+      const { data: version } = await (supabase.from("tool_versions") as any)
+        .select("tool_spec")
+        .eq("id", tool.active_version_id)
+        .single();
+      spec = version?.tool_spec ?? spec;
+    }
     if (!isToolSystemSpec(spec)) {
       throw new Error("Tool is not a system spec");
     }
