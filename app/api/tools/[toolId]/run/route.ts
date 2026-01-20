@@ -6,6 +6,7 @@ import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 import { loadToolState } from "@/lib/toolos/state-store";
+import { loadToolMemory } from "@/lib/toolos/memory-store";
 
 export async function POST(
   req: Request,
@@ -36,6 +37,13 @@ export async function POST(
   const viewId = typeof body?.viewId === "string" ? body.viewId : null;
   const input = body?.input && typeof body.input === "object" ? body.input : {};
 
+  const evidence = await loadToolMemory({
+    toolId,
+    orgId: ctx.orgId,
+    namespace: "tool_builder",
+    key: "data_evidence",
+  });
+
   if (actionId) {
     const result = await executeToolAction({
       orgId: ctx.orgId,
@@ -47,16 +55,21 @@ export async function POST(
     });
     if (viewId) {
       const view = renderView(spec, result.state, viewId);
-      return NextResponse.json({ view, state: result.state, events: result.events });
+      return NextResponse.json({
+        view,
+        state: result.state,
+        events: result.events,
+        evidence: evidence ?? null,
+      });
     }
-    return NextResponse.json({ state: result.state, output: result.output, events: result.events });
+    return NextResponse.json({ state: result.state, output: result.output, events: result.events, evidence: evidence ?? null });
   }
 
   const state = await loadToolState(toolId, ctx.orgId);
   if (viewId) {
     const view = renderView(spec, state, viewId);
-    return NextResponse.json({ view, state });
+    return NextResponse.json({ view, state, evidence: evidence ?? null });
   }
 
-  return NextResponse.json({ state });
+  return NextResponse.json({ state, evidence: evidence ?? null });
 }

@@ -5,7 +5,7 @@ import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { compileToolSystem } from "@/lib/toolos/compiler";
 import { ToolSystemSpec, StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
-import { saveToolMemory } from "@/lib/toolos/memory-store";
+import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
 
 export type ToolExecutionResult = {
   state: Record<string, any>;
@@ -27,11 +27,20 @@ export async function executeToolAction(params: {
   if (!action) {
     throw new Error(`Action ${actionId} not found`);
   }
+  if (action.requiresApproval && input.approved !== true) {
+    throw new Error(`Action ${actionId} requires approval`);
+  }
 
   const runtime = RUNTIMES[action.integrationId];
   if (!runtime) {
     throw new Error(`Runtime not found for integration ${action.integrationId}`);
   }
+  await enforceRateLimit({
+    orgId,
+    toolId,
+    integrationId: action.integrationId,
+    maxPerMinute: 60,
+  });
   const executor = runtime.capabilities[action.capabilityId];
   if (!executor) {
     throw new Error(`Capability ${action.capabilityId} not found for ${action.integrationId}`);
@@ -48,6 +57,21 @@ export async function executeToolAction(params: {
   const state = await loadToolState(toolId, orgId);
   const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);
   await saveToolState(toolId, orgId, nextState);
+  const snapshots = (await loadToolMemory({
+    toolId,
+    orgId,
+    namespace: "tool_builder",
+    key: "state_snapshots",
+  })) as Array<{ timestamp: string; state: Record<string, any> }> | null;
+  const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(-4) : [];
+  nextSnapshots.push({ timestamp: new Date().toISOString(), state: nextState });
+  await saveToolMemory({
+    toolId,
+    orgId,
+    namespace: "tool_builder",
+    key: "state_snapshots",
+    value: nextSnapshots,
+  });
   await saveToolMemory({
     toolId,
     orgId,
@@ -68,6 +92,36 @@ export async function executeToolAction(params: {
 
   const events = action.emits?.map((type) => ({ type, payload: { actionId, output } })) ?? [];
   return { state: nextState, output, events } satisfies ToolExecutionResult;
+}
+
+async function enforceRateLimit(params: {
+  orgId: string;
+  toolId: string;
+  integrationId: string;
+  maxPerMinute: number;
+}) {
+  const key = `rate_limit.${params.integrationId}`;
+  const now = Date.now();
+  const windowMs = 60_000;
+  const record = (await loadToolMemory({
+    toolId: params.toolId,
+    orgId: params.orgId,
+    namespace: "tool_builder",
+    key,
+  })) as { windowStart: number; count: number } | null;
+  const current = record ?? { windowStart: now, count: 0 };
+  const windowStart = now - current.windowStart > windowMs ? now : current.windowStart;
+  const count = now - current.windowStart > windowMs ? 0 : current.count;
+  if (count >= params.maxPerMinute) {
+    throw new Error(`Rate limit exceeded for ${params.integrationId}`);
+  }
+  await saveToolMemory({
+    toolId: params.toolId,
+    orgId: params.orgId,
+    namespace: "tool_builder",
+    key,
+    value: { windowStart, count: count + 1 },
+  });
 }
 
 function applyReducer(

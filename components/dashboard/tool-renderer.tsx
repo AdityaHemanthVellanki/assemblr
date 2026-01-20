@@ -2,8 +2,18 @@
 
 import * as React from "react";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
-import { isToolSystemSpec, type ViewSpec } from "@/lib/toolos/spec";
+import { isToolSystemSpec, type ViewSpec, type ActionSpec } from "@/lib/toolos/spec";
 import { getCapability } from "@/lib/capabilities/registry";
+import { linkEntities } from "@/lib/toolos/linking-engine";
+
+type DataEvidence = {
+  integration: string;
+  entity: string;
+  sampleCount: number;
+  sampleFields: string[];
+  fetchedAt: string;
+  confidenceScore: number;
+};
 
 type ViewProjection = {
   id: string;
@@ -19,6 +29,11 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [selectedRow, setSelectedRow] = React.useState<Record<string, any> | null>(null);
+  const [toolState, setToolState] = React.useState<Record<string, any> | null>(null);
+  const [evidenceMap, setEvidenceMap] = React.useState<Record<string, DataEvidence> | null>(null);
+  const [allowWrites, setAllowWrites] = React.useState(false);
+  const [runs, setRuns] = React.useState<Array<Record<string, any>>>([]);
+  const [paused, setPaused] = React.useState(false);
   const autoFetchedRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
@@ -42,17 +57,18 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         throw new Error(payload?.error ?? "Failed to load view");
       }
       setProjection(payload.view as ViewProjection);
+      if (payload.state) {
+        setToolState(payload.state as Record<string, any>);
+      }
+      if (payload.evidence) {
+        setEvidenceMap(payload.evidence as Record<string, DataEvidence>);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load view");
     } finally {
       setIsLoading(false);
     }
   }, [toolId]);
-
-  React.useEffect(() => {
-    if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
-    void fetchView(activeViewId);
-  }, [spec, activeViewId, fetchView]);
 
   const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
     setIsLoading(true);
@@ -77,6 +93,33 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     }
   }, [activeViewId, toolId]);
 
+  const fetchRuns = React.useCallback(async () => {
+    const res = await fetch(`/api/tools/${toolId}/runs`);
+    const payload = await res.json();
+    if (res.ok) {
+      setRuns(Array.isArray(payload.runs) ? payload.runs : []);
+    }
+  }, [toolId]);
+
+  const fetchAutomation = React.useCallback(async () => {
+    const res = await fetch(`/api/tools/${toolId}/automation`);
+    const payload = await res.json();
+    if (res.ok) {
+      setPaused(payload.paused === true);
+    }
+  }, [toolId]);
+
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
+    void fetchView(activeViewId);
+  }, [spec, activeViewId, fetchView]);
+
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec)) return;
+    void fetchRuns();
+    void fetchAutomation();
+  }, [spec, fetchRuns, fetchAutomation]);
+
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
     () => systemSpec?.views.find((v) => v.id === activeViewId),
@@ -90,6 +133,43 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     () => normalizeRows(activeView, projection?.data),
     [activeView, projection?.data],
   );
+  const evidence = activeView && evidenceMap ? evidenceMap[activeView.id] : null;
+  const runStats = React.useMemo(() => {
+    return runs.reduce(
+      (acc, run) => {
+        acc.total += 1;
+        const status = run.status as string;
+        acc[status] = (acc[status] ?? 0) + 1;
+        return acc;
+      },
+      { total: 0 } as Record<string, number>,
+    );
+  }, [runs]);
+  const integrationHealth = React.useMemo(() => {
+    if (!systemSpec) return [];
+    const evidenceIntegrations = new Set(
+      Object.values(evidenceMap ?? {}).map((entry) => entry.integration),
+    );
+    return systemSpec.integrations.map((integration) => ({
+      id: integration.id,
+      status: evidenceIntegrations.has(integration.id) ? "healthy" : "unknown",
+    }));
+  }, [systemSpec, evidenceMap]);
+  const links = React.useMemo(() => {
+    if (!toolState || !systemSpec) return [];
+    const emailView = systemSpec.views.find((v) => v.source.entity === "Email");
+    const issueView = systemSpec.views.find((v) => v.source.entity === "Issue");
+    if (!emailView || !issueView) return [];
+    const emails = resolveState(toolState, emailView.source.statePath);
+    const issues = resolveState(toolState, issueView.source.statePath);
+    if (!Array.isArray(emails) || !Array.isArray(issues)) return [];
+    return linkEntities({
+      source: emails,
+      target: issues,
+      sourceField: "subject",
+      targetField: "title",
+    });
+  }, [toolState, systemSpec]);
 
   React.useEffect(() => {
     if (!activeView || !actionSpecs.length) return;
@@ -148,10 +228,22 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         {activeView ? (
           <div className="flex gap-6">
             <div className="flex-1">
-              <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} />
-              {rows.length === 0 && (
+              {requiresEvidence(activeView.type) && !evidence && (
+                <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                  Waiting for data evidence before rendering this view.
+                </div>
+              )}
+              {requiresEvidence(activeView.type) && evidence ? (
+                <div className="space-y-3">
+                  <div className="rounded-md border border-border/60 bg-background px-4 py-3 text-xs text-muted-foreground">
+                    Evidence: {evidence.sampleCount} records • Fields: {evidence.sampleFields.slice(0, 6).join(", ") || "none"} • Confidence {evidence.confidenceScore.toFixed(2)} {evidence.confidenceScore < 0.7 ? "• Draft / Needs confirmation" : ""}
+                  </div>
+                  <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} />
+                </div>
+              ) : null}
+              {requiresEvidence(activeView.type) && evidence && rows.length === 0 && (
                 <div className="mt-4 rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-                  No data loaded yet. Use Refresh or Load more to fetch records.
+                  Integration connected but returned no results. Refine filters or try a different scope.
                 </div>
               )}
             </div>
@@ -166,6 +258,29 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
                     </div>
                   ))}
                 </div>
+                {links.length > 0 && (
+                  <div className="mt-4 border-t border-border/60 pt-3">
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Linked automatically</div>
+                    <div className="space-y-2 text-xs">
+                      {links.slice(0, 5).map((link) => (
+                        <div key={`${link.sourceId}-${link.targetId}`} className="flex items-center justify-between">
+                          <span className="text-muted-foreground">{link.reason}</span>
+                          <span className="text-foreground">{link.confidence.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Unlinked items available — click to associate.</span>
+                      <button
+                        className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground disabled:opacity-60"
+                        type="button"
+                        disabled
+                      >
+                        Associate
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -194,14 +309,81 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
             </button>
           ))}
           {actionSpecs.map((action) => (
-            <button
+            <ActionButton
               key={action.id}
+              action={action}
+              onExecute={(input) => runAction(action.id, input)}
+              allowWrites={allowWrites}
+            />
+          ))}
+          {!allowWrites && actionSpecs.some((action) => isWriteAction(action)) && (
+            <button
               className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
-              onClick={() => runAction(action.id)}
+              onClick={() => setAllowWrites(true)}
               type="button"
             >
-              {action.name}
+              Enable write actions
             </button>
+          )}
+        </div>
+      </div>
+
+      {systemSpec.automationCapabilities && (
+        <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+          <div className="mb-2 text-[11px] font-semibold uppercase">Automation</div>
+          <div className="flex flex-wrap gap-4">
+            <div>Auto-ready: {systemSpec.automationCapabilities.canRunWithoutUI ? "yes" : "no"}</div>
+            <div>Max frequency: {systemSpec.automationCapabilities.maxFrequency}/day</div>
+            <div>Triggers: {systemSpec.automationCapabilities.supportedTriggers.join(", ") || "none"}</div>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted"
+              onClick={async () => {
+                await fetch(`/api/tools/${toolId}/automation`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ paused: !paused }),
+                });
+                setPaused((prev) => !prev);
+              }}
+              type="button"
+            >
+              {paused ? "Resume runs" : "Pause runs"}
+            </button>
+            <div>{paused ? "Paused by user" : "Runs active"}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+        <div className="mb-2 text-[11px] font-semibold uppercase">Recent Runs</div>
+        {runs.length === 0 ? (
+          <div>No runs yet.</div>
+        ) : (
+          <div className="space-y-1">
+            {runs.slice(0, 5).map((run) => (
+              <div key={run.id} className="flex items-center justify-between">
+                <span>{run.status}</span>
+                <span>{new Date(run.created_at).toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap gap-3 text-[11px]">
+          <span>Total: {runStats.total ?? 0}</span>
+          <span>Failed: {runStats.failed ?? 0}</span>
+          <span>Blocked: {runStats.blocked ?? 0}</span>
+        </div>
+      </div>
+
+      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+        <div className="mb-2 text-[11px] font-semibold uppercase">Integration Health</div>
+        <div className="flex flex-wrap gap-3">
+          {integrationHealth.map((integration) => (
+            <span key={integration.id}>
+              {integration.id}: {integration.status}
+            </span>
           ))}
         </div>
       </div>
@@ -415,6 +597,53 @@ function CommandView() {
       Command palette ready. Trigger actions from here.
     </div>
   );
+}
+
+function ActionButton({
+  action,
+  onExecute,
+  allowWrites,
+}: {
+  action: ActionSpec;
+  onExecute: (input?: Record<string, any>) => void;
+  allowWrites: boolean;
+}) {
+  const cap = getCapability(action.capabilityId);
+  const isRead = cap?.allowedOperations.includes("read") ?? true;
+  const confidence = action.confidence ?? 1;
+  const needsConfirmation = confidence < 0.7;
+  const disabled = !isRead && (!allowWrites || needsConfirmation);
+  const label = needsConfirmation ? `${action.name} · Draft` : action.name;
+  return (
+    <button
+      className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+      onClick={() => onExecute(action.requiresApproval ? { approved: true } : undefined)}
+      type="button"
+      disabled={disabled}
+    >
+      {label}
+    </button>
+  );
+}
+
+function requiresEvidence(type: ViewSpec["type"]) {
+  return type === "table" || type === "kanban" || type === "timeline";
+}
+
+function isWriteAction(action: ActionSpec) {
+  const cap = getCapability(action.capabilityId);
+  const isRead = cap?.allowedOperations.includes("read") ?? true;
+  return !isRead;
+}
+
+function resolveState(state: Record<string, any>, path: string) {
+  const parts = path.split(".");
+  let current: any = state;
+  for (const part of parts) {
+    if (current == null) return null;
+    current = current[part];
+  }
+  return current ?? null;
 }
 
 function normalizeRows(view: ViewSpec | undefined, data: any) {

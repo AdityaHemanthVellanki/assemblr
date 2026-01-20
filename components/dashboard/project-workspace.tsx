@@ -103,7 +103,16 @@ export function ProjectWorkspace({
             role: "assistant", 
             content: response.message.content 
         };
-        setMessages(prev => [...prev, assistantMsg]);
+        const refinements = response.metadata?.refinements as string[] | undefined;
+        if (refinements && refinements.length > 0) {
+            const refinementMsg = {
+                role: "assistant",
+                content: `Optional refinements:\n${refinements.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
+            };
+            setMessages(prev => [...prev, assistantMsg, refinementMsg]);
+        } else {
+            setMessages(prev => [...prev, assistantMsg]);
+        }
 
     } catch (e) {
         console.error(e);

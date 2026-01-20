@@ -92,6 +92,7 @@ export class EventLoop {
           spec,
           workflowId: trigger.workflowId,
           input: trigger.condition ?? {},
+          triggerId: trigger.id,
         });
       }
       tracer.finish("success");

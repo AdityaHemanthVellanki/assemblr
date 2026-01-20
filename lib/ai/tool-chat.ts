@@ -11,6 +11,8 @@ import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
 import { ExecutionTracer } from "@/lib/observability/tracer";
+import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
+import type { DataEvidence } from "@/lib/toolos/data-evidence";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -68,7 +70,8 @@ You are a ToolSpec compiler. You must output a single JSON object that matches t
   "views": [{ "id": string, "name": string, "type": "table" | "kanban" | "timeline" | "chat" | "form" | "inspector" | "command", "source": { "entity": string, "statePath": string }, "fields": string[], "actions": string[] }],
   "permissions": { "roles": [{ "id": string, "name": string, "inherits"?: string[] }], "grants": [{ "roleId": string, "scope": "entity" | "action" | "workflow" | "view", "targetId": string, "access": "read" | "write" | "execute" | "approve" }] },
   "integrations": [{ "id": "google" | "slack" | "github" | "linear" | "notion", "capabilities": string[] }],
-  "memory": { "tool": { "namespace": string, "retentionDays": number, "schema": object }, "user": { "namespace": string, "retentionDays": number, "schema": object } }
+  "memory": { "tool": { "namespace": string, "retentionDays": number, "schema": object }, "user": { "namespace": string, "retentionDays": number, "schema": object } },
+  "automationCapabilities": { "canRunWithoutUI": boolean, "supportedTriggers": string[], "maxFrequency": number, "safetyConstraints": string[] }
 }
 Do not include any additional keys. Output JSON only.
 All requested integrations must appear in integrations and be used by entities and actions.
@@ -76,6 +79,13 @@ Views must only reference state keys and actions.
 Valid capabilities by provider:
 ${capabilityCatalog}
 `;
+
+const TIME_BUDGETS = {
+  intentMs: 500,
+  readinessMs: 1000,
+  initialFetchMs: 2000,
+  firstRenderMs: 3000,
+};
 
 export async function processToolChat(
   input: ToolChatRequest,
@@ -88,6 +98,7 @@ export async function processToolChat(
 
   const steps = createBuildSteps();
   const builderNamespace = "tool_builder";
+  const machine = new ToolBuildStateMachine();
   const pendingQuestions = await loadToolMemory({
     toolId: input.toolId,
     orgId: input.orgId,
@@ -106,13 +117,20 @@ export async function processToolChat(
 
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
+  let latestEvidence: Record<string, DataEvidence> = {};
 
   try {
     markStep(steps, "intent", "running", "Parsing prompt and intent");
-    const intentAgent = await runIntentAgent(prompt);
-    const clarifications = mergeClarifications(intentAgent.clarifications, prompt);
+    const intentStart = Date.now();
+    const intentAgent = await withTimeout(runIntentAgent(prompt), TIME_BUDGETS.intentMs, "Intent parsing exceeded time budget");
+    const intentDuration = Date.now() - intentStart;
+    if (intentDuration > TIME_BUDGETS.intentMs) {
+      appendStep(stepsById.get("intent"), `Intent parsing slow (${intentDuration}ms).`);
+    }
+    const clarifications = limitClarifications(mergeClarifications(intentAgent.clarifications, prompt));
     if (!pendingQuestions && clarifications.length > 0) {
       markStep(steps, "intent", "error", "Clarifications required");
+      machine.transition("AWAITING_CLARIFICATION", "Clarifications required", "warn");
       await saveToolMemory({
         toolId: input.toolId,
         orgId: input.orgId,
@@ -130,11 +148,13 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed",
         message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        metadata: { persist: false, build_steps: steps, clarifications },
+        metadata: { persist: false, build_steps: steps, clarifications, state: machine.state, build_logs: machine.logs },
       };
     }
 
     spec = await generateIntent(prompt);
+    spec = canonicalizeToolSpec(spec);
+    machine.transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "intent", "success", "Intent captured");
     markStep(steps, "entities", "success", `Entities: ${spec.entities.map((e) => e.name).join(", ") || "none"}`);
     markStep(steps, "integrations", "success", `Integrations: ${spec.integrations.map((i) => i.id).join(", ") || "none"}`);
@@ -145,11 +165,38 @@ export async function processToolChat(
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
 
+    const confidenceQuestions = limitClarifications(collectLowConfidenceQuestions(spec));
+    if (confidenceQuestions.length > 0) {
+      markStep(steps, "intent", "error", "Low confidence detected");
+      machine.transition("AWAITING_CLARIFICATION", "Low confidence detected", "warn");
+      await saveToolMemory({
+        toolId: input.toolId,
+        orgId: input.orgId,
+        namespace: builderNamespace,
+        key: "pending_questions",
+        value: confidenceQuestions,
+      });
+      return {
+        explanation: "Clarifications needed",
+        message: { type: "text", content: formatClarificationPrompt(confidenceQuestions) },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          clarifications: confidenceQuestions,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
+      };
+    }
+
+    machine.transition("VALIDATING_INTEGRATIONS", "Validating integrations");
     const missingIntegrations = spec.integrations
       .map((i) => i.id)
       .filter((id) => !input.connectedIntegrationIds.includes(id));
     if (missingIntegrations.length > 0) {
       markStep(steps, "readiness", "error", `Missing integrations: ${missingIntegrations.join(", ")}`);
+      machine.transition("DEGRADED", "Missing integrations", "warn");
       await saveToolMemory({
         toolId: input.toolId,
         orgId: input.orgId,
@@ -164,36 +211,87 @@ export async function processToolChat(
           content: `Connect these integrations to proceed: ${missingIntegrations.join(", ")}.`,
         },
         spec,
-        metadata: { persist: true, build_steps: steps, missing_integrations: missingIntegrations },
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          missing_integrations: missingIntegrations,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
       };
     }
 
     markStep(steps, "readiness", "running", "Validating data readiness");
+    const readinessStart = Date.now();
     const readiness = await runDataReadiness(spec, input.orgId);
+    const readinessDuration = Date.now() - readinessStart;
+    if (readinessDuration > TIME_BUDGETS.readinessMs) {
+      appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
+      machine.transition("DEGRADED", "Readiness budget exceeded", "warn");
+    }
     readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
-    if (readiness.clarifications.length > 0) {
+    const readinessQuestions = limitClarifications(readiness.clarifications);
+    if (readinessQuestions.length > 0) {
       markStep(steps, "readiness", "error", "Missing required filters");
+      machine.transition("AWAITING_CLARIFICATION", "Missing required filters", "warn");
       await saveToolMemory({
         toolId: input.toolId,
         orgId: input.orgId,
         namespace: builderNamespace,
         key: "pending_questions",
-        value: readiness.clarifications,
+        value: readinessQuestions,
       });
       return {
         explanation: "Clarifications needed for data",
-        message: { type: "text", content: formatClarificationPrompt(readiness.clarifications) },
+        message: { type: "text", content: formatClarificationPrompt(readinessQuestions) },
         spec,
-        metadata: { persist: true, build_steps: steps, clarifications: readiness.clarifications },
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          clarifications: readinessQuestions,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
       };
     }
     markStep(steps, "readiness", "success", "Data readiness checks complete");
 
     markStep(steps, "runtime", "running", "Executing initial fetches");
+    machine.transition("FETCHING_DATA", "Fetching initial data");
     const execution = await runInitialFetches(spec, input.orgId, input.toolId);
+    latestEvidence = execution.evidence;
     execution.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
+    const missingEvidence = missingEvidenceForViews(spec, execution.evidence);
+    if (missingEvidence.length > 0) {
+      markStep(steps, "runtime", "error", "Data evidence missing");
+      machine.transition("AWAITING_CLARIFICATION", "Data evidence missing", "warn");
+      const questions = limitClarifications(
+        missingEvidence.map((viewName) => `Confirm data scope for ${viewName} and provide required filters.`),
+      );
+      await saveToolMemory({
+        toolId: input.toolId,
+        orgId: input.orgId,
+        namespace: builderNamespace,
+        key: "pending_questions",
+        value: questions,
+      });
+      return {
+        explanation: "Data evidence required",
+        message: { type: "text", content: formatClarificationPrompt(questions) },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          clarifications: questions,
+          state: machine.state,
+          build_logs: machine.logs,
+          data_evidence: execution.evidence,
+        },
+      };
+    }
     if (execution.empty.length > 0) {
       markStep(steps, "runtime", "error", "No data returned");
+      machine.transition("DEGRADED", "No data returned", "warn");
       return {
         explanation: "No data returned",
         message: {
@@ -201,11 +299,20 @@ export async function processToolChat(
           content: `No data returned from ${execution.empty.join(", ")}. Refine filters or confirm access.`,
         },
         spec,
-        metadata: { persist: true, build_steps: steps, empty_sources: execution.empty },
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          empty_sources: execution.empty,
+          state: machine.state,
+          build_logs: machine.logs,
+          data_evidence: execution.evidence,
+        },
       };
     }
     markStep(steps, "runtime", "success", "Initial data loaded");
+    machine.transition("DATA_READY", "Data ready");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
+    machine.transition("READY", "Tool ready");
     await saveToolMemory({
       toolId: input.toolId,
       orgId: input.orgId,
@@ -216,14 +323,26 @@ export async function processToolChat(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
+    machine.transition("DEGRADED", message, "error");
     throw err;
   }
 
+  const refinements = await withTimeout(runRefinementAgent(spec), 500, "Refinement suggestions timed out").catch(
+    () => [],
+  );
   return {
     explanation: spec.purpose,
     message: { type: "text", content: spec.purpose },
     spec,
-    metadata: { persist: true, build_steps: steps, query_plans: buildQueryPlans(spec) },
+    metadata: {
+      persist: true,
+      build_steps: steps,
+      query_plans: buildQueryPlans(spec),
+      refinements,
+      data_evidence: latestEvidence,
+      state: machine.state,
+      build_logs: machine.logs,
+    },
   };
 }
 
@@ -386,36 +505,63 @@ function mergeClarifications(clarifications: string[], prompt: string) {
   return Array.from(merged);
 }
 
+function limitClarifications(questions: string[]) {
+  return questions.slice(0, 3);
+}
+
+function collectLowConfidenceQuestions(spec: ToolSystemSpec) {
+  const questions: string[] = [];
+  for (const entity of spec.entities) {
+    if ((entity.confidence ?? 1) < 0.7) {
+      questions.push(`Confirm the fields for ${entity.name}.`);
+    }
+  }
+  for (const action of spec.actions) {
+    if ((action.confidence ?? 1) < 0.7) {
+      questions.push(`Confirm what "${action.name}" should do.`);
+    }
+  }
+  return questions;
+}
+
 async function runDataReadiness(spec: ToolSystemSpec, orgId: string) {
   const clarifications: string[] = [];
   const logs: string[] = [];
-
-  for (const action of spec.actions) {
+  const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
-    if (!cap) continue;
+    return cap?.allowedOperations.includes("read");
+  });
+
+  const tasks = readActions.map(async (action) => {
+    const cap = getCapability(action.capabilityId);
+    if (!cap) return;
     const required = cap.constraints?.requiredFilters ?? [];
     const missing = required.filter((field) => !(action.inputSchema && field in action.inputSchema));
     if (missing.length > 0) {
       clarifications.push(
         `Provide ${missing.join(", ")} for ${action.name} (${action.integrationId}).`,
       );
-      continue;
+      return;
     }
-
-    if (!cap.allowedOperations.includes("read")) continue;
     const input = buildDefaultInput(cap);
     try {
       const runtime = RUNTIMES[action.integrationId];
-      const token = await getValidAccessToken(orgId, action.integrationId);
-      const context = await runtime.resolveContext(token);
+      const token = await withTimeout(getValidAccessToken(orgId, action.integrationId), TIME_BUDGETS.readinessMs, "Token timeout");
+      const context = await withTimeout(runtime.resolveContext(token), TIME_BUDGETS.readinessMs, "Context timeout");
       const executor = runtime.capabilities[action.capabilityId];
-      const output = await executor.execute(input, context, new ExecutionTracer("run"));
+      const output = await withTimeout(
+        executor.execute(input, context, new ExecutionTracer("run")),
+        TIME_BUDGETS.readinessMs,
+        "Dry-run timeout",
+      );
       const count = Array.isArray(output) ? output.length : output ? 1 : 0;
-      logs.push(`${action.integrationId} ready (sample size: ${count}).`);
+      logs.push(`Validated ${action.integrationId} connectivity (sample: ${count}).`);
     } catch (err) {
-      logs.push(`${action.integrationId} readiness failed: ${err instanceof Error ? err.message : "error"}.`);
+      logs.push(`Validation failed for ${action.integrationId}: ${err instanceof Error ? err.message : "error"}.`);
     }
-  }
+  });
+
+  await Promise.allSettled(tasks);
 
   return { clarifications, logs };
 }
@@ -427,31 +573,56 @@ async function runInitialFetches(
 ) {
   const logs: string[] = [];
   const empty: string[] = [];
+  const evidence: Record<string, DataEvidence> = {};
   const actionIds = new Set<string>();
   for (const view of spec.views) {
     view.actions.forEach((id) => actionIds.add(id));
   }
-  for (const action of spec.actions.filter((a) => actionIds.has(a.id))) {
+  const actions = spec.actions.filter((a) => actionIds.has(a.id));
+  const tasks = actions.map(async (action) => {
     const cap = getCapability(action.capabilityId);
-    if (!cap || !cap.allowedOperations.includes("read")) continue;
+    if (!cap || !cap.allowedOperations.includes("read")) return;
     const input = buildDefaultInput(cap);
     try {
-      const result = await executeToolAction({
-        orgId,
-        toolId,
-        spec,
-        actionId: action.id,
-        input,
-      });
-      const count = Array.isArray(result.output) ? result.output.length : result.output ? 1 : 0;
-      logs.push(`Fetched ${count} from ${action.integrationId}.`);
+      const result = await withTimeout(
+        executeToolAction({
+          orgId,
+          toolId,
+          spec,
+          actionId: action.id,
+          input,
+        }),
+        TIME_BUDGETS.initialFetchMs,
+        "Fetch timeout",
+      );
+      const sample = Array.isArray(result.output) ? result.output : result.output ? [result.output] : [];
+      const count = sample.length;
+      logs.push(`Pulled ${count} records from ${action.integrationId}.`);
       if (count === 0) empty.push(action.integrationId);
+      const evidenceForAction = buildEvidenceForAction(spec, action.id, action.integrationId, sample);
+      Object.assign(evidence, evidenceForAction);
+      const viewId = Object.keys(evidenceForAction)[0];
+      if (viewId) {
+        const entry = evidenceForAction[viewId];
+        logs.push(
+          `Evidence for ${entry.entity}: ${entry.sampleCount} records, confidence ${entry.confidenceScore.toFixed(2)}.`,
+        );
+      }
     } catch (err) {
       logs.push(`Fetch failed for ${action.integrationId}: ${err instanceof Error ? err.message : "error"}.`);
       empty.push(action.integrationId);
     }
-  }
-  return { logs, empty };
+  });
+
+  await Promise.allSettled(tasks);
+  await saveToolMemory({
+    toolId,
+    orgId,
+    namespace: "tool_builder",
+    key: "data_evidence",
+    value: evidence,
+  });
+  return { logs, empty, evidence };
 }
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
@@ -476,6 +647,192 @@ function buildQueryPlans(spec: ToolSystemSpec) {
       refresh: "manual",
     };
   });
+}
+
+function buildEvidenceForAction(
+  spec: ToolSystemSpec,
+  actionId: string,
+  integration: string,
+  sample: Array<Record<string, any>>,
+) {
+  const evidence: Record<string, DataEvidence> = {};
+  const action = spec.actions.find((a) => a.id === actionId);
+  if (!action) return evidence;
+  const reducer = spec.state.reducers.find((r) => r.id === action.reducerId);
+  const statePath = reducer?.target;
+  const view = spec.views.find((v) => v.source.statePath === statePath);
+  if (!view) return evidence;
+  const entity = spec.entities.find((e) => e.name === view.source.entity);
+  const sampleFields = sample[0] ? Object.keys(sample[0]) : [];
+  const required = entity?.fields.filter((f) => f.required).map((f) => f.name) ?? [];
+  const requiredPresent = required.filter((field) => sampleFields.includes(field));
+  const confidenceScore = required.length === 0 ? 0.8 : requiredPresent.length / required.length;
+  evidence[view.id] = {
+    integration,
+    entity: view.source.entity,
+    sampleCount: sample.length,
+    sampleFields,
+    fetchedAt: new Date().toISOString(),
+    confidenceScore,
+  };
+  return evidence;
+}
+
+function missingEvidenceForViews(spec: ToolSystemSpec, evidence: Record<string, DataEvidence>) {
+  const requiredTypes = new Set(["table", "kanban", "timeline"]);
+  const missing: string[] = [];
+  for (const view of spec.views) {
+    if (!requiredTypes.has(view.type)) continue;
+    const entry = evidence[view.id];
+    if (!entry || entry.sampleCount === 0) {
+      missing.push(view.name);
+    }
+  }
+  return missing;
+}
+
+async function runRefinementAgent(spec: ToolSystemSpec): Promise<string[]> {
+  const response = await azureOpenAIClient.chat.completions.create({
+    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    messages: [
+      {
+        role: "system",
+        content: `Suggest optional refinements for this tool in JSON: {"suggestions": string[]}.`,
+      },
+      { role: "user", content: JSON.stringify({ purpose: spec.purpose, integrations: spec.integrations.map((i) => i.id) }) },
+    ],
+    temperature: 0,
+    max_tokens: 200,
+    response_format: { type: "json_object" },
+  });
+  const content = response.choices[0]?.message?.content;
+  if (!content) return [];
+  try {
+    const json = JSON.parse(content);
+    if (Array.isArray(json.suggestions)) {
+      return json.suggestions.filter((s: any) => typeof s === "string");
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
+
+function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
+  const actionMap = new Map<string, string>();
+  const reducerMap = new Map<string, string>();
+  const viewMap = new Map<string, string>();
+  const workflowMap = new Map<string, string>();
+  const triggerMap = new Map<string, string>();
+
+  const actions = spec.actions.map((action) => {
+    const canonicalId = `${action.integrationId}.${action.capabilityId}`;
+    actionMap.set(action.id, canonicalId);
+    const reducerId = action.reducerId ? `reduce.${canonicalId}` : undefined;
+    if (action.reducerId) reducerMap.set(action.reducerId, reducerId!);
+    const cap = getCapability(action.capabilityId);
+    const confidence = action.confidence ?? (cap?.allowedOperations.includes("read") ? 0.8 : 0.6);
+    const requiresApproval =
+      action.requiresApproval ?? !(cap?.allowedOperations.includes("read") ?? true);
+    return {
+      ...action,
+      id: canonicalId,
+      reducerId,
+      confidence,
+      requiresApproval,
+    };
+  });
+
+  const reducers = spec.state.reducers.map((reducer) => {
+    const id = reducerMap.get(reducer.id) ?? reducer.id;
+    return { ...reducer, id };
+  });
+
+  const workflows = spec.workflows.map((workflow, index) => {
+    const canonicalId = `workflow.${index + 1}`;
+    workflowMap.set(workflow.id, canonicalId);
+    return {
+      ...workflow,
+      id: canonicalId,
+      nodes: workflow.nodes.map((node) => ({
+        ...node,
+        actionId: node.actionId ? actionMap.get(node.actionId) ?? node.actionId : undefined,
+      })),
+    };
+  });
+
+  const triggers = spec.triggers.map((trigger, index) => {
+    const canonicalId = `trigger.${index + 1}`;
+    triggerMap.set(trigger.id, canonicalId);
+    return {
+      ...trigger,
+      id: canonicalId,
+      actionId: trigger.actionId ? actionMap.get(trigger.actionId) ?? trigger.actionId : undefined,
+      workflowId: trigger.workflowId ? workflowMap.get(trigger.workflowId) ?? trigger.workflowId : undefined,
+    };
+  });
+
+  const views = spec.views.map((view, index) => {
+    const canonicalId = `view.${index + 1}`;
+    viewMap.set(view.id, canonicalId);
+    return {
+      ...view,
+      id: canonicalId,
+      actions: view.actions.map((id) => actionMap.get(id) ?? id),
+    };
+  });
+
+  const graphNodes = spec.state.graph.nodes.map((node) => ({
+    ...node,
+    id: actionMap.get(node.id) ?? reducerMap.get(node.id) ?? workflowMap.get(node.id) ?? node.id,
+  }));
+  const graphEdges = spec.state.graph.edges.map((edge) => ({
+    ...edge,
+    from: actionMap.get(edge.from) ?? reducerMap.get(edge.from) ?? workflowMap.get(edge.from) ?? edge.from,
+    to: actionMap.get(edge.to) ?? reducerMap.get(edge.to) ?? workflowMap.get(edge.to) ?? edge.to,
+    actionId: edge.actionId ? actionMap.get(edge.actionId) ?? edge.actionId : undefined,
+    workflowId: edge.workflowId ? workflowMap.get(edge.workflowId) ?? edge.workflowId : undefined,
+  }));
+
+  return {
+    ...spec,
+    entities: [...spec.entities]
+      .map((entity) => ({
+        ...entity,
+        confidence: entity.confidence ?? 0.8,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    actions,
+    workflows,
+    triggers,
+    views,
+    automationCapabilities: spec.automationCapabilities ?? {
+      canRunWithoutUI: true,
+      supportedTriggers: spec.triggers.map((t) => t.type),
+      maxFrequency: 1440,
+      safetyConstraints: ["approval_required_for_writes"],
+    },
+    state: {
+      ...spec.state,
+      reducers,
+      graph: {
+        nodes: graphNodes,
+        edges: graphEdges,
+      },
+    },
+  };
 }
 
 function formatClarificationPrompt(questions: string[]) {
@@ -703,6 +1060,12 @@ function buildFallbackToolSpec(
     memory: {
       tool: { namespace: id, retentionDays: 30, schema: {} },
       user: { namespace: id, retentionDays: 30, schema: {} },
+    },
+    automationCapabilities: {
+      canRunWithoutUI: true,
+      supportedTriggers: [],
+      maxFrequency: 1440,
+      safetyConstraints: ["approval_required_for_writes"],
     },
   };
 }

@@ -22,6 +22,7 @@ export const EntitySpecSchema = z.object({
   sourceIntegration: IntegrationIdSchema,
   relations: z.array(EntityRelationSchema).optional(),
   behaviors: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1).optional(),
 });
 export type EntitySpec = z.infer<typeof EntitySpecSchema>;
 
@@ -57,6 +58,7 @@ export const ActionSpecSchema = z.object({
   emits: z.array(z.string()).optional(),
   requiresApproval: z.boolean().optional(),
   permissions: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1).optional(),
 });
 export type ActionSpec = z.infer<typeof ActionSpecSchema>;
 
@@ -146,6 +148,14 @@ export const IntegrationSpecSchema = z.object({
 });
 export type IntegrationSpec = z.infer<typeof IntegrationSpecSchema>;
 
+export const AutomationCapabilitiesSchema = z.object({
+  canRunWithoutUI: z.boolean(),
+  supportedTriggers: z.array(z.string()).default([]),
+  maxFrequency: z.number().min(1),
+  safetyConstraints: z.array(z.string()).default([]),
+});
+export type AutomationCapabilities = z.infer<typeof AutomationCapabilitiesSchema>;
+
 export const ToolSystemSpecSchema = z.object({
   id: z.string().min(1),
   purpose: z.string().min(1),
@@ -165,6 +175,7 @@ export const ToolSystemSpecSchema = z.object({
   }),
   integrations: z.array(IntegrationSpecSchema),
   memory: MemorySpecSchema,
+  automationCapabilities: AutomationCapabilitiesSchema.optional(),
 });
 export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;
 
