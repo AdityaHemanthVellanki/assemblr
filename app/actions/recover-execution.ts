@@ -1,7 +1,6 @@
 
 "use server";
 
-import { ToolSpec } from "@/lib/spec/toolSpec";
 import { compileIntent } from "@/lib/ai/planner";
 import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { findMetrics } from "@/lib/metrics/store";
@@ -17,7 +16,7 @@ export async function recoverExecution(input: {
   toolId: string;
   failedActionId: string;
   error: string;
-  currentSpec: ToolSpec;
+  currentSpec: unknown;
   originalPrompt?: string; 
   history?: Array<{ role: "user" | "assistant"; content: string }>;
 }) {
@@ -50,7 +49,7 @@ export async function recoverExecution(input: {
       metrics,
       "repair", // Special mode
       [], // TODO: Pass policies if available
-      input.currentSpec,
+      input.currentSpec as any,
       {
           actionId: input.failedActionId,
           error: input.error,

@@ -2,8 +2,9 @@ import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { executeToolAction } from "@/lib/toolos/runtime";
+import { renderView } from "@/lib/toolos/view-renderer";
 
 async function runLiveFlowTest() {
   getServerEnv();
@@ -33,8 +34,8 @@ async function runLiveFlowTest() {
     integrationMode: "auto",
   });
 
-  if (!result.spec || !isCompiledTool(result.spec)) {
-    throw new Error("Compiler failed to produce a compiled tool");
+  if (!result.spec || !isToolSystemSpec(result.spec)) {
+    throw new Error("Compiler failed to produce a tool system");
   }
 
   await supabase
@@ -42,9 +43,21 @@ async function runLiveFlowTest() {
     .update({ spec: result.spec as any })
     .eq("id", project.id);
 
-  const registry = new RuntimeActionRegistry(orgId);
-  const state = await runCompiledTool({ tool: result.spec, registry });
-  console.log("✅ Execution State:", state);
+  const action = result.spec.actions[0];
+  const exec = await executeToolAction({
+    orgId,
+    toolId: project.id,
+    spec: result.spec,
+    actionId: action.id,
+    input: {},
+  });
+  const view = result.spec.views.find((v) => v.actions.includes(action.id));
+  if (view) {
+    const projection = renderView(result.spec, exec.state, view.id);
+    console.log("✅ Execution View:", projection);
+  } else {
+    console.log("✅ Execution State:", exec.state);
+  }
   console.log(`✅ Live flow test passed for ${user.email}`);
 }
 

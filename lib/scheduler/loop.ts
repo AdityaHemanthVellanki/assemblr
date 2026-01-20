@@ -1,9 +1,10 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { Trigger } from "@/lib/core/triggers";
-import { executeToolAction } from "@/app/actions/execute-action"; // Reuse existing runner
-import { ExecutionTracer } from "@/lib/observability/tracer";
-import { randomUUID } from "crypto";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { ExecutionTracer } from "@/lib/observability/tracer";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { executeToolAction } from "@/lib/toolos/runtime";
+import { runWorkflow } from "@/lib/toolos/workflow-engine";
+import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
 
 export class EventLoop {
   private isRunning = false;
@@ -29,72 +30,76 @@ export class EventLoop {
   async tick() {
     await ensureCorePluginsLoaded();
     console.log("[EventLoop] Tick");
-    const supabase = await createSupabaseServerClient();
-
-    // 1. Poll Due Triggers (Cron)
-    // In a real system, we'd have a DB query for `next_run_at <= now`
-    // Since we don't have the table yet, we'll wait for migration
-    // We will assume "triggers" table exists for this implementation
-    
-    try {
-        const now = new Date().toISOString();
-        const { data: triggers, error } = await (supabase.from("triggers") as any)
-            .select("*")
-            .eq("enabled", true)
-            .lte("next_run_at", now);
-
-        if (error) {
-            // Table might not exist yet
-            return;
-        }
-
-        if (triggers && triggers.length > 0) {
-            console.log(`[EventLoop] Found ${triggers.length} due triggers`);
-            for (const trigger of triggers) {
-                await this.dispatch(trigger);
-            }
-        }
-    } catch (e) {
-        console.error("[EventLoop] Tick failed", e);
+    const supabase = createSupabaseAdminClient();
+    const { data: projects, error } = await supabase.from("projects").select("id, org_id, spec");
+    if (error || !projects) return;
+    for (const project of projects) {
+      const spec = project.spec;
+      if (!isToolSystemSpec(spec)) continue;
+      for (const trigger of spec.triggers) {
+        if (!trigger.enabled) continue;
+        if (trigger.type !== "cron") continue;
+        const intervalMinutes = Number(trigger.condition?.intervalMinutes ?? 1);
+        const lastKey = `trigger.${trigger.id}.last_run_at`;
+        const lastRun = await loadToolMemory({
+          toolId: project.id,
+          orgId: project.org_id,
+          namespace: spec.memory.tool.namespace,
+          key: lastKey,
+        });
+        const now = Date.now();
+        const lastTs = typeof lastRun === "number" ? lastRun : 0;
+        if (now - lastTs < intervalMinutes * 60000) continue;
+        await this.dispatch({
+          orgId: project.org_id,
+          toolId: project.id,
+          spec,
+          trigger,
+        });
+        await saveToolMemory({
+          toolId: project.id,
+          orgId: project.org_id,
+          namespace: spec.memory.tool.namespace,
+          key: lastKey,
+          value: now,
+        });
+      }
     }
   }
 
-  async dispatch(trigger: Trigger) {
-      console.log(`[EventLoop] Dispatching trigger ${trigger.id}`);
-      const tracer = new ExecutionTracer("run");
-      
-      try {
-          // 1. Update Next Run (Optimistic Locking)
-          // Calculate next run based on cron
-          // Implementation pending: Next run calculation strategy
-          const nextRun = new Date(Date.now() + 60000).toISOString();
-          // await supabase.from("triggers").update({ next_run_at: nextRun }).eq("id", trigger.id);
-
-          // 2. Resolve Intent / Action
-          // A trigger usually maps to an "action" in the tool spec or a specific intent.
-          // For simplicity, let's assume the trigger metadata points to an actionId
-          // Or we compile a "System Intent"
-          
-          // Let's assume we execute a "main" action or derived action
-          // Implementation pending: Execute "action_main" if exists, or just log
-          
-          tracer.logActionExecution({
-              actionId: "trigger_dispatch",
-              type: "system",
-              inputs: { triggerId: trigger.id },
-              status: "success"
-          });
-          
-          // Execute Logic Here (Reuse executeToolAction if mapped)
-          // await executeToolAction(trigger.tool_id, "some_action", {}, trigger.bound_version_id);
-          
-          tracer.finish("success");
-
-      } catch (e) {
-          const msg = e instanceof Error ? e.message : "Unknown";
-          tracer.finish("failure", msg);
-          console.error(`[EventLoop] Trigger ${trigger.id} failed`, e);
+  async dispatch(input: {
+    orgId: string;
+    toolId: string;
+    spec: any;
+    trigger: any;
+  }) {
+    const { orgId, toolId, spec, trigger } = input;
+    console.log(`[EventLoop] Dispatching trigger ${trigger.id}`);
+    const tracer = new ExecutionTracer("run");
+    try {
+      if (trigger.actionId) {
+        await executeToolAction({
+          orgId,
+          toolId,
+          spec,
+          actionId: trigger.actionId,
+          input: trigger.condition ?? {},
+        });
+      } else if (trigger.workflowId) {
+        await runWorkflow({
+          orgId,
+          toolId,
+          spec,
+          workflowId: trigger.workflowId,
+          input: trigger.condition ?? {},
+        });
       }
+      tracer.finish("success");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown";
+      tracer.finish("failure", msg);
+      console.error(`[EventLoop] Trigger ${trigger.id} failed`, e);
+    }
   }
 }
 

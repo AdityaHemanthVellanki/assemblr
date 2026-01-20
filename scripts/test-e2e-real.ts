@@ -3,8 +3,9 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { assertNoMocks } from "@/lib/core/guard";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { IntegrationId, isToolSystemSpec } from "@/lib/toolos/spec";
+import { executeToolAction } from "@/lib/toolos/runtime";
+import { renderView } from "@/lib/toolos/view-renderer";
 
 async function runTest() {
   assertNoMocks();
@@ -23,7 +24,11 @@ async function runTest() {
   getServerEnv();
 
   const scenarios = [
-    { name: "Google", prompt: "Show my latest emails" },
+    {
+      name: "Multi-Integration",
+      prompt:
+        "Create a dashboard with Gmail emails, GitHub repos, Linear issues, Slack messages, and Notion pages.",
+    },
   ];
 
   const supabase = createSupabaseAdminClient();
@@ -51,8 +56,8 @@ async function runTest() {
         integrationMode: "auto",
       });
 
-      if (!result.spec || !isCompiledTool(result.spec)) {
-        throw new Error("Compiler failed to produce a compiled tool");
+      if (!result.spec || !isToolSystemSpec(result.spec)) {
+        throw new Error("Compiler failed to produce a tool system");
       }
 
       await supabase
@@ -60,9 +65,37 @@ async function runTest() {
         .update({ spec: result.spec as any })
         .eq("id", project.id);
 
-      const registry = new RuntimeActionRegistry(orgId);
-      const state = await runCompiledTool({ tool: result.spec, registry });
-      console.log("✅ Execution State:", state);
+      const integrations = result.spec.integrations.map((s) => s.id);
+      const expected: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
+      const missing = expected.filter((id) => !integrations.includes(id));
+      if (missing.length > 0) {
+        throw new Error(`Missing integrations: ${missing.join(", ")}`);
+      }
+      for (const integration of expected) {
+        const action = result.spec.actions.find((a) => a.integrationId === integration);
+        if (!action) {
+          console.error(`❌ Missing action for ${integration}`);
+          continue;
+        }
+        try {
+          const exec = await executeToolAction({
+            orgId,
+            toolId: project.id,
+            spec: result.spec,
+            actionId: action.id,
+            input: {},
+          });
+          const view = result.spec.views.find((v) => v.actions.includes(action.id));
+          if (view) {
+            const projection = renderView(result.spec, exec.state, view.id);
+            console.log(`✅ View (${integration}):`, projection);
+          } else {
+            console.log(`✅ Action (${integration}) executed`);
+          }
+        } catch (err: any) {
+          console.error(`❌ Action Failed (${integration}):`, err?.message || err);
+        }
+      }
     } catch (e: any) {
       console.error("❌ Execution Failed:", e);
     }

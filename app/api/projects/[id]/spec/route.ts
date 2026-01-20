@@ -5,8 +5,8 @@ import {
   PermissionError,
   requireRole,
 } from "@/lib/auth/permissions.server";
-import { parseDashboardSpec } from "@/lib/dashboard/spec";
-import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { parseToolSpec } from "@/lib/spec/toolSpec";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -47,7 +47,7 @@ export async function PATCH(
 
   try {
     const incoming = bodyResult.data.spec;
-    const spec = isCompiledTool(incoming) ? incoming : parseDashboardSpec(incoming);
+    const spec = isToolSystemSpec(incoming) ? incoming : parseToolSpec(incoming);
 
     const updatedRes = await supabase
       .from("projects")

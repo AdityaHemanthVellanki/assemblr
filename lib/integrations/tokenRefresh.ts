@@ -4,24 +4,36 @@ import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 
 export async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
-  let supabase;
+  let connection: any;
+  let supabase: any;
   try {
     const { createSupabaseServerClient } = await import("@/lib/supabase/server");
     supabase = await createSupabaseServerClient();
+    const res = await supabase
+      .from("integration_connections")
+      .select("encrypted_credentials, updated_at")
+      .eq("org_id", orgId)
+      .eq("integration_id", integrationId)
+      .single();
+    connection = res.data;
+    if (res.error) {
+      throw res.error;
+    }
   } catch (e) {
-    // Fallback for non-request contexts (e.g. background jobs, scripts)
     const { createSupabaseAdminClient } = await import("@/lib/supabase/admin");
     supabase = createSupabaseAdminClient();
+    const res = await (supabase.from("integration_connections") as any)
+      .select("encrypted_credentials, updated_at")
+      .eq("org_id", orgId)
+      .eq("integration_id", integrationId)
+      .single();
+    connection = res.data;
+    if (res.error) {
+      throw res.error;
+    }
   }
 
-  const { data: connection, error } = await supabase
-    .from("integration_connections")
-    .select("encrypted_credentials, updated_at")
-    .eq("org_id", orgId)
-    .eq("integration_id", integrationId)
-    .single();
-
-  if (error || !connection) {
+  if (!connection) {
     throw new Error(`Integration ${integrationId} not connected`);
   }
 

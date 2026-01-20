@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { PermissionError, requireOrgMember } from "@/lib/auth/permissions.server";
-import { parseDashboardSpec } from "@/lib/dashboard/spec";
-import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { parseToolSpec } from "@/lib/spec/toolSpec";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -47,7 +47,7 @@ export async function GET(
   }
 
   const rawSpec = projectRes.data.spec;
-  const spec = isCompiledTool(rawSpec) ? rawSpec : parseDashboardSpec(rawSpec);
+  const spec = isToolSystemSpec(rawSpec) ? rawSpec : parseToolSpec(rawSpec);
 
   return NextResponse.json({
     project: {

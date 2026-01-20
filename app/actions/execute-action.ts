@@ -4,8 +4,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ExecutionResult } from "@/lib/execution/types";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runtime";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
 
 export async function executeToolAction(
   toolId: string,
@@ -48,20 +48,24 @@ export async function executeToolAction(
     }
 
     if (!orgId) throw new Error("Organization not found");
-    if (!isCompiledTool(spec)) {
-      throw new Error("Tool is not compiled");
+    if (!isToolSystemSpec(spec)) {
+      throw new Error("Tool is not a system spec");
     }
 
-    const registry = new RuntimeActionRegistry(orgId);
-    registry.registerAll(spec.runtime.actions);
-    const result = await registry.execute(actionId, args);
+    const result = await executeToolSystemAction({
+      orgId,
+      toolId,
+      spec,
+      actionId,
+      input: args,
+    });
 
     tracer.finish("success");
 
     return {
       viewId: "action_exec",
       status: "success",
-      rows: Array.isArray(result) ? result : [result],
+      rows: Array.isArray(result.output) ? result.output : [result.output],
       timestamp: new Date().toISOString(),
       source: "live_api",
     };

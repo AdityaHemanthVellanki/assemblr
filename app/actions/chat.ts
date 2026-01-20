@@ -2,7 +2,8 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { isCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -41,15 +42,8 @@ export async function sendChatMessage(
     if (!effectiveSpec) effectiveSpec = project.spec as any;
   }
 
-  // 2. Fetch Integrations (Real)
-  // We allow processToolChat to fetch authoritative data, but we pass IDs for backward compatibility if needed.
-  // Actually, processToolChat now fetches its own data.
-  // But we can verify connectivity here if we want.
-  // For now, let's just pass empty array or fetch correctly to avoid confusion.
-  
-  // We'll leave connectedIntegrationIds as empty or fetch correctly.
-  // processToolChat ignores it now anyway.
-  const connectedIntegrationIds: string[] = [];
+  const connections = await loadIntegrationConnections({ supabase, orgId });
+  const connectedIntegrationIds = connections.map((c) => c.integration_id);
 
   // 3. Process Chat
   const response = await processToolChat({
@@ -63,7 +57,7 @@ export async function sendChatMessage(
     integrationMode: "auto",
   });
 
-  if (response.spec && isCompiledTool(response.spec)) {
+  if (response.spec && isToolSystemSpec(response.spec)) {
     await supabase
       .from("projects")
       .update({ spec: response.spec as any })

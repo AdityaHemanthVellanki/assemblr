@@ -3,12 +3,12 @@ import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { getCapability } from "@/lib/capabilities/registry";
-import { CompiledAction } from "@/lib/compiler/ToolCompiler";
+import { CompiledTool, ToolSection, CapabilityInvocation, IntegrationId } from "@/lib/compiler/CompiledTool";
 
 export type ExecutableAction = {
   id: string;
-  integration: CompiledAction["integration"];
-  capability: string;
+  integration: IntegrationId;
+  capabilityId: string;
   run: (params?: Record<string, any>, trace?: ExecutionTracer) => Promise<any>;
 };
 
@@ -20,53 +20,18 @@ export class RuntimeActionRegistry {
     this.orgId = orgId;
   }
 
-  register(action: CompiledAction) {
-    if (!action || !action.id) {
-      throw new Error("RuntimeRegistry: Action must have an id");
+  register(tool: CompiledTool) {
+    if (!Array.isArray(tool.sections) || tool.sections.length === 0) {
+      throw new Error("RuntimeRegistry: Tool must include sections");
     }
-    if (!action.capability) {
-      throw new Error(`[RuntimeRegistry] Action ${action.id} is missing config.capabilityId`);
+    for (const section of tool.sections) {
+      this.registerSection(section);
     }
-    const capDef = getCapability(action.capability);
-    if (!capDef) {
-      throw new Error(`[RuntimeRegistry] Unknown capability '${action.capability}'`);
-    }
-    if (capDef.integrationId !== action.integration) {
-      throw new Error(
-        `[RuntimeRegistry] Capability '${action.capability}' does not belong to integration '${action.integration}'`,
-      );
-    }
-    const runtime = RUNTIMES[action.integration];
-    if (!runtime) {
-      throw new Error(`[RuntimeRegistry] No runtime found for integration ${action.integration}`);
-    }
-    const executor = runtime.capabilities[action.capability];
-    if (!executor) {
-      throw new Error(
-        `[RuntimeRegistry] Capability ${action.capability} not found in runtime ${action.integration}`,
-      );
-    }
-    const run = async (params?: Record<string, any>, trace?: ExecutionTracer) => {
-      const tracer = trace || new ExecutionTracer("run");
-      const token = await getValidAccessToken(this.orgId, action.integration);
-      const context = await runtime.resolveContext(token);
-      if (runtime.checkPermissions) {
-        runtime.checkPermissions(action.capability, DEV_PERMISSIONS);
-      }
-      const resolvedParams = params ?? action.params ?? {};
-      return await executor.execute(resolvedParams, context, tracer);
-    };
-    this.actions.set(action.id, {
-      id: action.id,
-      integration: action.integration,
-      capability: action.capability,
-      run,
-    });
   }
 
-  registerAll(actions: CompiledAction[]) {
-    for (const action of actions) {
-      this.register(action);
+  registerAll(tools: CompiledTool[]) {
+    for (const tool of tools) {
+      this.register(tool);
     }
   }
 
@@ -84,5 +49,53 @@ export class RuntimeActionRegistry {
       throw new Error(`Action ${id} not found in registry`);
     }
     return action.run(params);
+  }
+
+  private registerSection(section: ToolSection) {
+    console.log(`[RuntimeRegistry] Hydrating section: ${section.integration}`);
+    if (!section.capabilities || section.capabilities.length === 0) {
+      throw new Error(`[RuntimeRegistry] Section ${section.id} has no capabilities`);
+    }
+    for (const cap of section.capabilities) {
+      this.registerCapability(section, cap);
+    }
+  }
+
+  private registerCapability(section: ToolSection, capability: CapabilityInvocation) {
+    const capDef = getCapability(capability.id);
+    if (!capDef) {
+      throw new Error(`[RuntimeRegistry] Unknown capability '${capability.id}'`);
+    }
+    if (capDef.integrationId !== section.integration) {
+      throw new Error(
+        `[RuntimeRegistry] Capability '${capability.id}' does not belong to integration '${section.integration}'`,
+      );
+    }
+    const runtime = RUNTIMES[section.integration];
+    if (!runtime) {
+      throw new Error(`[RuntimeRegistry] No runtime found for integration ${section.integration}`);
+    }
+    const executor = runtime.capabilities[capability.id];
+    if (!executor) {
+      throw new Error(
+        `[RuntimeRegistry] Capability ${capability.id} not found in runtime ${section.integration}`,
+      );
+    }
+    const run = async (params?: Record<string, any>, trace?: ExecutionTracer) => {
+      const tracer = trace || new ExecutionTracer("run");
+      const token = await getValidAccessToken(this.orgId, section.integration);
+      const context = await runtime.resolveContext(token);
+      if (runtime.checkPermissions) {
+        runtime.checkPermissions(capability.id, DEV_PERMISSIONS);
+      }
+      const resolvedParams = params ?? capability.params ?? {};
+      return await executor.execute(resolvedParams, context, tracer);
+    };
+    this.actions.set(capability.actionId, {
+      id: capability.actionId,
+      integration: section.integration,
+      capabilityId: capability.id,
+      run,
+    });
   }
 }

@@ -675,7 +675,7 @@ async function runTests() {
     assert(actionIds.has("select_activity"), "select_activity action created");
 
     try {
-      const nextSpec = materializeSpec(baseSpec as any, mutation) as MiniAppSpec;
+      const nextSpec = materializeSpec(baseSpec as any, mutation) as unknown as MiniAppSpec;
       assert(nextSpec.actions.length >= 4, "Materialized spec carries hoisted actions");
       assert(nextSpec.pages.length >= 0, "Materialized spec built without error");
       console.log("✅ PASS: Inline event actions hoisted and spec materializes without missing-action errors");
@@ -865,7 +865,7 @@ async function runTests() {
       actionsAdded: [],
       stateAdded: {},
     };
-    const nextSpec = materializeSpec(baseSpecMissing as any, mutationMissing) as MiniAppSpec;
+    const nextSpec = materializeSpec(baseSpecMissing as any, mutationMissing) as unknown as MiniAppSpec;
     assert(nextSpec.pages.length === 1, "Spec with missing action still materializes");
     console.log("✅ PASS: Materializer does not throw for missing action references");
   } catch (e: any) {

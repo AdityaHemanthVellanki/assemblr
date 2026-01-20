@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { executeToolAction } from "@/lib/toolos/runtime";
+import { renderView } from "@/lib/toolos/view-renderer";
+import { loadToolState } from "@/lib/toolos/state-store";
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ toolId: string }> },
 ) {
   const { toolId } = await params;
@@ -25,21 +27,36 @@ export async function POST(
   }
 
   const spec = project.spec;
-  if (!isCompiledTool(spec)) {
-    return NextResponse.json(
-      { error: "Tool is not compiled" },
-      { status: 422 },
-    );
+  if (!isToolSystemSpec(spec)) {
+    return NextResponse.json({ error: "Tool spec is not a tool system" }, { status: 422 });
   }
 
-  const registry = new RuntimeActionRegistry(ctx.orgId);
-  const state = await runCompiledTool({ tool: spec, registry });
+  const body = await req.json().catch(() => ({}));
+  const actionId = typeof body?.actionId === "string" ? body.actionId : null;
+  const viewId = typeof body?.viewId === "string" ? body.viewId : null;
+  const input = body?.input && typeof body.input === "object" ? body.input : {};
 
-  return NextResponse.json({
-    toolId: spec.toolId,
-    name: spec.name,
-    description: spec.description,
-    ui: spec.ui,
-    state,
-  });
+  if (actionId) {
+    const result = await executeToolAction({
+      orgId: ctx.orgId,
+      toolId,
+      spec,
+      actionId,
+      input,
+      userId: ctx.userId,
+    });
+    if (viewId) {
+      const view = renderView(spec, result.state, viewId);
+      return NextResponse.json({ view, state: result.state, events: result.events });
+    }
+    return NextResponse.json({ state: result.state, output: result.output, events: result.events });
+  }
+
+  const state = await loadToolState(toolId, ctx.orgId);
+  if (viewId) {
+    const view = renderView(spec, state, viewId);
+    return NextResponse.json({ view, state });
+  }
+
+  return NextResponse.json({ state });
 }

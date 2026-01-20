@@ -1,6 +1,5 @@
 import { randomUUID } from "crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { ToolVersion, VersionStatus, VersionValidationResult } from "@/lib/core/versioning";
 import { calculateDiff } from "./diff";
@@ -18,7 +17,19 @@ export class VersioningService {
     const supabase = await createSupabaseServerClient();
     
     // 1. Fetch Base Spec (Active or Specific Version)
-    let baseSpec: ToolSpec = { kind: "mini_app", title: "New Tool", pages: [], actions: [], state: [] };
+    let baseSpec: ToolSpec = {
+      id: toolId,
+      purpose: "New Tool",
+      entities: [],
+      state: { initial: {}, reducers: [], graph: { nodes: [], edges: [] } },
+      actions: [],
+      workflows: [],
+      triggers: [],
+      views: [],
+      permissions: { roles: [], grants: [] },
+      integrations: [],
+      memory: { tool: { namespace: toolId, retentionDays: 30, schema: {} }, user: { namespace: toolId, retentionDays: 30, schema: {} } },
+    };
     
     // Check if we have an active version if baseVersionId is not provided
     if (!baseVersionId) {

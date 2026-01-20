@@ -2,10 +2,10 @@
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { RuntimeActionRegistry } from "@/lib/execution/registry";
-import { isCompiledTool, runCompiledTool } from "@/lib/compiler/ToolCompiler";
+import { executeToolAction } from "@/lib/toolos/runtime";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
 
-export async function runToolExecution(toolId: string) {
+export async function runToolExecution(toolId: string, actionId: string, input: Record<string, any>) {
   try {
     const { ctx } = await requireOrgMember();
     const supabase = await createSupabaseServerClient();
@@ -23,14 +23,18 @@ export async function runToolExecution(toolId: string) {
     }
 
     const spec = tool.spec;
-    if (!isCompiledTool(spec)) {
-      throw new Error("Tool is not compiled");
+    if (!isToolSystemSpec(spec)) {
+      throw new Error("Tool is not a system spec");
     }
-
-    const registry = new RuntimeActionRegistry(ctx.orgId);
-    const state = await runCompiledTool({ tool: spec, registry });
-
-    return { success: true, state };
+    const result = await executeToolAction({
+      orgId: ctx.orgId,
+      toolId,
+      spec,
+      actionId,
+      input,
+      userId: ctx.userId,
+    });
+    return { success: true, result };
   } catch (err) {
     console.error("Tool execution failed", err);
     return {

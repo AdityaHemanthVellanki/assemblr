@@ -1,15 +1,7 @@
-export interface Intent {
+export interface IntentSchema {
   goal: string;
-  integration: {
-    provider: "google" | "slack" | "github" | "linear" | "notion";
-    capability: string;
-  };
-  parameters?: Record<string, any>;
-  presentation: {
-    type: "table" | "list" | "card" | "text";
-    fields?: string[];
-  };
-  refresh?: {
-    mode: "onLoad" | "manual";
-  };
+  integration: "google" | "github" | "slack" | "notion" | "linear";
+  operation: "read" | "write";
+  limit?: number;
+  filters?: Record<string, any>;
 }

@@ -6,16 +6,15 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
-import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
+import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { CompiledTool } from "@/lib/compiler/ToolCompiler";
 import { ToolRenderer } from "@/components/dashboard/tool-renderer";
 
 interface ProjectWorkspaceProps {
   project?: {
     id: string;
-    spec: ToolSpec | CompiledTool | null;
+    spec: ToolSpec | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -25,35 +24,27 @@ interface ProjectWorkspaceProps {
       action?: "connect_integration";
     };
   }>;
-  connectedIntegrations?: string[];
 }
-
-type RuntimeStatus = {
-  planner_success: boolean;
-  ui_generated: boolean;
-  ui_rendered: boolean;
-  version_persisted: boolean;
-};
 
 export function ProjectWorkspace({
   project,
   initialMessages,
-  connectedIntegrations,
 }: ProjectWorkspaceProps) {
   // State
   const [inputValue, setInputValue] = React.useState("");
   const [messages, setMessages] = React.useState<any[]>(initialMessages || []);
-  const [executionSteps, setExecutionSteps] = React.useState<TimelineStep[]>([]);
+  const [buildSteps, setBuildSteps] = React.useState<BuildStep[]>(defaultBuildSteps());
   const [isExecuting, setIsExecuting] = React.useState(false);
-  const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | CompiledTool | null>(project?.spec || null);
+  const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
-  const [runtimeStatus, setRuntimeStatus] = React.useState<RuntimeStatus | null>(null);
+  const [showBuildSteps, setShowBuildSteps] = React.useState(true);
 
   // Derived state
   const isZeroState = messages.length === 0;
 
   // Dynamic Header Title
   const headerTitle =
+    (currentSpec as any)?.purpose ||
     (currentSpec as any)?.title ||
     (currentSpec as any)?.name ||
     "New Chat";
@@ -72,11 +63,6 @@ export function ProjectWorkspace({
     }
   }, [headerTitle]);
 
-  React.useEffect(() => {
-    if (!currentSpec || !runtimeStatus || runtimeStatus.ui_rendered) return;
-    setRuntimeStatus((prev) => (prev ? { ...prev, ui_rendered: true } : prev));
-  }, [currentSpec, runtimeStatus]);
-
   const handleSubmit = async () => {
     if (!inputValue.trim()) return;
 
@@ -85,7 +71,7 @@ export function ProjectWorkspace({
     setMessages(newHistory);
     setInputValue("");
     setIsExecuting(true);
-    setExecutionSteps([{ id: "init", label: "Analyzing Request...", status: "running" }]);
+    setBuildSteps(markFirstRunning(defaultBuildSteps()));
 
     try {
         const response = await sendChatMessage(
@@ -100,71 +86,16 @@ export function ProjectWorkspace({
             setToolId(response.toolId);
         }
 
-        // Process Trace for Timeline
-        const trace = response.metadata?.trace;
-        if (trace) {
-            const steps: TimelineStep[] = [];
-            
-            // 1. Planner/Agent
-            if (trace.agents_invoked?.length) {
-                trace.agents_invoked.forEach((a: any, i: number) => {
-                    steps.push({
-                        id: `agent-${i}`,
-                        label: `Agent: ${a.task}`,
-                        status: "success",
-                        narrative: `Invoked agent ${a.agentId} for ${a.task}`
-                    });
-                });
-            }
-
-            // 2. Integrations
-            if (trace.integrations_accessed?.length) {
-                trace.integrations_accessed.forEach((acc: any, i: number) => {
-                    steps.push({
-                        id: `int-${i}`,
-                        label: `Integration: ${acc.capabilityId}`,
-                        status: acc.status,
-                        narrative: `Called ${acc.integrationId} (${acc.latency_ms}ms)`
-                    });
-                });
-            }
-
-            // 3. Mutations
-            if (trace.ui_mutations?.length) {
-                steps.push({
-                    id: "ui-gen",
-                    label: "Generating UI",
-                    status: "success",
-                    narrative: `Created ${trace.ui_mutations.length} components`,
-                    resultAvailable: true
-                });
-            }
-
-            if (trace.outcome === "failure") {
-                steps.push({
-                    id: "fail",
-                    label: "Execution Failed",
-                    status: "error",
-                    narrative: trace.failure_reason
-                });
-            } else {
-                steps.push({
-                    id: "done",
-                    label: "Complete",
-                    status: "success"
-                });
-            }
-            setExecutionSteps(steps);
-        }
-
-        const runtime = response.metadata?.runtime as RuntimeStatus | undefined;
-        if (runtime) {
-            setRuntimeStatus(runtime);
+        const pipelineSteps = response.metadata?.build_steps as BuildStep[] | undefined;
+        if (pipelineSteps && pipelineSteps.length > 0) {
+            setBuildSteps(pipelineSteps);
+        } else {
+            setBuildSteps(markAllSuccess(defaultBuildSteps()));
         }
 
         // Update Spec
         if (response.spec) {
-            setCurrentSpec(response.spec as ToolSpec | CompiledTool);
+            setCurrentSpec(response.spec as ToolSpec);
         }
 
         // Add Assistant Message
@@ -178,7 +109,7 @@ export function ProjectWorkspace({
         console.error(e);
         const errorMsg = { role: "assistant", content: "Something went wrong. Please try again." };
         setMessages(prev => [...prev, errorMsg]);
-        setExecutionSteps(prev => [...prev, { id: "err", label: "System Error", status: "error", narrative: String(e) }]);
+        setBuildSteps(markError(defaultBuildSteps(), e instanceof Error ? e.message : String(e)));
     } finally {
         setIsExecuting(false);
     }
@@ -221,9 +152,14 @@ export function ProjectWorkspace({
           />
         ) : (
           <div className="flex h-full">
-            <div className="flex h-full flex-1 flex-col border-r border-border/50">
+            <div className="flex h-full w-[420px] flex-col border-r border-border/50">
               <ScrollArea className="flex-1">
-                <div className="mx-auto max-w-3xl px-4 py-8">
+                <div className="px-4 py-6 space-y-6">
+                  <BuildProgressPanel
+                    steps={buildSteps}
+                    collapsed={!showBuildSteps}
+                    onToggle={() => setShowBuildSteps((prev) => !prev)}
+                  />
                   {messages.map((m, i) => (
                     <div
                       key={i}
@@ -243,9 +179,7 @@ export function ProjectWorkspace({
                     </div>
                   ))}
 
-                  <ExecutionTimeline steps={executionSteps} />
-
-                  <div className="h-20" />
+                  <div className="h-10" />
                 </div>
               </ScrollArea>
 
@@ -260,9 +194,9 @@ export function ProjectWorkspace({
               </div>
             </div>
 
-            <div className="hidden h-full min-w-[320px] max-w-xl flex-1 bg-muted/5 lg:flex lg:flex-col">
+            <div className="flex h-full flex-1 flex-col bg-muted/5">
               {currentSpec && toolId ? (
-                <ToolRenderer toolId={toolId} spec={currentSpec} connectedIntegrations={connectedIntegrations} />
+                <ToolRenderer toolId={toolId} spec={currentSpec} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   Describe the tool you want to build to see a live preview.
@@ -270,9 +204,6 @@ export function ProjectWorkspace({
               )}
             </div>
 
-            {runtimeStatus && (
-              <DebugOverlay status={runtimeStatus} />
-            )}
           </div>
         )}
       </div>
@@ -280,34 +211,36 @@ export function ProjectWorkspace({
   );
 }
 
-function DebugOverlay({ status }: { status: RuntimeStatus }) {
-  const badgeClass = (ok: boolean) =>
-    ok ? "inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600" :
-         "inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-600";
+function defaultBuildSteps(): BuildStep[] {
+  return [
+    { id: "intent", title: "Understanding intent", status: "pending", logs: [] },
+    { id: "entities", title: "Identifying entities", status: "pending", logs: [] },
+    { id: "integrations", title: "Selecting integrations", status: "pending", logs: [] },
+    { id: "actions", title: "Defining actions", status: "pending", logs: [] },
+    { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
+    { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
+    { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
+    { id: "runtime", title: "Executing initial fetch", status: "pending", logs: [] },
+    { id: "views", title: "Rendering views", status: "pending", logs: [] },
+  ];
+}
 
-  return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50 w-64 rounded-md border bg-background/95 p-3 text-xs shadow-lg">
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Runtime Status
-      </div>
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <span>Planner</span>
-          <span className={badgeClass(status.planner_success)}>{status.planner_success ? "ok" : "error"}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span>UI generated</span>
-          <span className={badgeClass(status.ui_generated)}>{status.ui_generated ? "yes" : "no"}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span>UI rendered</span>
-          <span className={badgeClass(status.ui_rendered)}>{status.ui_rendered ? "yes" : "no"}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span>Version persisted</span>
-          <span className={badgeClass(status.version_persisted)}>{status.version_persisted ? "yes" : "no"}</span>
-        </div>
-      </div>
-    </div>
-  );
+function markFirstRunning(steps: BuildStep[]): BuildStep[] {
+  const next = steps.map((step) => ({ ...step, logs: [...step.logs] }));
+  if (next[0]) next[0].status = "running";
+  return next;
+}
+
+function markAllSuccess(steps: BuildStep[]): BuildStep[] {
+  return steps.map((step) => ({ ...step, status: "success" as const }));
+}
+
+function markError(steps: BuildStep[], message: string): BuildStep[] {
+  const next = steps.map((step) => ({ ...step, logs: [...step.logs] }));
+  const compileStep = next.find((step) => step.id === "compile");
+  if (compileStep) {
+    compileStep.status = "error";
+    compileStep.logs.push(message);
+  }
+  return next;
 }

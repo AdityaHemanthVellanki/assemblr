@@ -1,45 +1,106 @@
 "use client";
 
 import * as React from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import type { DashboardSpec } from "@/lib/spec/dashboardSpec";
-import type { MiniAppSpec } from "@/lib/spec/miniAppSpec";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
-import type { ExecutionResult } from "@/lib/execution/types";
+import { isToolSystemSpec, type ViewSpec } from "@/lib/toolos/spec";
+import { getCapability } from "@/lib/capabilities/registry";
 
-import { executeToolAction } from "@/app/actions/execute-action";
-import { MiniAppRuntime } from "@/components/miniapp/runtime";
-import { CompiledTool, isCompiledTool } from "@/lib/compiler/ToolCompiler";
+type ViewProjection = {
+  id: string;
+  name: string;
+  type: ViewSpec["type"];
+  data: any;
+  actions: string[];
+};
 
-interface ToolRendererProps {
-  toolId: string;
-  spec: ToolSpec | CompiledTool;
-  executionResults?: Record<string, ExecutionResult>;
-  isLoading?: boolean;
-  connectedIntegrations?: string[];
-}
+export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec | null }) {
+  const [activeViewId, setActiveViewId] = React.useState<string | null>(null);
+  const [projection, setProjection] = React.useState<ViewProjection | null>(null);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [selectedRow, setSelectedRow] = React.useState<Record<string, any> | null>(null);
+  const autoFetchedRef = React.useRef<string | null>(null);
 
-export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, connectedIntegrations }: ToolRendererProps) {
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec)) return;
+    if (!activeViewId && spec.views.length > 0) {
+      setActiveViewId(spec.views[0].id);
+    }
+  }, [spec, activeViewId]);
+
+  const fetchView = React.useCallback(async (viewId: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ viewId }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.error ?? "Failed to load view");
+      }
+      setProjection(payload.view as ViewProjection);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load view");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [toolId]);
+
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
+    void fetchView(activeViewId);
+  }, [spec, activeViewId, fetchView]);
+
+  const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId, viewId: activeViewId, input }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.error ?? "Failed to run action");
+      }
+      if (payload.view) {
+        setProjection(payload.view as ViewProjection);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to run action");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [activeViewId, toolId]);
+
+  const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
+  const activeView = React.useMemo(
+    () => systemSpec?.views.find((v) => v.id === activeViewId),
+    [systemSpec, activeViewId],
+  );
+  const actionSpecs = React.useMemo(
+    () => (systemSpec ? systemSpec.actions.filter((a) => activeView?.actions.includes(a.id)) : []),
+    [systemSpec, activeView],
+  );
+  const rows = React.useMemo(
+    () => normalizeRows(activeView, projection?.data),
+    [activeView, projection?.data],
+  );
+
+  React.useEffect(() => {
+    if (!activeView || !actionSpecs.length) return;
+    if (rows.length > 0) return;
+    if (autoFetchedRef.current === activeView.id) return;
+    autoFetchedRef.current = activeView.id;
+    const firstAction = actionSpecs[0];
+    const loadInput = buildLoadInput(firstAction.capabilityId, 5);
+    void runAction(firstAction.id, loadInput);
+  }, [activeView, actionSpecs, rows, runAction]);
+
   if (!spec) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -48,567 +109,328 @@ export function ToolRenderer({ toolId, spec, executionResults = {}, isLoading, c
     );
   }
 
-  if (isCompiledTool(spec)) {
-    return <CompiledToolRenderer toolId={toolId} tool={spec} />;
-  }
-
-  const toolSpec = spec as ToolSpec;
-  if (isMiniAppSpec(toolSpec)) {
-    const integrations = {
-      call: async (actionId: string, args: Record<string, any>) => {
-        const result = await executeToolAction(toolId, actionId, args);
-        if (result.status === "success") {
-          return { status: "success" as const, rows: result.rows || [] };
-        }
-        return { status: "error" as const, error: result.error || "Unknown error" };
-      },
-    };
-    return MiniAppRuntime.run({ spec: toolSpec, integrations, connectedIntegrations });
-  }
-
-  if (!isDashboardSpec(toolSpec)) {
+  if (!systemSpec) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
-        No tool specification found. Start chatting to build one.
+        Unsupported tool specification.
       </div>
     );
   }
 
-  const hasLegacyViews = toolSpec.views?.length > 0;
-  
-  // A tool has "real data" only if we have at least one successful execution result
-  // AND views/components are defined.
-  const hasRealData =
-    hasLegacyViews &&
-    Object.values(executionResults).some((r) => r.status === "success" && Array.isArray(r.rows) && r.rows.length > 0);
-  
   return (
-    <div className="h-full overflow-auto bg-muted/5 p-6">
-      <div className="mb-8 space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">{toolSpec.title}</h1>
-        {toolSpec.description && (
-          <p className="text-muted-foreground">{toolSpec.description}</p>
+    <div className="flex h-full flex-col bg-background">
+      <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
+        <div>
+          <div className="text-xs uppercase text-muted-foreground">Tool Preview</div>
+          <div className="text-lg font-semibold">{systemSpec.purpose}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {systemSpec.views.map((view) => (
+            <button
+              key={view.id}
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                activeViewId === view.id
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border/60 text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setActiveViewId(view.id)}
+              type="button"
+            >
+              {view.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto px-6 py-6">
+        {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
+        {isLoading && <div className="mb-4 text-sm text-muted-foreground">Loading view…</div>}
+        {activeView ? (
+          <div className="flex gap-6">
+            <div className="flex-1">
+              <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} />
+              {rows.length === 0 && (
+                <div className="mt-4 rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                  No data loaded yet. Use Refresh or Load more to fetch records.
+                </div>
+              )}
+            </div>
+            {selectedRow && (
+              <div className="w-80 shrink-0 rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
+                <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">Details</div>
+                <div className="space-y-2">
+                  {Object.entries(selectedRow).map(([key, value]) => (
+                    <div key={key} className="flex items-start justify-between gap-3 border-b border-border/40 pb-2 last:border-b-0">
+                      <span className="text-muted-foreground">{key}</span>
+                      <span className="text-foreground">{String(value ?? "")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground">No views configured yet.</div>
         )}
       </div>
 
-      {isLoading ? (
-        <div className="flex h-[400px] flex-col items-center justify-center gap-4 rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p>Executing queries...</p>
-        </div>
-      ) : !hasRealData ? (
-        <div className="flex h-[400px] flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-          <p className="mb-2 text-lg font-medium">No data yet</p>
-          <p className="text-sm">
-            Connect integrations and define queries to see real data.
-          </p>
-          {toolSpec.views?.length > 0 && (
-             <div className="mt-4 max-w-md text-xs text-red-500">
-               {Object.values(executionResults).map(r => r.error).filter(Boolean).map((err, i) => (
-                 <div key={i}>Error: {err}</div>
-               ))}
-             </div>
-          )}
-        </div>
-      ) : (
-        renderLegacyViews(toolSpec, executionResults)
-      )}
-    </div>
-  );
-}
-
-function CompiledToolRenderer({ toolId, tool }: { toolId: string; tool: CompiledTool }) {
-  const [state, setState] = React.useState<Record<string, any> | null>(null);
-  const [isRunning, setIsRunning] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const run = React.useCallback(async () => {
-    setIsRunning(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/tools/${toolId}/run`, { method: "POST" });
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json?.error || "Execution failed");
-      }
-      setState(json.state || {});
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Execution failed");
-    } finally {
-      setIsRunning(false);
-    }
-  }, [toolId]);
-
-  React.useEffect(() => {
-    const shouldRun = tool.runtime.actions.some((a) => a.trigger === "onLoad");
-    if (shouldRun) {
-      run();
-    }
-  }, [tool.runtime.actions, run]);
-
-  const dataKey = tool.ui.dataKey;
-  const data = state ? state[dataKey] : undefined;
-  const content = error ? (
-    <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-      {error}
-    </div>
-  ) : isRunning ? (
-    <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-      Loading...
-    </div>
-  ) : (
-    renderCompiledData(tool, data)
-  );
-
-  const manual = tool.runtime.actions.every((a) => a.trigger === "manual");
-
-  return (
-    <div className="h-full overflow-auto bg-muted/5 p-6">
-      <div className="mb-6 space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">{tool.name}</h1>
-        {tool.description ? <p className="text-muted-foreground">{tool.description}</p> : null}
-        {manual ? (
+      <div className="border-t border-border/60 px-6 py-4">
+        <div className="flex flex-wrap gap-2">
           <button
-            className="mt-3 inline-flex items-center rounded-md border px-3 py-1 text-sm"
-            onClick={run}
-            disabled={isRunning}
+            className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
+            onClick={() => activeViewId && fetchView(activeViewId)}
+            type="button"
           >
-            Run
+            Refresh
           </button>
-        ) : null}
+          {actionSpecs.slice(0, 1).map((action) => (
+            <button
+              key={`${action.id}-load`}
+              className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
+              onClick={() => runAction(action.id, buildLoadInput(action.capabilityId, 10))}
+              type="button"
+            >
+              Load more
+            </button>
+          ))}
+          {actionSpecs.map((action) => (
+            <button
+              key={action.id}
+              className="rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
+              onClick={() => runAction(action.id)}
+              type="button"
+            >
+              {action.name}
+            </button>
+          ))}
+        </div>
       </div>
-      {content}
     </div>
   );
 }
 
-function renderCompiledData(tool: CompiledTool, data: any) {
-  if (tool.ui.type === "text") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-sm">{typeof data === "string" ? data : JSON.stringify(data)}</div>
-        </CardContent>
-      </Card>
-    );
+function ViewSurface({
+  view,
+  projection,
+  onSelectRow,
+}: {
+  view: ViewSpec;
+  projection: ViewProjection | null;
+  onSelectRow: (row: Record<string, any> | null) => void;
+}) {
+  const data = projection?.data ?? null;
+  if (view.type === "kanban") {
+    return <KanbanView view={view} data={data} onSelectRow={onSelectRow} />;
+  }
+  if (view.type === "table") {
+    return <TableView view={view} data={data} onSelectRow={onSelectRow} />;
+  }
+  if (view.type === "timeline") {
+    return <TimelineView data={data} onSelectRow={onSelectRow} />;
+  }
+  if (view.type === "chat") {
+    return <ChatView data={data} />;
+  }
+  if (view.type === "form") {
+    return <FormView />;
+  }
+  if (view.type === "inspector") {
+    return <InspectorView data={data} />;
+  }
+  if (view.type === "command") {
+    return <CommandView />;
+  }
+  return <div className="text-sm text-muted-foreground">View not supported yet.</div>;
+}
+
+function TableView({
+  view,
+  data,
+  onSelectRow,
+}: {
+  view: ViewSpec;
+  data: any;
+  onSelectRow: (row: Record<string, any>) => void;
+}) {
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  const columns = view.fields.length > 0 ? view.fields : rows[0] ? Object.keys(rows[0]) : [];
+
+  if (rows.length === 0) {
+    return <div className="text-sm text-muted-foreground">No records yet.</div>;
   }
 
-  if (tool.ui.type === "card") {
-    const entries =
-      data && typeof data === "object" && !Array.isArray(data) ? Object.entries(data) : [];
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {entries.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No data</div>
-          ) : (
-            <div className="space-y-2 text-sm">
-              {entries.map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{k}</span>
-                  <span>{typeof v === "string" ? v : JSON.stringify(v)}</span>
-                </div>
+  return (
+    <div className="overflow-hidden rounded-lg border border-border/60">
+      <table className="min-w-full divide-y divide-border/60 text-sm">
+        <thead className="bg-muted/40">
+          <tr>
+            {columns.map((column) => (
+              <th key={column} className="px-4 py-2 text-left font-medium text-muted-foreground">
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/60 bg-background">
+          {rows.slice(0, 20).map((row, rowIndex) => (
+            <tr
+              key={rowIndex}
+              className="cursor-pointer hover:bg-muted/30"
+              onClick={() => onSelectRow(row as Record<string, any>)}
+            >
+              {columns.map((column) => (
+                <td key={`${rowIndex}-${column}`} className="px-4 py-2 text-foreground">
+                  {String(row?.[column] ?? "")}
+                </td>
               ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    );
-  }
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
-  const rows = Array.isArray(data) ? data : [];
-  if (tool.ui.type === "list") {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {rows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No data</div>
-          ) : (
-            rows.map((row, idx) => (
-              <div key={idx} className="rounded-md border px-3 py-2 text-sm">
-                {typeof row === "string" ? row : JSON.stringify(row)}
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-    );
-  }
+function KanbanView({
+  view,
+  data,
+  onSelectRow,
+}: {
+  view: ViewSpec;
+  data: any;
+  onSelectRow: (row: Record<string, any>) => void;
+}) {
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  const statusField = view.fields.find((f) => f.toLowerCase().includes("status")) ?? "status";
+  const groups = rows.reduce<Record<string, any[]>>((acc, row) => {
+    const key = String(row?.[statusField] ?? "Unassigned");
+    acc[key] = acc[key] ?? [];
+    acc[key].push(row);
+    return acc;
+  }, {});
 
-  const columns =
-    tool.ui.fields && tool.ui.fields.length > 0
-      ? tool.ui.fields
-      : rows.length > 0 && typeof rows[0] === "object"
-        ? Object.keys(rows[0] as object).slice(0, 6)
-        : ["value"];
+  const columns = Object.keys(groups);
+  if (columns.length === 0) {
+    return <div className="text-sm text-muted-foreground">No cards yet.</div>;
+  }
 
   return (
-    <Card className="h-full">
-      <CardHeader className="py-3">
-        <CardTitle className="text-sm font-medium">{tool.name}</CardTitle>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="max-h-[400px] overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                {columns.map((key) => (
-                  <TableHead key={key}>{key}</TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length > 0 ? (
-                rows.slice(0, 50).map((row, i) => (
-                  <TableRow key={i}>
-                    {columns.map((key) => (
-                      <TableCell key={key}>
-                        {typeof (row as any)[key] === "object"
-                          ? JSON.stringify((row as any)[key])
-                          : String((row as any)[key] ?? "")}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={columns.length} className="text-center h-24 text-muted-foreground">
-                    No data available
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+    <div className="grid gap-4 md:grid-cols-3">
+      {columns.map((column) => (
+        <div key={column} className="rounded-lg border border-border/60 bg-muted/20 p-3">
+          <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">{column}</div>
+          <div className="space-y-2">
+            {groups[column].map((row, idx) => (
+              <button
+                key={idx}
+                className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-left text-sm hover:bg-muted/30"
+                onClick={() => onSelectRow(row as Record<string, any>)}
+                type="button"
+              >
+                {String(row?.title ?? row?.name ?? row?.id ?? "Item")}
+              </button>
+            ))}
+          </div>
         </div>
-      </CardContent>
-    </Card>
+      ))}
+    </div>
   );
 }
 
-function isMiniAppSpec(spec: ToolSpec): spec is MiniAppSpec {
-  return (spec as any).kind === "mini_app";
-}
-
-function isDashboardSpec(spec: ToolSpec): spec is DashboardSpec {
-  return (spec as any).kind === "dashboard";
-}
-
-export function renderLegacyViews(spec: DashboardSpec, executionResults: Record<string, ExecutionResult>) {
+function TimelineView({
+  data,
+  onSelectRow,
+}: {
+  data: any;
+  onSelectRow: (row: Record<string, any>) => void;
+}) {
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length === 0) {
+    return <div className="text-sm text-muted-foreground">No timeline entries yet.</div>;
+  }
   return (
-    <>
-      {/* Metrics Grid */}
-      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {spec.views
-          .filter((v) => v.type === "metric")
-              .map((view) => {
-                const metric = spec.metrics.find((m) => m.id === view.metricId);
-                const result = executionResults[view.id];
-                const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
-                
-                if (!metric) return null;
-
-                let displayValue = "-";
-                if (result?.status === "success" && rows.length > 0) {
-                  // Naive aggregation: count rows
-                  // For "sum", we need to sum the field.
-                  // But the Executor currently returns raw rows.
-                  // We should aggregate here or in Executor. 
-                  // For Phase 1 execution, let's just count rows for "count"
-                  // and show "N/A" for sum unless we parse it.
-                  
-                  if (metric.type === "count") {
-                    displayValue = rows.length.toLocaleString();
-                  } else if (metric.type === "sum" && metric.field) {
-                    // Try to sum
-                    const sum = rows.reduce((acc: number, row) => {
-                      const val = (row as Record<string, unknown>)[metric.field!];
-                      return acc + (Number(val) || 0);
-                    }, 0);
-                    displayValue = sum.toLocaleString();
-                  }
-                }
-
-                return (
-                  <Card key={view.id} className={result?.status === "error" ? "border-red-200 bg-red-50" : ""}>
-                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                      <CardTitle className="text-sm font-medium">
-                        {metric.label}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-bold">{displayValue}</div>
-                      {result?.status === "error" && (
-                         <p className="text-xs text-red-500 mt-1">{result.error}</p>
-                      )}
-                    </CardContent>
-                  </Card>
-                );
-              })}
-          </div>
-
-          {/* Charts & Tables */}
-          <div className="grid gap-4 md:grid-cols-2">
-            {spec.views
-              .filter((v) => v.type !== "metric")
-              .map((view) => {
-                const metric = spec.metrics.find((m) => m.id === view.metricId);
-                const result = executionResults[view.id];
-                const rows = (result?.status === "success" && Array.isArray(result.rows)) ? result.rows : [];
-
-                if (view.type === "query") {
-                  const kind = (view as any).presentation?.kind as "list" | "card" | "timeline" | undefined;
-                  return (
-                    <Card key={view.id} className="col-span-2">
-                      <CardHeader>
-                        <CardTitle>
-                          Query: {(view as any).capability}
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {result?.status === "error" ? (
-                          <div className="text-red-500">Error: {result.error}</div>
-                        ) : rows.length === 0 ? (
-                          <div className="text-muted-foreground">No data</div>
-                        ) : kind === "card" ? (
-                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                            {rows.slice(0, 8).map((row, i) => (
-                              <div key={i} className="rounded-md border p-3">
-                                {Object.entries(row as Record<string, unknown>).slice(0, 5).map(([k, v]) => (
-                                  <div key={k} className="text-sm">
-                                    <span className="font-medium">{k}:</span>{" "}
-                                    <span className="text-muted-foreground">
-                                      {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            ))}
-                          </div>
-                        ) : kind === "timeline" ? (
-                          <div className="space-y-3">
-                            {rows
-                              .slice(0, 20)
-                              .sort((a: any, b: any) => {
-                                const ak = Object.keys(a).find(k => String(k).toLowerCase().includes("date") || String(k).toLowerCase().includes("time")) as string | undefined;
-                                const bk = Object.keys(b).find(k => String(k).toLowerCase().includes("date") || String(k).toLowerCase().includes("time")) as string | undefined;
-                                const ad = ak ? new Date((a as any)[ak]).getTime() : 0;
-                                const bd = bk ? new Date((b as any)[bk]).getTime() : 0;
-                                return bd - ad;
-                              })
-                              .map((row, i) => (
-                                <div key={i} className="relative pl-6">
-                                  <div className="absolute left-0 top-2 h-2 w-2 rounded-full bg-primary" />
-                                  <div className="rounded-md border p-3">
-                                    {Object.entries(row as Record<string, unknown>).slice(0, 5).map(([k, v]) => (
-                                      <div key={k} className="text-sm">
-                                        <span className="font-medium">{k}:</span>{" "}
-                                        <span className="text-muted-foreground">
-                                          {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-                        ) : (
-                          <div className="max-h-[400px] overflow-auto">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
-                                    <TableHead key={key}>{key}</TableHead>
-                                  ))}
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {rows.slice(0, 20).map((row, i) => (
-                                  <TableRow key={i}>
-                                     {Object.keys(row as object).slice(0, 5).map(key => (
-                                       <TableCell key={key}>
-                                         {typeof (row as any)[key] === 'object' ? JSON.stringify((row as any)[key]) : String((row as any)[key])}
-                                       </TableCell>
-                                     ))}
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                }
-
-                if (view.type === "heatmap") {
-                  if (!metric) return null;
-                  const dateField = rows.length > 0 ? Object.keys(rows[0] as object).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at") : undefined;
-                  
-                  // Aggregate by day
-                  const dataByDay: Record<string, number> = {};
-                  rows.forEach((row: any) => {
-                    if (!dateField) return;
-                    const date = new Date(row[dateField]);
-                    if (isNaN(date.getTime())) return;
-                    const day = date.toISOString().split("T")[0];
-                    const val = metric.field ? (Number(row[metric.field]) || 0) : 1;
-                    dataByDay[day] = (dataByDay[day] || 0) + val;
-                  });
-
-                  const sortedDays = Object.keys(dataByDay).sort();
-                  const maxVal = Math.max(...Object.values(dataByDay), 1);
-
-                  return (
-                    <Card key={view.id} className="col-span-1">
-                      <CardHeader>
-                        <CardTitle>{metric.label}</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {result?.status === "error" ? (
-                           <div className="text-red-500">Error: {result.error}</div>
-                        ) : !dateField ? (
-                           <div className="text-muted-foreground">No date field found for heatmap</div>
-                        ) : (
-                           <div className="flex flex-wrap gap-1">
-                             {sortedDays.map(day => {
-                               const count = dataByDay[day];
-                               const opacity = Math.max(0.1, count / maxVal);
-                               return (
-                                 <div 
-                                   key={day} 
-                                   className="h-3 w-3 rounded-[1px] bg-primary"
-                                   style={{ opacity }}
-                                   title={`${day}: ${count}`}
-                                 />
-                               );
-                             })}
-                             {sortedDays.length === 0 && <div className="text-muted-foreground">No data</div>}
-                           </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                }
-
-                if (view.type === "table") {
-                  return (
-                    <Card key={view.id} className="col-span-2">
-                      <CardHeader>
-                        <CardTitle>Data: {view.table || "Unknown"}</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {result?.status === "error" ? (
-                          <div className="text-red-500">Error: {result.error}</div>
-                        ) : (
-                          <div className="max-h-[400px] overflow-auto">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  {rows.length > 0 && Object.keys(rows[0] as object).slice(0, 5).map(key => (
-                                    <TableHead key={key}>{key}</TableHead>
-                                  ))}
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {rows.slice(0, 20).map((row, i) => (
-                                  <TableRow key={i}>
-                                     {Object.keys(row as object).slice(0, 5).map(key => (
-                                       <TableCell key={key}>
-                                         {typeof (row as any)[key] === 'object' ? JSON.stringify((row as any)[key]) : String((row as any)[key])}
-                                       </TableCell>
-                                     ))}
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                }
-
-                if (!metric) return null;
-
-                // Charts
-                // We need to group data by day if groupBy is set
-                // For now, let's just dump the raw data if it has a date field?
-                // Or show placeholder if complex aggregation needed.
-                // Strict rule: "No simulated charts".
-                // If we can't map it, show empty.
-                
-                // Try to find a date field
-                const dateField = rows.length > 0 ? Object.keys(rows[0] as object).find(k => k.toLowerCase().includes("date") || k.toLowerCase().includes("time") || k === "created_at") : undefined;
-                
-                return (
-                  <Card key={view.id} className="col-span-1">
-                    <CardHeader>
-                      <CardTitle>{metric.label}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="pl-2">
-                      <div className="h-[300px] w-full">
-                         {result?.status === "error" ? (
-                            <div className="flex h-full items-center justify-center text-red-500">
-                              {result.error}
-                            </div>
-                         ) : rows.length === 0 ? (
-                            <div className="flex h-full items-center justify-center text-muted-foreground">
-                              No data
-                            </div>
-                         ) : !dateField ? (
-                            <div className="flex h-full items-center justify-center text-muted-foreground">
-                              Cannot chart data: No date field found
-                            </div>
-                         ) : (
-                           <ResponsiveContainer width="100%" height="100%">
-                             {view.type === "bar_chart" ? (
-                               <BarChart data={rows}>
-                                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                 <XAxis
-                                   dataKey={dateField}
-                                   stroke="#888888"
-                                   fontSize={12}
-                                   tickLine={false}
-                                   axisLine={false}
-                                   tickFormatter={(v) => new Date(v).toLocaleDateString()}
-                                 />
-                                 <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                                 <Tooltip />
-                                 <Bar dataKey={metric.field || "count"} fill="currentColor" radius={[4, 4, 0, 0]} className="fill-primary" />
-                               </BarChart>
-                             ) : (
-                               <LineChart data={rows}>
-                                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                 <XAxis
-                                   dataKey={dateField}
-                                   stroke="#888888"
-                                   fontSize={12}
-                                   tickLine={false}
-                                   axisLine={false}
-                                   tickFormatter={(v) => new Date(v).toLocaleDateString()}
-                                 />
-                                 <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                                 <Tooltip />
-                                 <Line type="monotone" dataKey={metric.field || "count"} stroke="currentColor" strokeWidth={2} dot={false} className="stroke-primary" />
-                               </LineChart>
-                             )}
-                           </ResponsiveContainer>
-                         )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-          </div>
-        </>
+    <div className="space-y-3">
+      {rows.map((row, idx) => (
+        <button
+          key={idx}
+          className="w-full rounded-md border border-border/60 bg-background px-4 py-3 text-left text-sm hover:bg-muted/30"
+          onClick={() => onSelectRow(row as Record<string, any>)}
+          type="button"
+        >
+          <div className="font-medium">{String(row?.title ?? row?.name ?? "Event")}</div>
+          <div className="text-xs text-muted-foreground">{String(row?.date ?? row?.timestamp ?? "")}</div>
+        </button>
+      ))}
+    </div>
   );
+}
+
+function ChatView({ data }: { data: any }) {
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length === 0) {
+    return <div className="text-sm text-muted-foreground">No conversation yet.</div>;
+  }
+  return (
+    <div className="space-y-3">
+      {rows.map((row, idx) => (
+        <div key={idx} className="rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm">
+          <div className="text-xs text-muted-foreground">{String(row?.author ?? "User")}</div>
+          <div>{String(row?.text ?? row?.message ?? "")}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FormView() {
+  return (
+    <div className="rounded-lg border border-dashed border-border/70 px-4 py-6 text-sm text-muted-foreground">
+      Form view ready. Add inputs via actions.
+    </div>
+  );
+}
+
+function InspectorView({ data }: { data: any }) {
+  if (!data) {
+    return <div className="text-sm text-muted-foreground">No item selected.</div>;
+  }
+  const entries = Object.entries(data as Record<string, any>);
+  return (
+    <div className="rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
+      <div className="space-y-2">
+        {entries.map(([key, value]) => (
+          <div key={key} className="flex justify-between gap-4 border-b border-border/40 pb-2 last:border-b-0">
+            <span className="text-muted-foreground">{key}</span>
+            <span className="text-foreground">{String(value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CommandView() {
+  return (
+    <div className="rounded-lg border border-dashed border-border/70 px-4 py-6 text-sm text-muted-foreground">
+      Command palette ready. Trigger actions from here.
+    </div>
+  );
+}
+
+function normalizeRows(view: ViewSpec | undefined, data: any) {
+  if (!view) return [];
+  if (Array.isArray(data)) return data;
+  if (data) return [data];
+  return [];
+}
+
+function buildLoadInput(capabilityId: string, limit: number) {
+  const cap = getCapability(capabilityId);
+  if (!cap) return { limit };
+  const input: Record<string, any> = {};
+  if (cap.supportedFields.includes("maxResults")) input.maxResults = limit;
+  if (cap.supportedFields.includes("pageSize")) input.pageSize = limit;
+  if (cap.supportedFields.includes("first")) input.first = limit;
+  if (cap.supportedFields.includes("limit")) input.limit = limit;
+  return input;
 }
