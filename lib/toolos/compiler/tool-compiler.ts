@@ -311,7 +311,7 @@ function buildBaseSpec(prompt: string, toolId: string): ToolSystemSpec {
     name: "Tool",
     purpose: prompt,
     entities: [],
-    stateGraph: { nodes: [], edges: [] },
+    actionGraph: { nodes: [], edges: [] },
     state: { initial: {}, reducers: [], graph: { nodes: [], edges: [] } },
     actions: [],
     workflows: [],
@@ -425,6 +425,10 @@ function ensureMinimumSpec(spec: ToolSystemSpec, prompt: string): ToolSystemSpec
     entities,
     views,
     stateGraph: { nodes: graphNodes, edges: graphEdges },
+    actionGraph: {
+      nodes: actions.map((a) => ({ id: a.id, actionId: a.id })),
+      edges: [],
+    },
     state: {
       ...spec.state,
       reducers,

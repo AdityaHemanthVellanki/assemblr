@@ -15,6 +15,8 @@ export type ToolExecutionResult = {
   events: Array<{ type: string; payload: any }>;
 };
 
+import { executeWithRetry } from "@/lib/toolos/retry";
+
 export async function executeToolAction(params: {
   orgId: string;
   toolId: string;
@@ -24,18 +26,24 @@ export async function executeToolAction(params: {
   userId?: string | null;
   triggerId?: string | null;
   recordRun?: boolean;
+  dryRun?: boolean;
 }) {
-  const { orgId, toolId, compiledTool, actionId, input, userId, triggerId, recordRun = true } = params;
+  const { orgId, toolId, compiledTool, actionId, input, userId, triggerId, recordRun = true, dryRun = false } = params;
   const toolScope: MemoryScope = { type: "tool_org", toolId, orgId };
   const action = compiledTool.actions.find((item) => item.id === actionId);
   if (!action) {
     throw new Error(`Action ${actionId} not found`);
   }
-  if (action.requiresApproval && input.approved !== true) {
+  if (action.requiresApproval && input.approved !== true && !dryRun) {
     throw new Error(`Action ${actionId} requires approval`);
   }
 
-  return requestCoordinator.run(`tool:${toolId}`, async () => {
+  // Use coalesce for reads, serialized for writes?
+  // Actually, requestCoordinator.run is a mutex. We might want to relax this for READ actions.
+  const isRead = action.type === "READ";
+  const coordinationKey = `tool:${toolId}`;
+  
+  const runner = async () => {
     const runtime = RUNTIMES[action.integrationId];
     if (!runtime) {
       throw new Error(`Runtime not found for integration ${action.integrationId}`);
@@ -49,6 +57,15 @@ export async function executeToolAction(params: {
     const executor = runtime.capabilities[action.capabilityId];
     if (!executor) {
       throw new Error(`Capability ${action.capabilityId} not found for ${action.integrationId}`);
+    }
+
+    // Dry Run: Skip side effects for non-READ actions
+    if (dryRun && !isRead) {
+      return {
+        state: {},
+        output: { dryRun: true, message: "Action skipped in dry-run mode", input: sanitizeLogData(input) },
+        events: []
+      };
     }
 
     const snapshot = recordRun ? await loadToolState(toolId, orgId) : null;
@@ -87,7 +104,13 @@ export async function executeToolAction(params: {
         runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
       }
       const tracer = new ExecutionTracer("run");
-      output = await executor.execute(input, context, tracer);
+      
+      // Wrap execution with retry logic
+      output = await executeWithRetry(() => executor.execute(input, context, tracer), {
+        maxRetries: 3,
+        initialDelayMs: 1000,
+      });
+
       if (run) {
         const durationMs = Date.now() - startedAt;
         runLogs.push({
@@ -98,62 +121,45 @@ export async function executeToolAction(params: {
           integrationId: action.integrationId,
           capabilityId: action.capabilityId,
           durationMs,
-          output: summarizeOutput(output),
+          output: sanitizeLogData(output),
         });
-        await updateExecutionRun({ runId: run.id, status: "completed", currentStep: action.id, logs: runLogs });
+        await updateExecutionRun({ runId: run.id, status: "completed", logs: runLogs });
       }
+
+      // Apply reducer if configured
+      if (action.reducerId && action.writesToState) {
+        const reducer = compiledTool.reducers.find((r) => r.id === action.reducerId);
+        if (reducer) {
+          const currentState = await loadToolState(toolId, orgId);
+          const newState = applyReducer(compiledTool.reducers, action.reducerId, currentState, output);
+          await saveToolState(toolId, orgId, newState);
+          
+          // Emit state change event for timeline/triggers
+          // events.push({ type: "state_change", payload: { path: reducer.target, value: output } });
+        }
+      }
+      
+      return { state: {}, output, events: [] };
     } catch (err) {
       if (run) {
-        const durationMs = runLogs.length ? Date.now() - Date.parse(runLogs[0].timestamp) : undefined;
         runLogs.push({
-          id: `${action.id}:failed`,
+          id: `${action.id}:error`,
           timestamp: new Date().toISOString(),
-          status: "failed",
-          actionId: action.id,
-          integrationId: action.integrationId,
-          capabilityId: action.capabilityId,
-          durationMs,
-          error: err instanceof Error ? err.message : "error",
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
         });
-        await updateExecutionRun({ runId: run.id, status: "failed", currentStep: action.id, logs: runLogs });
+        await updateExecutionRun({ runId: run.id, status: "failed", logs: runLogs });
       }
       throw err;
     }
+  };
 
-    const state = await loadToolState(toolId, orgId);
-    const nextState = applyReducer(compiledTool.reducers, action.reducerId, state, output);
-    await saveToolState(toolId, orgId, nextState);
-    const snapshots = (await loadMemory({
-      scope: toolScope,
-      namespace: "tool_builder",
-      key: "state_snapshots",
-    })) as Array<{ timestamp: string; state: Record<string, any> }> | null;
-    const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(-4) : [];
-    nextSnapshots.push({ timestamp: new Date().toISOString(), state: nextState });
-    await saveMemory({
-      scope: toolScope,
-      namespace: "tool_builder",
-      key: "state_snapshots",
-      value: nextSnapshots,
-    });
-    await saveMemory({
-      scope: toolScope,
-      namespace: compiledTool.memory.tool.namespace,
-      key: actionId,
-      value: output,
-    });
-    if (userId) {
-      await saveMemory({
-        scope: { type: "tool_user", toolId, userId },
-        namespace: compiledTool.memory.user.namespace,
-        key: actionId,
-        value: output,
-      });
-    }
-
-    const events = action.emits?.map((type) => ({ type, payload: { actionId, output } })) ?? [];
-    return { state: nextState, output, events } satisfies ToolExecutionResult;
-  });
+  // Allow concurrent reads, serialize writes
+  if (isRead) {
+    return runner();
+  } else {
+    return requestCoordinator.run(coordinationKey, runner);
+  }
 }
 
 async function enforceRateLimit(params: {

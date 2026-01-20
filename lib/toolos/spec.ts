@@ -2,6 +2,9 @@ import { z } from "zod";
 export const IntegrationIdSchema = z.enum(["google", "github", "slack", "notion", "linear"]);
 export type IntegrationId = z.infer<typeof IntegrationIdSchema>;
 
+export const CanonicalEntitySchema = z.enum(["Issue", "Email", "Message", "Page", "Repo", "Ticket"]);
+export type CanonicalEntity = z.infer<typeof CanonicalEntitySchema>;
+
 export const EntityFieldSchema = z.object({
   name: z.string().min(1).default("Tool"),
   type: z.string().min(1),
@@ -48,21 +51,47 @@ export const StateGraphSchema = z.object({
 });
 export type StateGraph = z.infer<typeof StateGraphSchema>;
 
+export const ActionTypeSchema = z.enum(["READ", "WRITE", "MUTATE", "NOTIFY"]);
+export type ActionType = z.infer<typeof ActionTypeSchema>;
+
 export const ActionSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().min(1),
+  type: ActionTypeSchema.default("READ"),
   integrationId: IntegrationIdSchema,
   capabilityId: z.string().min(1),
   inputSchema: z.record(z.string(), z.any()).default({}),
   outputSchema: z.record(z.string(), z.any()).default({}),
   reducerId: z.string().optional(),
+  writesToState: z.boolean().default(false),
   emits: z.array(z.string()).optional(),
   requiresApproval: z.boolean().optional(),
   permissions: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
 });
 export type ActionSpec = z.infer<typeof ActionSpecSchema>;
+
+export const ActionNodeSchema = z.object({
+  id: z.string().min(1),
+  actionId: z.string().min(1),
+  stepLabel: z.string().optional(),
+});
+export type ActionNode = z.infer<typeof ActionNodeSchema>;
+
+export const ConditionalEdgeSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  condition: z.string().optional(), // JS expression or state path
+  type: z.enum(["default", "success", "failure"]).default("default"),
+});
+export type ConditionalEdge = z.infer<typeof ConditionalEdgeSchema>;
+
+export const ActionGraphSchema = z.object({
+  nodes: z.array(ActionNodeSchema),
+  edges: z.array(ConditionalEdgeSchema),
+});
+export type ActionGraph = z.infer<typeof ActionGraphSchema>;
 
 export const WorkflowNodeSchema = z.object({
   id: z.string().min(1),
@@ -105,7 +134,7 @@ export type TriggerSpec = z.infer<typeof TriggerSpecSchema>;
 export const ViewSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  type: z.enum(["table", "kanban", "timeline", "chat", "form", "inspector", "command"]),
+  type: z.enum(["table", "kanban", "timeline", "chat", "form", "inspector", "command", "detail"]),
   source: z.object({
     entity: z.string().min(1),
     statePath: z.string().min(1),
@@ -114,6 +143,22 @@ export const ViewSpecSchema = z.object({
   actions: z.array(z.string()).default([]),
 });
 export type ViewSpec = z.infer<typeof ViewSpecSchema>;
+
+export const TimelineEventSchema = z.object({
+  timestamp: z.string().datetime(),
+  entity: z.string().min(1),
+  sourceIntegration: IntegrationIdSchema,
+  action: z.string().min(1),
+  metadata: z.record(z.string(), z.any()).default({}),
+});
+export type TimelineEvent = z.infer<typeof TimelineEventSchema>;
+
+export const ClarificationSchema = z.object({
+  field: z.string().min(1),
+  reason: z.string().min(1),
+  options: z.array(z.string()).optional(),
+});
+export type Clarification = z.infer<typeof ClarificationSchema>;
 
 export const RoleSpecSchema = z.object({
   id: z.string().min(1),
@@ -208,7 +253,8 @@ export const ToolSystemSpecSchema = z.object({
   name: z.string().min(1),
   purpose: z.string().min(1),
   entities: z.array(EntitySpecSchema),
-  stateGraph: StateGraphSchema.optional(),
+  stateGraph: StateGraphSchema.optional(), // Deprecated
+  actionGraph: ActionGraphSchema.optional(),
   state: z.object({
     initial: z.record(z.string(), z.any()).default({}),
     reducers: z.array(StateReducerSchema).default([]),
@@ -228,7 +274,7 @@ export const ToolSystemSpecSchema = z.object({
   memory: MemorySpecSchema,
   automations: AutomationsSpecSchema.optional(),
   observability: ObservabilitySpecSchema.optional(),
-  clarifications: z.array(z.string()).optional(),
+  clarifications: z.array(ClarificationSchema).optional(),
   lifecycle_state: ToolLifecycleStateSchema.optional(),
 });
 export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;

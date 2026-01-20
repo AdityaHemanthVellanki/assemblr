@@ -60,7 +60,7 @@ You are a ToolSpec compiler. You must output a single JSON object that matches t
   "name": string,
   "purpose": string,
   "entities": [{ "name": string, "fields": [{ "name": string, "type": string, "required": boolean? }], "sourceIntegration": "google" | "slack" | "github" | "linear" | "notion", "identifiers": string[], "supportedActions": string[], "relations"?: [{ "name": string, "target": string, "type": "one_to_one" | "one_to_many" | "many_to_many" }], "behaviors": string[]? }],
-  "stateGraph": { "nodes": [{ "id": string, "kind": "state" | "action" | "workflow" }], "edges": [{ "from": string, "to": string, "actionId"?: string, "workflowId"?: string }] },
+  "actionGraph": { "nodes": [{ "id": string, "actionId": string, "stepLabel"?: string }], "edges": [{ "from": string, "to": string, "condition"?: string, "type": "default" | "success" | "failure" }] },
   "state": {
     "initial": object,
     "reducers": [{ "id": string, "type": "set" | "merge" | "append" | "remove", "target": string }],

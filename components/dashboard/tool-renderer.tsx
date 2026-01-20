@@ -2,11 +2,12 @@
 
 import * as React from "react";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
-import { isToolSystemSpec, type ViewSpec, type ActionSpec } from "@/lib/toolos/spec";
+import { isToolSystemSpec, type ViewSpec, type ActionSpec, type TimelineEvent } from "@/lib/toolos/spec";
 import { getCapability } from "@/lib/capabilities/registry";
 import { linkEntities } from "@/lib/toolos/linking-engine";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
+import { SystemTimeline } from "@/components/dashboard/system-timeline";
 
 type DataEvidence = {
   integration: string;
@@ -81,6 +82,8 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [lifecycle, setLifecycle] = React.useState<string>("INIT");
   const [isActivated, setIsActivated] = React.useState<boolean | null>(null);
   const [activationLoading, setActivationLoading] = React.useState(false);
+  const [timeline, setTimeline] = React.useState<TimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = React.useState(false);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
@@ -364,6 +367,19 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     [toolId],
   );
 
+  const fetchTimeline = React.useCallback(async () => {
+    setTimelineLoading(true);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/timeline`);
+      const payload = await res.json();
+      if (res.ok && Array.isArray(payload.timeline)) {
+        setTimeline(payload.timeline);
+      }
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [toolId]);
+
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
     if (isActivated !== true) return;
@@ -383,7 +399,8 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     void fetchAutomation();
     void fetchTriggers();
     void fetchBudget();
-  }, [spec, isActivated, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget]);
+    void fetchTimeline();
+  }, [spec, isActivated, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchTimeline]);
 
   React.useEffect(() => {
     if (!runInspectorOpen || !selectedRunId) return;
@@ -526,41 +543,20 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {systemSpec.entities.length > 0
-            ? systemSpec.entities.map((entity) => (
-                <button
-                  key={entity.name}
-                  className={`rounded-full px-3 py-1 text-xs font-medium ${
-                    activeEntityId === entity.name
-                      ? "bg-primary text-primary-foreground"
-                      : "border border-border/60 text-muted-foreground hover:text-foreground"
-                  }`}
-                  onClick={() => {
-                    const viewsForEntity = systemSpec.views.filter(
-                      (view) => view.source.entity === entity.name,
-                    );
-                    setActiveEntityId(entity.name);
-                    setActiveViewId(viewsForEntity[0]?.id ?? null);
-                  }}
-                  type="button"
-                >
-                  {entity.name}
-                </button>
-              ))
-            : systemSpec.views.map((view) => (
-                <button
-                  key={view.id}
-                  className={`rounded-full px-3 py-1 text-xs font-medium ${
-                    activeViewId === view.id
-                      ? "bg-primary text-primary-foreground"
-                      : "border border-border/60 text-muted-foreground hover:text-foreground"
-                  }`}
-                  onClick={() => setActiveViewId(view.id)}
-                  type="button"
-                >
-                  {view.name}
-                </button>
-              ))}
+          {systemSpec.views.map((view) => (
+            <button
+              key={view.id}
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                activeViewId === view.id
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border/60 text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setActiveViewId(view.id)}
+              type="button"
+            >
+              {view.name}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -581,9 +577,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           </div>
         )}
         {activeView ? (
-          <div className="flex gap-6">
-            <div className="flex-1">
-              {requiresEvidence(activeView.type) && !evidence && (
+          <div className="flex gap-6 h-full">
+            <div className="flex-1 overflow-auto">
+              {requiresEvidence(activeView.type) && !evidence && !timeline.length && (
                 <SchemaPreview fields={activeView.fields} />
               )}
               {requiresEvidence(activeView.type) && evidence ? (
@@ -591,23 +587,25 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
                   <div className="rounded-md border border-border/60 bg-background px-4 py-3 text-xs text-muted-foreground">
                     Evidence: {evidence.sampleCount} records • Fields: {evidence.sampleFields.slice(0, 6).join(", ") || "none"} • Confidence {evidence.confidenceScore.toFixed(2)} {evidence.confidenceScore < 0.7 ? "• Draft / Needs confirmation" : ""}
                   </div>
-                  <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} />
+                  <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} timeline={timeline} />
                 </div>
-              ) : null}
-              {requiresEvidence(activeView.type) && evidence && rows.length === 0 && (
+              ) : (
+                 <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} timeline={timeline} />
+              )}
+              {requiresEvidence(activeView.type) && evidence && rows.length === 0 && activeView.type !== "timeline" && (
                 <div className="mt-4 rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
                   Integration connected but returned no results. Refine filters or try a different scope.
                 </div>
               )}
             </div>
             {selectedRow && (
-              <div className="w-80 shrink-0 rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
+              <div className="w-80 shrink-0 rounded-lg border border-border/60 bg-background px-4 py-4 text-sm overflow-auto">
                 <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">Details</div>
                 <div className="space-y-2">
                   {Object.entries(selectedRow).map(([key, value]) => (
                     <div key={key} className="flex items-start justify-between gap-3 border-b border-border/40 pb-2 last:border-b-0">
                       <span className="text-muted-foreground">{key}</span>
-                      <span className="text-foreground">{String(value ?? "")}</span>
+                      <span className="text-foreground break-all">{String(value ?? "")}</span>
                     </div>
                   ))}
                 </div>
@@ -1036,10 +1034,12 @@ function ViewSurface({
   view,
   projection,
   onSelectRow,
+  timeline,
 }: {
   view: ViewSpec;
   projection: ViewProjection | null;
   onSelectRow: (row: Record<string, any> | null) => void;
+  timeline?: TimelineEvent[];
 }) {
   const data = projection?.data ?? null;
   if (view.type === "kanban") {
@@ -1049,7 +1049,7 @@ function ViewSurface({
     return <TableView view={view} data={data} onSelectRow={onSelectRow} />;
   }
   if (view.type === "timeline") {
-    return <TimelineView data={data} onSelectRow={onSelectRow} />;
+    return <TimelineView data={data} onSelectRow={onSelectRow} timeline={timeline} />;
   }
   if (view.type === "chat") {
     return <ChatView data={data} />;
@@ -1063,7 +1063,15 @@ function ViewSurface({
   if (view.type === "command") {
     return <CommandView />;
   }
+  if (view.type === "detail") {
+    return <DetailView data={data} />;
+  }
   return <div className="text-sm text-muted-foreground">View not supported yet.</div>;
+}
+
+function DetailView({ data }: { data: any }) {
+    if (!data) return <div className="text-sm text-muted-foreground">No details available.</div>;
+    return <InspectorView data={data} />;
 }
 
 function TableView({
@@ -1163,10 +1171,16 @@ function KanbanView({
 function TimelineView({
   data,
   onSelectRow,
+  timeline,
 }: {
   data: any;
   onSelectRow: (row: Record<string, any>) => void;
+  timeline?: TimelineEvent[];
 }) {
+  if (timeline && timeline.length > 0) {
+      return <SystemTimeline events={timeline} />;
+  }
+
   const rows = Array.isArray(data) ? data : data ? [data] : [];
   if (rows.length === 0) {
     return <div className="text-sm text-muted-foreground">No timeline entries yet.</div>;

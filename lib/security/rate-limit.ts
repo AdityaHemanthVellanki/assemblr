@@ -16,6 +16,7 @@ const store = (globalForRateLimit.__rateLimitStore ??= new Map<
 
 export class RequestCoordinator {
   private queues = new Map<string, Promise<void>>();
+  private coalescing = new Map<string, Promise<any>>();
 
   async run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(key) ?? Promise.resolve();
@@ -33,6 +34,22 @@ export class RequestCoordinator {
         this.queues.delete(key);
       }
     }
+  }
+
+  async coalesce<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const existing = this.coalescing.get(key);
+    if (existing) {
+      return existing as Promise<T>;
+    }
+
+    const promise = task().finally(() => {
+      if (this.coalescing.get(key) === promise) {
+        this.coalescing.delete(key);
+      }
+    });
+
+    this.coalescing.set(key, promise);
+    return promise;
   }
 }
 

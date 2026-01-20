@@ -34,7 +34,7 @@ export type SessionContext = {
 
 export const getCurrentUser = cache(async () => {
   const cacheKey = await getSessionCacheKey();
-  return requestCoordinator.run(`supabase:getUser:${cacheKey}`, async () => {
+  return requestCoordinator.coalesce(`supabase:getUser:${cacheKey}`, async () => {
     const supabase = await createSupabaseServerClient();
     const { data, error } = await supabase.auth.getUser();
     if (error) {
