@@ -1,7 +1,6 @@
-import { NextResponse } from "next/server";
-
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
@@ -20,8 +19,8 @@ export async function GET(
     .limit(20);
 
   if (error) {
-    return NextResponse.json({ error: "Failed to load runs" }, { status: 500 });
+    return errorResponse("Failed to load runs", 500);
   }
 
-  return NextResponse.json({ runs: data ?? [] });
+  return jsonResponse({ runs: data ?? [] });
 }

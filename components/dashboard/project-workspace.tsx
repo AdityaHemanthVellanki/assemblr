@@ -14,6 +14,7 @@ import { ToolRenderer } from "@/components/dashboard/tool-renderer";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
+import { safeFetch } from "@/lib/api/client";
 
 interface ProjectWorkspaceProps {
   project?: {
@@ -88,13 +89,10 @@ export function ProjectWorkspace({
     setVersionsLoading(true);
     setVersionsError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/versions`);
-      const payload = await res.json();
-      if (!res.ok) {
-        setVersionsError(payload?.error ?? "Failed to load versions");
-        setVersions([]);
-        return;
-      }
+      const payload = await safeFetch<{
+        versions: VersionSummary[];
+        active_version_id?: string;
+      }>(`/api/tools/${toolId}/versions`);
       setVersions(payload.versions ?? []);
       setActiveVersionId(payload.active_version_id ?? null);
       if (!selectedVersionId && payload.versions?.[0]?.id) {
@@ -113,12 +111,7 @@ export function ProjectWorkspace({
       if (!toolId) return;
       setPromotingVersionId(versionId);
       try {
-        const res = await fetch(`/api/tools/${toolId}/versions/${versionId}/promote`, { method: "POST" });
-        const payload = await res.json();
-        if (!res.ok) {
-          setVersionsError(payload?.error ?? "Failed to promote version");
-          return;
-        }
+        await safeFetch(`/api/tools/${toolId}/versions/${versionId}/promote`, { method: "POST" });
         setActiveVersionId(versionId);
         const promoted = versions.find((v) => v.id === versionId);
         if (promoted?.tool_spec) {

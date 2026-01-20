@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/ui/cn";
+import { safeFetch } from "@/lib/api/client";
 
 export function GenerateDashboardForm({
   projectId,
@@ -28,22 +29,13 @@ export function GenerateDashboardForm({
     setIsLoading(true);
 
     try {
-      const res = await fetch(`/api/projects/${projectId}/generate-spec`, {
+      const data = await safeFetch<{
+        project?: { id: string; name: string; spec: unknown };
+      }>(`/api/projects/${projectId}/generate-spec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
-
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error ?? "Failed to generate dashboard");
-      }
-
-      const data = (await res.json().catch(() => null)) as {
-        project?: { id: string; name: string; spec: unknown };
-      } | null;
 
       if (data?.project && onGenerated) {
         onGenerated(data.project);

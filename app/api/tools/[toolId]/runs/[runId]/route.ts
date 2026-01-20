@@ -1,7 +1,6 @@
-import { NextResponse } from "next/server";
-
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
@@ -21,8 +20,8 @@ export async function GET(
     .single();
 
   if (error || !data) {
-    return NextResponse.json({ error: "Run not found" }, { status: 404 });
+    return errorResponse("Run not found", 404);
   }
 
-  return NextResponse.json({ run: data });
+  return jsonResponse({ run: data });
 }

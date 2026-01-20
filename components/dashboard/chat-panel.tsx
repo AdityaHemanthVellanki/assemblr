@@ -10,6 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
+import { safeFetch } from "@/lib/api/client";
 
 type IntegrationCTA = {
   id: string;
@@ -100,12 +101,12 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     let mounted = true;
     async function fetchStatuses() {
       try {
-        const res = await fetch("/api/integrations");
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await safeFetch<{ integrations?: { id: string; connected: boolean }[] }>(
+          "/api/integrations",
+        );
         if (mounted && data.integrations && Array.isArray(data.integrations)) {
           const map: Record<string, IntegrationConnectionStatus> = {};
-          data.integrations.forEach((i: { id: string; connected: boolean }) => {
+          data.integrations.forEach((i) => {
             map[i.id] = i.connected ? "connected" : "not_connected";
           });
           setIntegrationStatuses(map);
@@ -219,7 +220,11 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     setIsLoading(true);
 
     try {
-      const res = await fetch(`/api/tools/${toolId}/chat`, {
+      const data = await safeFetch<{
+        message?: { type: string; content?: string; integrations?: any[]; result?: any };
+        explanation?: string;
+        spec?: ToolSpec;
+      }>(`/api/tools/${toolId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -235,10 +240,6 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
               : undefined,
         }),
       });
-
-      if (!res.ok) throw new Error("Failed to send message");
-
-      const data = await res.json();
 
       if (data?.message?.type === "integration_action" && Array.isArray(data.message.integrations)) {
         setMessages((prev) => [

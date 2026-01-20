@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { safeFetch } from "@/lib/api/client";
 
 export function NewProjectButton({
   label = "New Project",
@@ -19,20 +20,12 @@ export function NewProjectButton({
     setError(null);
     setIsLoading(true);
     try {
-      const res = await fetch("/api/projects", {
+      const data = await safeFetch<{ id: string }>("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
 
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error ?? "Failed to create project");
-      }
-
-      const data = (await res.json()) as { id: string };
       router.push(`/dashboard/projects/${data.id}`);
       router.refresh();
     } catch (err) {

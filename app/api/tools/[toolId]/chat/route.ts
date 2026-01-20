@@ -1,66 +1,50 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { processToolChat } from "@/lib/ai/tool-chat";
-import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
-import { getServerEnv } from "@/lib/env";
-import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { processToolChat } from "@/lib/ai/tool-chat";
+import { loadIntegrationConnections } from "@/lib/integrations/server-utils";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
-const bodySchema = z.object({
-  message: z.string().min(1).max(5000),
-  mode: z.enum(["create", "chat"]).optional().default("create"),
-  integrationMode: z.enum(["auto", "manual"]).optional().default("auto"),
-  selectedIntegrations: z
-    .array(
-      z.object({
-        id: z.string(),
-        status: z.enum(["connected", "not_connected", "connecting", "error"]),
-      }),
-    )
-    .optional(),
+const chatSchema = z.object({
+  message: z.string(),
+  mode: z.enum(["create", "modify", "chat"]).default("chat"),
+  integrationMode: z.enum(["auto", "manual"]).optional(),
+  selectedIntegrationIds: z.array(z.string()).optional(),
 });
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ toolId: string }> },
 ) {
-  getServerEnv();
-
-  const { toolId } = await params;
-
   try {
-    const { ctx, role } = await requireOrgMember();
-    if (role === "viewer") {
-      return NextResponse.json({ error: "Viewers cannot modify tools" }, { status: 403 });
-    }
-
+    const { toolId } = await params;
+    const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
 
-    const json = await req.json().catch(() => null);
-    const parsed = bodySchema.safeParse(json);
+    const json = await req.json().catch(() => ({}));
+    const parsed = chatSchema.safeParse(json);
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+      return errorResponse("Invalid body", 400);
     }
+    const { message: userMessage, mode, integrationMode, selectedIntegrationIds } = parsed.data;
 
-    const { message: userMessage, mode, integrationMode, selectedIntegrations } = parsed.data;
-    if (mode !== "create") {
-      return NextResponse.json({ error: "Only create mode is supported" }, { status: 400 });
-    }
-    const selectedIntegrationIds = selectedIntegrations?.map((i) => i.id);
     const supabase = await createSupabaseServerClient();
 
-    const { error: insertError } = await supabase.from("chat_messages").insert({
-      tool_id: toolId,
+    // 1. Save User Message
+    const { error: msgError } = await (supabase.from("chat_messages") as any).insert({
       org_id: ctx.orgId,
+      tool_id: toolId,
       role: "user",
       content: userMessage,
     });
-    if (insertError) {
-      console.error("Failed to save user message", insertError);
-      return NextResponse.json({ error: "Failed to save message" }, { status: 500 });
+    if (msgError) {
+      console.error("Failed to save message", msgError);
+      return errorResponse("Failed to save message", 500);
     }
 
+    // 2. Load Context
     const [toolRes, historyRes, connections] = await Promise.all([
       supabase.from("projects").select("spec").eq("id", toolId).single(),
       supabase
@@ -77,7 +61,7 @@ export async function POST(
     }
     if (historyRes.error) {
       console.error("Failed to load chat history", historyRes.error);
-      return NextResponse.json({ error: "Failed to load chat history" }, { status: 500 });
+      return errorResponse("Failed to load chat history", 500);
     }
 
     const currentSpec = toolRes.data.spec ?? {};
@@ -111,32 +95,26 @@ export async function POST(
         .eq("id", toolId);
       if (updateError) {
         console.error("Failed to update tool spec", updateError);
-        return NextResponse.json({ error: "Failed to save tool updates" }, { status: 500 });
+        return errorResponse("Failed to save tool updates", 500);
       }
     }
 
-    const { error: insertAiError } = await supabase.from("chat_messages").insert({
-      tool_id: toolId,
+    // Save Assistant Message
+    await (supabase.from("chat_messages") as any).insert({
       org_id: ctx.orgId,
+      tool_id: toolId,
       role: "assistant",
-      content: result.explanation,
-      metadata: result.metadata ?? null, // Save metadata (e.g. missing_integration_id)
+      content: result.message.content,
+      metadata: result.metadata,
     });
-    if (insertAiError) {
-      console.error("Failed to save AI message", insertAiError);
-    }
 
-    return NextResponse.json(result);
-  } catch (err) {
-    if (err instanceof PermissionError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    if (message === "AI returned non-JSON response" || message === "AI returned invalid JSON") {
-         console.error("Tool chat API error: AI Violation", err);
-         return NextResponse.json({ error: "AI response violated JSON contract" }, { status: 500 });
-    }
-    console.error("Tool chat API error", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return jsonResponse(result);
+  } catch (e) {
+    console.error("Chat failed", e);
+    return errorResponse(
+      "Chat failed",
+      500,
+      e instanceof Error ? e.message : String(e)
+    );
   }
 }

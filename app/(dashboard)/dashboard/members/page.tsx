@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { safeFetch } from "@/lib/api/client";
 
 type OrgRole = "owner" | "editor" | "viewer";
 
@@ -76,18 +77,7 @@ export default function MembersPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/org/members", { method: "GET" });
-      const data = (await res.json().catch(() => null)) as
-        | MembersResponse
-        | { error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(
-          data && "error" in data && typeof data.error === "string"
-            ? data.error
-            : "Failed to load members",
-        );
-      }
+      const data = await safeFetch<MembersResponse>("/api/org/members");
       if (!data || !("me" in data) || !("members" in data)) {
         throw new Error("Invalid response from server");
       }
@@ -105,17 +95,11 @@ export default function MembersPage() {
     setStatus("Accepting invite…");
     setError(null);
     try {
-      const res = await fetch("/api/org/invites/accept", {
+      await safeFetch("/api/org/invites/accept", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
       });
-      const data = (await res.json().catch(() => null)) as
-        | { ok?: boolean; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to accept invite");
-      }
       setStatus("Invite accepted.");
       router.replace("/dashboard/members");
       await loadMembers();
@@ -133,23 +117,16 @@ export default function MembersPage() {
     setError(null);
     setStatus(null);
     try {
-      const res = await fetch("/api/org/invites", {
+      const data = await safeFetch<{
+        invite?: {
+          acceptUrl?: string;
+          expiresAt?: string;
+        };
+      }>("/api/org/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
       });
-      const data = (await res.json().catch(() => null)) as
-        | {
-            invite?: {
-              acceptUrl?: string;
-              expiresAt?: string;
-            };
-            error?: string;
-          }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to create invite");
-      }
       setInviteEmail("");
       setInviteResult({
         acceptUrl: data?.invite?.acceptUrl,
@@ -165,17 +142,14 @@ export default function MembersPage() {
     setError(null);
     setStatus(null);
     try {
-      const res = await fetch(`/api/org/members/${encodeURIComponent(userId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role }),
-      });
-      const data = (await res.json().catch(() => null)) as
-        | { member?: { userId: string; role: OrgRole }; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to update role");
-      }
+      const data = await safeFetch<{ member?: { userId: string; role: OrgRole } }>(
+        `/api/org/members/${encodeURIComponent(userId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        },
+      );
       setMembers((prev) =>
         prev.map((m) =>
           m.userId === userId ? { ...m, role: data?.member?.role ?? role } : m,
@@ -192,15 +166,9 @@ export default function MembersPage() {
     const ok = window.confirm("Remove this member from the organization?");
     if (!ok) return;
     try {
-      const res = await fetch(`/api/org/members/${encodeURIComponent(userId)}`, {
+      await safeFetch(`/api/org/members/${encodeURIComponent(userId)}`, {
         method: "DELETE",
       });
-      const data = (await res.json().catch(() => null)) as
-        | { ok?: boolean; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to remove member");
-      }
       await loadMembers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove member");

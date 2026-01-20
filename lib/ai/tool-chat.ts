@@ -490,6 +490,26 @@ export async function processToolChat(
   };
 }
 
+export async function applyClarificationAnswer(
+  orgId: string,
+  toolId: string,
+  userId: string | undefined | null,
+  answer: string
+): Promise<ToolChatResponse> {
+    // Wrapper to satisfy the requirement "Implement applyClarificationAnswer(answer) -> updates spec"
+    // This re-uses the main pipeline which handles the "resume from pending" logic automatically
+    // via the memory store (pending_questions + base_prompt).
+    return processToolChat({
+        orgId,
+        toolId,
+        userId,
+        messages: [], // Context is in memory
+        userMessage: answer,
+        connectedIntegrationIds: [], // Should be loaded from context if needed, but usually persistent
+        mode: "create",
+    });
+}
+
 async function generateIntent(
   prompt: string,
   onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,

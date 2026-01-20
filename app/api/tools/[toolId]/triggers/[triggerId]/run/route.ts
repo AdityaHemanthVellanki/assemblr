@@ -1,11 +1,10 @@
-import { NextResponse } from "next/server";
-
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 export async function POST(
   _req: Request,
@@ -23,17 +22,14 @@ export async function POST(
     .single();
 
   if (!project?.spec) {
-    return NextResponse.json({ error: "Tool not found" }, { status: 404 });
+    return errorResponse("Tool not found", 404);
   }
   if (!project.is_activated) {
-    return NextResponse.json(
-      {
-        status: "blocked",
-        reason: "Tool not activated",
-        action: "Activate the tool before running triggers",
-      },
-      { status: 409 },
-    );
+    return errorResponse("Tool not activated", 409, {
+      status: "blocked",
+      reason: "Tool not activated",
+      action: "Activate the tool before running triggers",
+    });
   }
 
   let spec = project.spec;
@@ -48,24 +44,21 @@ export async function POST(
   }
 
   if (!isToolSystemSpec(spec)) {
-    return NextResponse.json({ error: "Tool spec invalid" }, { status: 422 });
+    return errorResponse("Tool spec invalid", 422);
   }
 
   const trigger = spec.triggers.find((t) => t.id === triggerId);
   if (!trigger) {
-    return NextResponse.json({ error: "Trigger not found" }, { status: 404 });
+    return errorResponse("Trigger not found", 404);
   }
 
   if (trigger.actionId) {
     if (!isCompiledToolArtifact(compiledTool)) {
-      return NextResponse.json(
-        {
-          status: "blocked",
-          reason: "CompiledTool not found for active version",
-          action: "Recompile the tool to generate a CompiledTool artifact",
-        },
-        { status: 400 },
-      );
+      return errorResponse("CompiledTool not found for active version", 400, {
+        status: "blocked",
+        reason: "CompiledTool not found for active version",
+        action: "Recompile the tool to generate a CompiledTool artifact",
+      });
     }
     await executeToolAction({
       orgId: ctx.orgId,
@@ -76,19 +69,16 @@ export async function POST(
       userId: ctx.userId,
       triggerId: trigger.id,
     });
-    return NextResponse.json({ status: "started" });
+    return jsonResponse({ status: "started" });
   }
 
   if (trigger.workflowId) {
     if (!isCompiledToolArtifact(compiledTool)) {
-      return NextResponse.json(
-        {
-          status: "blocked",
-          reason: "CompiledTool not found for active version",
-          action: "Recompile the tool to generate a CompiledTool artifact",
-        },
-        { status: 400 },
-      );
+      return errorResponse("CompiledTool not found for active version", 400, {
+        status: "blocked",
+        reason: "CompiledTool not found for active version",
+        action: "Recompile the tool to generate a CompiledTool artifact",
+      });
     }
     await runWorkflow({
       orgId: ctx.orgId,
@@ -98,8 +88,8 @@ export async function POST(
       input: trigger.condition ?? {},
       triggerId: trigger.id,
     });
-    return NextResponse.json({ status: "started" });
+    return jsonResponse({ status: "started" });
   }
 
-  return NextResponse.json({ error: "Trigger has no action or workflow" }, { status: 400 });
+  return errorResponse("Trigger has no action or workflow", 400);
 }

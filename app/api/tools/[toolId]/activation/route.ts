@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 const bodySchema = z.object({
   activated: z.boolean(),
@@ -24,10 +24,10 @@ export async function GET(
     .single();
 
   if (!project) {
-    return NextResponse.json({ error: "Tool not found" }, { status: 404 });
+    return errorResponse("Tool not found", 404);
   }
 
-  return NextResponse.json({ activated: project.is_activated === true });
+  return jsonResponse({ activated: project.is_activated === true });
 }
 
 export async function PATCH(
@@ -40,7 +40,7 @@ export async function PATCH(
   const json = await req.json().catch(() => ({}));
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return errorResponse("Invalid body", 400);
   }
   const supabase = await createSupabaseServerClient();
   if (parsed.data.activated) {
@@ -50,28 +50,22 @@ export async function PATCH(
       .eq("org_id", ctx.orgId)
       .single();
     if (!project?.active_version_id) {
-      return NextResponse.json(
-        {
-          status: "blocked",
-          reason: "Tool not compiled yet",
-          action: "Finish compilation before activating",
-        },
-        { status: 409 },
-      );
+      return errorResponse("Tool not compiled yet", 409, {
+        status: "blocked",
+        reason: "Tool not compiled yet",
+        action: "Finish compilation before activating",
+      });
     }
     const { data: version } = await (supabase.from("tool_versions") as any)
       .select("compiled_tool")
       .eq("id", project.active_version_id)
       .single();
     if (!isCompiledToolArtifact(version?.compiled_tool)) {
-      return NextResponse.json(
-        {
-          status: "blocked",
-          reason: "CompiledTool missing for active version",
-          action: "Recompile the tool to generate a CompiledTool artifact",
-        },
-        { status: 409 },
-      );
+      return errorResponse("CompiledTool missing for active version", 409, {
+        status: "blocked",
+        reason: "CompiledTool missing for active version",
+        action: "Recompile the tool to generate a CompiledTool artifact",
+      });
     }
   }
 

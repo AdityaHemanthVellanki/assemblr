@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { safeFetch } from "@/lib/api/client";
 
 export function LoginForm({ error }: { error?: string }) {
   const [email, setEmail] = React.useState("");
@@ -32,24 +33,20 @@ export function LoginForm({ error }: { error?: string }) {
     e.preventDefault();
     setIsLoading(true);
     try {
-      const res = await fetch("/api/auth/login", {
+      await safeFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        setStatus({
-          kind: "error",
-          message: typeof data?.error === "string" ? data.error : "Login failed",
-        });
-        return;
-      }
-
       setStatus({ kind: "success" });
       router.push("/dashboard");
       router.refresh();
+    } catch (err) {
+      setStatus({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Login failed",
+      });
     } finally {
       setIsLoading(false);
     }

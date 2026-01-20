@@ -21,7 +21,7 @@ export async function GET(
     namespace: "tool_builder",
     key: "automation_paused",
   });
-  return NextResponse.json({ paused: paused === true });
+  return jsonResponse({ paused: paused === true });
 }
 
 export async function PATCH(
@@ -37,22 +37,19 @@ export async function PATCH(
     .eq("org_id", ctx.orgId)
     .single();
   if (!project) {
-    return NextResponse.json({ error: "Tool not found" }, { status: 404 });
+    return errorResponse("Tool not found", 404);
   }
   if (!project.is_activated) {
-    return NextResponse.json(
-      {
-        status: "blocked",
-        reason: "Tool not activated",
-        action: "Activate the tool before adjusting automation",
-      },
-      { status: 409 },
-    );
+    return errorResponse("Tool not activated", 409, {
+      status: "blocked",
+      reason: "Tool not activated",
+      action: "Activate the tool before adjusting automation",
+    });
   }
   const json = await req.json().catch(() => ({}));
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return errorResponse("Invalid body", 400);
   }
   const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
   await saveMemory({
@@ -61,5 +58,5 @@ export async function PATCH(
     key: "automation_paused",
     value: parsed.data.paused ?? false,
   });
-  return NextResponse.json({ paused: parsed.data.paused ?? false });
+  return jsonResponse({ paused: parsed.data.paused ?? false });
 }

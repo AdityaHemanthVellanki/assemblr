@@ -8,6 +8,7 @@ import { linkEntities } from "@/lib/toolos/linking-engine";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 import { SystemTimeline } from "@/components/dashboard/system-timeline";
+import { safeFetch, ApiError } from "@/lib/api/client";
 
 type DataEvidence = {
   integration: string;
@@ -126,28 +127,30 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/run/execute`, {
+      const payload = await safeFetch<{
+        view: ViewProjection;
+        state?: Record<string, any>;
+        evidence?: Record<string, DataEvidence>;
+      }>(`/api/tools/${toolId}/run/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ viewId }),
       });
-      const payload = await res.json();
-      if (res.status === 409 && payload?.status === "blocked") {
-        setIsActivated(false);
-        throw new Error(payload?.reason ?? "Tool not activated");
-      }
-      if (!res.ok) {
-        throw new Error(payload?.error ?? "Failed to load view");
-      }
-      setProjection(payload.view as ViewProjection);
+      
+      setProjection(payload.view);
       if (payload.state) {
-        setToolState(payload.state as Record<string, any>);
+        setToolState(payload.state);
       }
       if (payload.evidence) {
-        setEvidenceMap(payload.evidence as Record<string, DataEvidence>);
+        setEvidenceMap(payload.evidence);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load view");
+      if (err instanceof ApiError && err.status === 409 && err.data?.status === "blocked") {
+        setIsActivated(false);
+        setError(err.data?.reason ?? "Tool not activated");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load view");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -161,46 +164,49 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/run/execute`, {
+      const payload = await safeFetch<{
+        view?: ViewProjection;
+        state?: Record<string, any>;
+      }>(`/api/tools/${toolId}/run/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actionId, viewId: activeViewId, input }),
       });
-      const payload = await res.json();
-      if (res.status === 409 && payload?.status === "blocked") {
-        setIsActivated(false);
-        throw new Error(payload?.reason ?? "Tool not activated");
-      }
-      if (!res.ok) {
-        throw new Error(payload?.error ?? "Failed to run action");
-      }
+
       if (payload.view) {
-        setProjection(payload.view as ViewProjection);
+        setProjection(payload.view);
       }
       if (payload.state) {
-        setToolState(payload.state as Record<string, any>);
+        setToolState(payload.state);
       }
       void fetchRuns();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to run action");
+      if (err instanceof ApiError && err.status === 409 && err.data?.status === "blocked") {
+        setIsActivated(false);
+        setError(err.data?.reason ?? "Tool not activated");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to run action");
+      }
     } finally {
       setIsLoading(false);
     }
   }, [activeViewId, toolId, isActivated]);
 
   const fetchRuns = React.useCallback(async () => {
-    const res = await fetch(`/api/tools/${toolId}/runs`);
-    const payload = await res.json();
-    if (res.ok) {
+    try {
+      const payload = await safeFetch<{ runs: any[] }>(`/api/tools/${toolId}/runs`);
       setRuns(Array.isArray(payload.runs) ? payload.runs : []);
+    } catch (err) {
+      console.error("Failed to fetch runs", err);
     }
   }, [toolId]);
 
   const fetchAutomation = React.useCallback(async () => {
-    const res = await fetch(`/api/tools/${toolId}/automation`);
-    const payload = await res.json();
-    if (res.ok) {
+    try {
+      const payload = await safeFetch<{ paused: boolean }>(`/api/tools/${toolId}/automation`);
       setPaused(payload.paused === true);
+    } catch (err) {
+      console.error("Failed to fetch automation status", err);
     }
   }, [toolId]);
 
@@ -208,13 +214,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setTriggersLoading(true);
     setTriggersError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/triggers`);
-      const payload = await res.json();
-      if (!res.ok) {
-        setTriggersError(payload?.error ?? "Failed to load triggers");
-        setTriggers([]);
-        return;
-      }
+      const payload = await safeFetch<{ triggers: any[], paused: boolean }>(`/api/tools/${toolId}/triggers`);
       const items = Array.isArray(payload.triggers) ? payload.triggers : [];
       setTriggers(items);
       setPaused(payload.paused === true);
@@ -243,15 +243,14 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const fetchBudget = React.useCallback(async () => {
     setBudgetLoading(true);
     try {
-      const res = await fetch(`/api/tools/${toolId}/budget`);
-      const payload = await res.json();
-      if (res.ok) {
-        setBudgetInfo(payload);
-        setBudgetDraft({
-          monthlyLimit: payload?.budget?.monthlyLimit ?? 0,
-          perRunLimit: payload?.budget?.perRunLimit ?? 0,
-        });
-      }
+      const payload = await safeFetch<BudgetSummary>(`/api/tools/${toolId}/budget`);
+      setBudgetInfo(payload);
+      setBudgetDraft({
+        monthlyLimit: payload?.budget?.monthlyLimit ?? 0,
+        perRunLimit: payload?.budget?.perRunLimit ?? 0,
+      });
+    } catch (err) {
+      console.error("Failed to fetch budget", err);
     } finally {
       setBudgetLoading(false);
     }
@@ -260,11 +259,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const fetchStatus = React.useCallback(async () => {
     setActivationLoading(true);
     try {
-      const res = await fetch(`/api/tools/${toolId}/status`);
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload?.error ?? "Failed to load tool status");
-      }
+      const payload = await safeFetch<{ isActivated: boolean; lifecycle: string; lastError?: string }>(
+        `/api/tools/${toolId}/status`,
+      );
       setIsActivated(payload?.isActivated === true);
       setLifecycle(payload?.lifecycle ?? "INIT");
       if (payload?.lastError) {
@@ -283,15 +280,12 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setActivationLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/run/activate`, {
+      await safeFetch(`/api/tools/${toolId}/run/activate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload?.error ?? "Failed to activate tool");
-      }
+      
       setIsActivated(true);
       setLifecycle("RUNNING");
       if (activeViewId && actionSpecs.length > 0) {
@@ -310,12 +304,16 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
   const saveBudget = React.useCallback(
     async (patch: { monthlyLimit?: number; perRunLimit?: number }) => {
-      await fetch(`/api/tools/${toolId}/budget`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      await fetchBudget();
+      try {
+        await safeFetch(`/api/tools/${toolId}/budget`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        await fetchBudget();
+      } catch (err) {
+        console.error("Failed to save budget", err);
+      }
     },
     [toolId, fetchBudget],
   );
@@ -331,18 +329,22 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     async (triggerId: string) => {
       const draft = triggerDrafts[triggerId];
       if (!draft) return;
-      await fetch(`/api/tools/${toolId}/triggers`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          triggerId,
-          enabled: draft.enabled,
-          cron: draft.cron || undefined,
-          intervalMinutes: draft.intervalMinutes,
-          failureThreshold: draft.failureThreshold,
-        }),
-      });
-      await fetchTriggers();
+      try {
+        await safeFetch(`/api/tools/${toolId}/triggers`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            triggerId,
+            enabled: draft.enabled,
+            cron: draft.cron || undefined,
+            intervalMinutes: draft.intervalMinutes,
+            failureThreshold: draft.failureThreshold,
+          }),
+        });
+        await fetchTriggers();
+      } catch (err) {
+        console.error("Failed to save trigger", err);
+      }
     },
     [toolId, triggerDrafts, fetchTriggers],
   );
@@ -351,11 +353,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     async (runId: string) => {
       setRunDetailsLoading(true);
       try {
-        const res = await fetch(`/api/tools/${toolId}/runs/${runId}`);
-        const payload = await res.json();
-        if (!res.ok) {
-          throw new Error(payload?.error ?? "Failed to load run");
-        }
+        const payload = await safeFetch<{ run: any }>(`/api/tools/${toolId}/runs/${runId}`);
         setRunDetails(payload.run ?? null);
         setScrubIndex(0);
       } catch (err) {
@@ -370,11 +368,12 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const fetchTimeline = React.useCallback(async () => {
     setTimelineLoading(true);
     try {
-      const res = await fetch(`/api/tools/${toolId}/timeline`);
-      const payload = await res.json();
-      if (res.ok && Array.isArray(payload.timeline)) {
+      const payload = await safeFetch<{ timeline: TimelineEvent[] }>(`/api/tools/${toolId}/timeline`);
+      if (Array.isArray(payload.timeline)) {
         setTimeline(payload.timeline);
       }
+    } catch (err) {
+      // ignore
     } finally {
       setTimelineLoading(false);
     }
@@ -691,12 +690,16 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
             <button
               className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted"
               onClick={async () => {
-                await fetch(`/api/tools/${toolId}/automation`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ paused: !paused }),
-                });
-                setPaused((prev) => !prev);
+                try {
+                  await safeFetch(`/api/tools/${toolId}/automation`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ paused: !paused }),
+                  });
+                  setPaused((prev) => !prev);
+                } catch (err) {
+                  console.error("Failed to toggle automation", err);
+                }
               }}
               type="button"
             >
@@ -732,7 +735,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
                             className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
                             type="button"
                             onClick={() => {
-                              void fetch(`/api/tools/${toolId}/triggers/${trigger.id}/run`, { method: "POST" });
+                              void safeFetch(`/api/tools/${toolId}/triggers/${trigger.id}/run`, {
+                                method: "POST",
+                              }).catch(console.error);
                               void fetchRuns();
                             }}
                           >
@@ -827,7 +832,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
                           className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
                           type="button"
                           onClick={async () => {
-                            await fetch(`/api/tools/${toolId}/runs/${run.id}/retry`, { method: "POST" });
+                            await safeFetch(`/api/tools/${toolId}/runs/${run.id}/retry`, {
+                              method: "POST",
+                            }).catch(console.error);
                             void fetchRuns();
                           }}
                         >

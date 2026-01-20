@@ -9,6 +9,7 @@ import { GenerateDashboardForm } from "@/components/dashboard/generate-dashboard
 import { renderDashboard, type DashboardViewState } from "@/lib/dashboard/render-dashboard";
 import { parseDashboardSpec, type DashboardSpec } from "@/lib/dashboard/spec";
 import { cn } from "@/lib/ui/cn";
+import { safeFetch } from "@/lib/api/client";
 
 type ProjectPayload = {
   id: string;
@@ -205,28 +206,23 @@ export function SpecEditorPanel({
 
   const loadDataSources = React.useCallback(async (signal?: AbortSignal) => {
     if (!allowManageDataSources) return;
-    const res = await fetch("/api/data-sources", { signal });
-    if (!res.ok) return;
-    const data = (await res.json().catch(() => null)) as {
-      dataSources?: DataSourceListItem[];
-    } | null;
-    if (!data?.dataSources) return;
-    setDataSources(data.dataSources);
+    try {
+      const data = await safeFetch<{ dataSources?: DataSourceListItem[] }>("/api/data-sources", { signal });
+      if (data?.dataSources) {
+        setDataSources(data.dataSources);
+      }
+    } catch {
+      // ignore
+    }
   }, [allowManageDataSources]);
 
   const loadSchema = React.useCallback(async (nextDataSourceId: string, signal?: AbortSignal) => {
     if (!allowManageDataSources) return;
     setSchemaStatus({ kind: "loading" });
     try {
-      const res = await fetch(`/api/data-sources/${nextDataSourceId}/schema`, {
+      const data = await safeFetch<{ schema?: DatabaseSchema }>(`/api/data-sources/${nextDataSourceId}/schema`, {
         signal,
       });
-      const data = (await res.json().catch(() => null)) as
-        | { schema?: DatabaseSchema; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to load schema");
-      }
       if (!data?.schema) throw new Error("Invalid schema response");
       setSchema(data.schema);
       setSchemaStatus({ kind: "idle" });
@@ -252,7 +248,7 @@ export function SpecEditorPanel({
       return;
     }
     try {
-      const res = await fetch("/api/data-sources", {
+      const data = await safeFetch<{ dataSource?: { id: string } }>("/api/data-sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -267,12 +263,6 @@ export function SpecEditorPanel({
         }),
       });
 
-      const data = (await res.json().catch(() => null)) as
-        | { dataSource?: { id: string }; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to create data source");
-      }
       const id = data?.dataSource?.id;
       if (!id) throw new Error("Invalid response from server");
       await loadDataSources();
@@ -308,20 +298,12 @@ export function SpecEditorPanel({
     setErrorText(null);
     setIsSaving(true);
     try {
-      const res = await fetch(`/api/projects/${project.id}/spec`, {
+      const data = await safeFetch<{ project: { spec: DashboardSpec } }>(`/api/projects/${project.id}/spec`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ spec: draftSpec }),
       });
 
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error ?? "Failed to save changes");
-      }
-
-      const data = (await res.json()) as { project: { spec: DashboardSpec } };
       setSavedSpec(data.project.spec);
       setDraftSpec(data.project.spec);
       markUserEdited();
@@ -341,17 +323,14 @@ export function SpecEditorPanel({
     }
     setErrorText(null);
     try {
-      const res = await fetch(`/api/projects/${project.id}/data-source`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataSourceId: nextId }),
-      });
-      const data = (await res.json().catch(() => null)) as
-        | { project?: { dataSourceId?: string | null }; error?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? "Failed to update data source");
-      }
+      const data = await safeFetch<{ project?: { dataSourceId?: string | null } }>(
+        `/api/projects/${project.id}/data-source`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dataSourceId: nextId }),
+        },
+      );
       setDataSourceId(data?.project?.dataSourceId ?? null);
     } catch (err) {
       setErrorText(
@@ -386,18 +365,12 @@ export function SpecEditorPanel({
         for (const v of views) {
           if (controller.signal.aborted) return;
           try {
-            const res = await fetch(`/api/projects/${project.id}/query`, {
+            const data = await safeFetch<{ result?: unknown }>(`/api/projects/${project.id}/query`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ viewId: v.id, spec: draftSpec }),
               signal: controller.signal,
             });
-            const data = (await res.json().catch(() => null)) as
-              | { result?: unknown; error?: string }
-              | null;
-            if (!res.ok) {
-              throw new Error(data?.error ?? "Query failed");
-            }
             setStateByViewId((prev) => ({
               ...prev,
               [v.id]: {

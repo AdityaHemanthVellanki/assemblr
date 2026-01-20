@@ -8,6 +8,7 @@ import { runUnderstandPurpose } from "@/lib/toolos/compiler/stages/understand-pu
 import { runExtractEntities } from "@/lib/toolos/compiler/stages/extract-entities";
 import { runResolveIntegrations } from "@/lib/toolos/compiler/stages/resolve-integrations";
 import { runDefineActions } from "@/lib/toolos/compiler/stages/define-actions";
+import { runFetchData } from "@/lib/toolos/compiler/stages/fetch-data";
 import { runBuildWorkflows } from "@/lib/toolos/compiler/stages/build-workflows";
 import { runDesignViews } from "@/lib/toolos/compiler/stages/design-views";
 import { runValidateSpec } from "@/lib/toolos/compiler/stages/validate-spec";
@@ -17,6 +18,7 @@ export type ToolCompilerStage =
   | "extract-entities"
   | "resolve-integrations"
   | "define-actions"
+  | "fetch-data"
   | "build-workflows"
   | "design-views"
   | "validate-spec";
@@ -38,6 +40,9 @@ export type ToolCompilerStageContext = {
   spec: ToolSystemSpec;
   connectedIntegrationIds: string[];
   onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void;
+  orgId: string;
+  toolId: string;
+  userId?: string | null;
 };
 
 export type ToolCompilerStageBudgets = {
@@ -45,6 +50,7 @@ export type ToolCompilerStageBudgets = {
   extractEntitiesMs: number;
   resolveIntegrationsMs: number;
   defineActionsMs: number;
+  fetchDataMs: number;
   buildWorkflowsMs: number;
   designViewsMs: number;
   validateSpecMs: number;
@@ -74,6 +80,7 @@ const DEFAULT_BUDGETS: ToolCompilerStageBudgets = {
   extractEntitiesMs: 1500,
   resolveIntegrationsMs: 1000,
   defineActionsMs: 2000,
+  fetchDataMs: 5000, // Allow more time for network calls
   buildWorkflowsMs: 2000,
   designViewsMs: 2000,
   validateSpecMs: 1500,
@@ -104,6 +111,9 @@ export class ToolCompiler {
       prompt: input.prompt,
       connectedIntegrationIds: input.connectedIntegrationIds ?? [],
       onUsage: input.onUsage,
+      orgId: input.orgId,
+      toolId: input.toolId,
+      userId: input.userId,
     };
 
     const stageResults: Array<{
@@ -178,6 +188,7 @@ export class ToolCompiler {
       () => runStage("extract-entities", budgets.extractEntitiesMs, runExtractEntities),
       () => runStage("resolve-integrations", budgets.resolveIntegrationsMs, runResolveIntegrations),
       () => runStage("define-actions", budgets.defineActionsMs, runDefineActions),
+      () => runStage("fetch-data", budgets.fetchDataMs, runFetchData),
       () => runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows),
       () => runStage("design-views", budgets.designViewsMs, runDesignViews),
       () => runStage("validate-spec", budgets.validateSpecMs, runValidateSpec),

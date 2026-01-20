@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
 import { getToolBudget, getToolBudgetUsage, updateToolBudget } from "@/lib/security/tool-budget";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 const patchSchema = z.object({
   monthlyLimit: z.number().optional(),
@@ -23,7 +23,7 @@ export async function GET(
   const costEstimate = (usage.tokensUsed / 1000) * COST_PER_1K_TOKENS;
   const projected = estimateProjectedTokens(usage.tokensUsed);
   const projectedCost = (projected / 1000) * COST_PER_1K_TOKENS;
-  return NextResponse.json({
+  return jsonResponse({
     budget,
     usage,
     costEstimate,
@@ -42,10 +42,10 @@ export async function PATCH(
   const json = await req.json().catch(() => ({}));
   const parsed = patchSchema.safeParse(json);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return errorResponse("Invalid body", 400);
   }
   const budget = await updateToolBudget(ctx.orgId, toolId, parsed.data);
-  return NextResponse.json({ budget });
+  return jsonResponse({ budget });
 }
 
 function estimateProjectedTokens(tokensUsed: number) {

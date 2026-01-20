@@ -6,6 +6,7 @@ import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { safeFetch } from "@/lib/api/client";
 
 // --- Types mirroring backend types ---
 
@@ -155,16 +156,12 @@ export default function IntegrationsPage() {
     setLoading(true);
     setPageError(null);
     try {
-      const res = await fetch("/api/integrations", { method: "GET" });
-      const json = (await res.json().catch(() => null)) as unknown;
-      if (!res.ok || !json || typeof json !== "object") {
-        throw new Error("Failed to load integrations");
-      }
-      const list = (json as { integrations?: IntegrationListItem[] }).integrations;
+      const payload = await safeFetch<{ integrations?: IntegrationListItem[] }>("/api/integrations");
+      const list = payload.integrations;
       if (!Array.isArray(list)) throw new Error("Failed to load integrations");
       setIntegrations(list);
     } catch (err) {
-      setPageError(safeJsonMessage(err));
+      setPageError(err instanceof Error ? err.message : "Failed to load integrations");
     } finally {
       setLoading(false);
     }
@@ -213,26 +210,20 @@ export default function IntegrationsPage() {
             // Set local loading state (optimistic)
             setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
             
-            const res = await fetch(`/api/integrations/${integrationId}/connect`, {
+            const payload = await safeFetch<{ redirectUrl?: string }>(`/api/integrations/${integrationId}/connect`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" }
             });
             
-            if (!res.ok) {
-                const json = await res.json().catch(() => ({}));
-                throw new Error(json.error || "Failed to initiate connection");
-            }
-            
-            const { redirectUrl } = await res.json();
-            if (redirectUrl) {
-                window.location.href = redirectUrl;
+            if (payload.redirectUrl) {
+                window.location.href = payload.redirectUrl;
                 return;
             } else {
                 throw new Error("No redirect URL returned");
             }
         } catch (e) {
             console.error("Connect failed", e);
-            setPageError(safeJsonMessage(e));
+            setPageError(e instanceof Error ? e.message : String(e));
             // Revert status
             await load(); // Refresh to get true status
             return;
@@ -287,7 +278,7 @@ export default function IntegrationsPage() {
          await new Promise((r) => setTimeout(r, 800));
       }
 
-      const res = await fetch("/api/integrations", {
+      await safeFetch("/api/integrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -295,14 +286,6 @@ export default function IntegrationsPage() {
           credentials: formValues,
         }),
       });
-      const json = await res.json().catch(() => null);
-      if (!res.ok) {
-        const msg =
-          json && typeof json === "object" && "error" in json && typeof (json as { error?: unknown }).error === "string"
-            ? (json as { error: string }).error
-            : "Failed to connect";
-        throw new Error(msg);
-      }
 
       // If OAuth, redirect to start flow
       if (active.connectionMode === "oauth") {
@@ -313,7 +296,7 @@ export default function IntegrationsPage() {
       closeModal();
       await load();
     } catch (err) {
-      setFormError(safeJsonMessage(err));
+      setFormError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
     }
   }, [active, closeModal, formValues, load]);
@@ -323,21 +306,13 @@ export default function IntegrationsPage() {
     setSubmitting(true);
     setFormError(null);
     try {
-      const res = await fetch(`/api/integrations/${encodeURIComponent(active.id)}`, {
+      await safeFetch(`/api/integrations/${encodeURIComponent(active.id)}`, {
         method: "DELETE",
       });
-      const json = await res.json().catch(() => null);
-      if (!res.ok) {
-        const msg =
-          json && typeof json === "object" && "error" in json && typeof (json as { error?: unknown }).error === "string"
-            ? (json as { error: string }).error
-            : "Failed to disconnect";
-        throw new Error(msg);
-      }
       closeModal();
       await load();
     } catch (err) {
-      setFormError(safeJsonMessage(err));
+      setFormError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }

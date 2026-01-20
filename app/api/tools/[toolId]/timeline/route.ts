@@ -3,39 +3,45 @@ import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permission
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { aggregateTimeline } from "@/lib/toolos/timeline-engine";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { jsonResponse, errorResponse } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ toolId: string }> },
 ) {
-  const { toolId } = await params;
-  const { ctx } = await requireOrgMember();
-  await requireProjectOrgAccess(ctx, toolId);
-  const supabase = await createSupabaseServerClient();
+  try {
+    const { toolId } = await params;
+    const { ctx } = await requireOrgMember();
+    await requireProjectOrgAccess(ctx, toolId);
+    const supabase = await createSupabaseServerClient();
 
-  const { data: project } = await (supabase.from("projects") as any)
-    .select("spec, active_version_id")
-    .eq("id", toolId)
-    .eq("org_id", ctx.orgId)
-    .single();
-
-  if (!project || !project.spec) {
-    return NextResponse.json({ error: "Tool not found" }, { status: 404 });
-  }
-
-  let spec = project.spec;
-  if (project.active_version_id) {
-     const { data: version } = await (supabase.from("tool_versions") as any)
-      .select("tool_spec")
-      .eq("id", project.active_version_id)
+    const { data: project } = await (supabase.from("projects") as any)
+      .select("spec, active_version_id")
+      .eq("id", toolId)
+      .eq("org_id", ctx.orgId)
       .single();
-     spec = version?.tool_spec ?? spec;
-  }
 
-  if (!isToolSystemSpec(spec)) {
-      return NextResponse.json({ error: "Invalid spec" }, { status: 500 });
-  }
+    if (!project || !project.spec) {
+      return errorResponse("Tool not found", 404);
+    }
 
-  const timeline = await aggregateTimeline(ctx.orgId, toolId, spec);
-  return NextResponse.json({ timeline });
+    let spec = project.spec;
+    if (project.active_version_id) {
+       const { data: version } = await (supabase.from("tool_versions") as any)
+        .select("tool_spec")
+        .eq("id", project.active_version_id)
+        .single();
+       spec = version?.tool_spec ?? spec;
+    }
+
+    if (!isToolSystemSpec(spec)) {
+        return errorResponse("Invalid spec", 500);
+    }
+
+    const timeline = await aggregateTimeline(ctx.orgId, toolId, spec);
+    return jsonResponse({ timeline });
+  } catch (e) {
+    console.error("Timeline fetch failed", e);
+    return errorResponse("Timeline fetch failed", 500);
+  }
 }
