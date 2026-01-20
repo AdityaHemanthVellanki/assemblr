@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
-import { saveToolMemory, loadToolMemory } from "@/lib/toolos/memory-store";
+import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 const bodySchema = z.object({
   paused: z.boolean().optional(),
@@ -14,9 +14,9 @@ export async function GET(
 ) {
   const { toolId } = await params;
   const { ctx } = await requireOrgMember();
-  const paused = await loadToolMemory({
-    toolId,
-    orgId: ctx.orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
+  const paused = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "automation_paused",
   });
@@ -34,9 +34,9 @@ export async function PATCH(
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  await saveToolMemory({
-    toolId,
-    orgId: ctx.orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
+  await saveMemory({
+    scope,
     namespace: "tool_builder",
     key: "automation_paused",
     value: parsed.data.paused ?? false,

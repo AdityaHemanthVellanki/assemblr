@@ -9,7 +9,7 @@ import { compileToolSystem } from "@/lib/toolos/compiler";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
@@ -105,15 +105,17 @@ export async function processToolChat(
   const steps = createBuildSteps();
   const builderNamespace = "tool_builder";
   const machine = new ToolBuildStateMachine();
-  const pendingQuestions = await loadToolMemory({
-    toolId: input.toolId,
-    orgId: input.orgId,
+  const builderScope: MemoryScope = {
+    type: "session",
+    sessionId: `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`,
+  };
+  const pendingQuestions = await loadMemory({
+    scope: builderScope,
     namespace: builderNamespace,
     key: "pending_questions",
   });
-  const basePrompt = await loadToolMemory({
-    toolId: input.toolId,
-    orgId: input.orgId,
+  const basePrompt = await loadMemory({
+    scope: builderScope,
     namespace: builderNamespace,
     key: "base_prompt",
   });
@@ -153,16 +155,14 @@ export async function processToolChat(
     if (!pendingQuestions && clarifications.length > 0) {
       markStep(steps, "intent", "error", "Clarifications required");
       machine.transition("AWAITING_CLARIFICATION", "Clarifications required", "warn");
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: clarifications,
       });
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "base_prompt",
         value: input.userMessage,
@@ -196,9 +196,8 @@ export async function processToolChat(
     if (confidenceQuestions.length > 0) {
       markStep(steps, "intent", "error", "Low confidence detected");
       machine.transition("AWAITING_CLARIFICATION", "Low confidence detected", "warn");
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: confidenceQuestions,
@@ -225,9 +224,8 @@ export async function processToolChat(
     if (missingRequired.length > 0) {
       markStep(steps, "readiness", "error", `Missing integrations: ${missingRequired.join(", ")}`);
       machine.transition("AWAITING_CLARIFICATION", "Missing integrations", "warn");
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: missingRequired.map((id) => `Connect ${id} to proceed.`),
@@ -254,9 +252,8 @@ export async function processToolChat(
     if (missingIntegrations.length > 0) {
       markStep(steps, "readiness", "error", `Missing integrations: ${missingIntegrations.join(", ")}`);
       machine.transition("DEGRADED", "Missing integrations", "warn");
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: missingIntegrations.map((id) => `Connect ${id} to fetch data.`),
@@ -291,9 +288,8 @@ export async function processToolChat(
     if (readinessQuestions.length > 0) {
       markStep(steps, "readiness", "error", "Missing required filters");
       machine.transition("AWAITING_CLARIFICATION", "Missing required filters", "warn");
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: readinessQuestions,
@@ -315,7 +311,7 @@ export async function processToolChat(
 
     markStep(steps, "runtime", "running", "Executing initial fetches");
     machine.transition("FETCHING_DATA", "Fetching initial data");
-    const execution = await runInitialFetches(spec, input.orgId, input.toolId);
+    const execution = await runInitialFetches(spec, input.orgId, input.toolId, builderScope);
     latestEvidence = execution.evidence;
     execution.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
     const missingEvidence = missingEvidenceForViews(spec, execution.evidence);
@@ -325,9 +321,8 @@ export async function processToolChat(
       const questions = limitClarifications(
         missingEvidence.map((viewName) => `Confirm data scope for ${viewName} and provide required filters.`),
       );
-      await saveToolMemory({
-        toolId: input.toolId,
-        orgId: input.orgId,
+      await saveMemory({
+        scope: builderScope,
         namespace: builderNamespace,
         key: "pending_questions",
         value: questions,
@@ -370,9 +365,8 @@ export async function processToolChat(
     machine.transition("DATA_READY", "Data ready");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
     machine.transition("READY", "Tool ready");
-    await saveToolMemory({
-      toolId: input.toolId,
-      orgId: input.orgId,
+    await saveMemory({
+      scope: builderScope,
       namespace: builderNamespace,
       key: "pending_questions",
       value: null,
@@ -714,6 +708,7 @@ async function runInitialFetches(
   spec: ToolSystemSpec,
   orgId: string,
   toolId: string,
+  builderScope: MemoryScope,
 ) {
   const logs: string[] = [];
   const empty: string[] = [];
@@ -760,9 +755,8 @@ async function runInitialFetches(
   });
 
   await Promise.allSettled(tasks);
-  await saveToolMemory({
-    toolId,
-    orgId,
+  await saveMemory({
+    scope: builderScope,
     namespace: "tool_builder",
     key: "data_evidence",
     value: evidence,

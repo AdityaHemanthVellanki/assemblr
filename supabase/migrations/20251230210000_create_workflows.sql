@@ -1,7 +1,7 @@
 -- Create workflows table
 create table if not exists public.workflows (
   id uuid default gen_random_uuid() primary key,
-  org_id uuid not null references public.organizations(id) on delete cascade,
+  org_id uuid not null references public.orgs(id) on delete cascade,
   name text not null,
   enabled boolean default true,
   

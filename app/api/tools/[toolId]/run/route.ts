@@ -6,7 +6,7 @@ import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 import { loadToolState } from "@/lib/toolos/state-store";
-import { loadToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 export async function POST(
   req: Request,
@@ -43,9 +43,9 @@ export async function POST(
   const viewId = typeof body?.viewId === "string" ? body.viewId : null;
   const input = body?.input && typeof body.input === "object" ? body.input : {};
 
-  const evidence = await loadToolMemory({
-    toolId,
-    orgId: ctx.orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
+  const evidence = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "data_evidence",
   });

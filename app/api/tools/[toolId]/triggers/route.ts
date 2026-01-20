@@ -4,7 +4,7 @@ import { createHash } from "crypto";
 
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { loadToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
 
@@ -26,15 +26,15 @@ export async function GET(
   const { ctx } = await requireOrgMember();
   await requireProjectOrgAccess(ctx, toolId);
   const supabase = await createSupabaseServerClient();
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
 
   const { spec } = await loadActiveSpec({ supabase, toolId, orgId: ctx.orgId });
   if (!spec) {
     return NextResponse.json({ error: "Tool not found" }, { status: 404 });
   }
 
-  const paused = await loadToolMemory({
-    toolId,
-    orgId: ctx.orgId,
+  const paused = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "automation_paused",
   });
@@ -43,15 +43,13 @@ export async function GET(
     (spec.triggers ?? []).map(async (trigger) => {
       const lastKey = `trigger.${trigger.id}.last_run_at`;
       const failureKey = `trigger.${trigger.id}.failure_count`;
-      const lastRun = await loadToolMemory({
-        toolId,
-        orgId: ctx.orgId,
+      const lastRun = await loadMemory({
+        scope,
         namespace: spec.memory.tool.namespace,
         key: lastKey,
       });
-      const failures = await loadToolMemory({
-        toolId,
-        orgId: ctx.orgId,
+      const failures = await loadMemory({
+        scope,
         namespace: spec.memory.tool.namespace,
         key: failureKey,
       });

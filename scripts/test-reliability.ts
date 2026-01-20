@@ -1,6 +1,9 @@
 
 import { validateCompiledIntent, normalizeIntentSpec } from "../lib/ai/planner-logic";
 import { CompiledIntent } from "../lib/core/intent";
+import { loadMemory, saveMemory, setMemoryAdapterFactory } from "../lib/toolos/memory-store";
+import { MemoryAdapterError, createFallbackMemoryAdapter } from "../lib/toolos/memory/memory-adapter";
+import { createEphemeralMemoryAdapter } from "../lib/toolos/memory/ephemeral-memory";
 
 async function runTests() {
   console.log("Running Reliability Tests...");
@@ -18,6 +21,16 @@ async function runTests() {
   const assertDoesNotThrow = (fn: () => void, msg: string) => {
     try {
       fn();
+      console.log(`✅ PASS: ${msg}`);
+    } catch (e: any) {
+      console.error(`❌ FAIL: ${msg} (Threw: ${e.message})`);
+      failures++;
+    }
+  };
+
+  const assertDoesNotReject = async (fn: () => Promise<void>, msg: string) => {
+    try {
+      await fn();
       console.log(`✅ PASS: ${msg}`);
     } catch (e: any) {
       console.error(`❌ FAIL: ${msg} (Threw: ${e.message})`);
@@ -81,6 +94,45 @@ async function runTests() {
   } as any;
 
   assertDoesNotThrow(() => validateCompiledIntent(intentMissingAction), "Missing action trigger triggers warning, not throw");
+
+  console.log("\n--- Test 5: Memory Fallback on Missing Session Table ---");
+  setMemoryAdapterFactory(async () => {
+    const fallback = createEphemeralMemoryAdapter();
+    const primary = {
+      async get() {
+        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
+      },
+      async set() {
+        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
+      },
+      async delete() {
+        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
+      },
+    };
+    return createFallbackMemoryAdapter({ primary, fallback, initialPrimaryAvailable: true });
+  });
+
+  try {
+    const scope = { type: "session" as const, sessionId: "reliability-session" };
+    await assertDoesNotReject(
+      () =>
+        saveMemory({
+          scope,
+          namespace: "reliability",
+          key: "fallback",
+          value: "ok",
+        }),
+      "Memory save falls back when session_memory missing",
+    );
+    const value = await loadMemory({
+      scope,
+      namespace: "reliability",
+      key: "fallback",
+    });
+    assert(value === "ok", "Fallback memory persists when session_memory missing");
+  } finally {
+    setMemoryAdapterFactory(null);
+  }
 
   if (failures === 0) {
     console.log("\n🎉 ALL RELIABILITY TESTS PASSED");

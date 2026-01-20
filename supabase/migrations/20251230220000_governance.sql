@@ -18,7 +18,7 @@ add column if not exists requires_approval boolean default false;
 -- Create approvals table
 create table if not exists public.approvals (
   id uuid default gen_random_uuid() primary key,
-  org_id uuid not null references public.organizations(id) on delete cascade,
+  org_id uuid not null references public.orgs(id) on delete cascade,
   workflow_id uuid not null references public.workflows(id) on delete cascade,
   requested_by uuid references auth.users(id),
   approved_by uuid references auth.users(id),

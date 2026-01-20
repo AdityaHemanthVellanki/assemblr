@@ -5,7 +5,7 @@ import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { compileToolSystem } from "@/lib/toolos/compiler";
 import { ToolSystemSpec, StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
-import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
 
 export type ToolExecutionResult = {
@@ -25,6 +25,7 @@ export async function executeToolAction(params: {
   recordRun?: boolean;
 }) {
   const { orgId, toolId, spec, actionId, input, userId, triggerId, recordRun = true } = params;
+  const toolScope: MemoryScope = { type: "tool_org", toolId, orgId };
   const compiled = compileToolSystem(spec);
   const action = compiled.actions.get(actionId);
   if (!action) {
@@ -121,36 +122,31 @@ export async function executeToolAction(params: {
   const state = await loadToolState(toolId, orgId);
   const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);
   await saveToolState(toolId, orgId, nextState);
-  const snapshots = (await loadToolMemory({
-    toolId,
-    orgId,
+  const snapshots = (await loadMemory({
+    scope: toolScope,
     namespace: "tool_builder",
     key: "state_snapshots",
   })) as Array<{ timestamp: string; state: Record<string, any> }> | null;
   const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(-4) : [];
   nextSnapshots.push({ timestamp: new Date().toISOString(), state: nextState });
-  await saveToolMemory({
-    toolId,
-    orgId,
+  await saveMemory({
+    scope: toolScope,
     namespace: "tool_builder",
     key: "state_snapshots",
     value: nextSnapshots,
   });
-  await saveToolMemory({
-    toolId,
-    orgId,
+  await saveMemory({
+    scope: toolScope,
     namespace: spec.memory.tool.namespace,
     key: actionId,
     value: output,
   });
   if (userId) {
-    await saveToolMemory({
-      toolId,
-      orgId,
+    await saveMemory({
+      scope: { type: "tool_user", toolId, userId },
       namespace: spec.memory.user.namespace,
       key: actionId,
       value: output,
-      userId,
     });
   }
 
@@ -167,9 +163,8 @@ async function enforceRateLimit(params: {
   const key = `rate_limit.${params.integrationId}`;
   const now = Date.now();
   const windowMs = 60_000;
-  const record = (await loadToolMemory({
-    toolId: params.toolId,
-    orgId: params.orgId,
+  const record = (await loadMemory({
+    scope: { type: "tool_org", toolId: params.toolId, orgId: params.orgId },
     namespace: "tool_builder",
     key,
   })) as { windowStart: number; count: number } | null;
@@ -179,9 +174,8 @@ async function enforceRateLimit(params: {
   if (count >= params.maxPerMinute) {
     throw new Error(`Rate limit exceeded for ${params.integrationId}`);
   }
-  await saveToolMemory({
-    toolId: params.toolId,
-    orgId: params.orgId,
+  await saveMemory({
+    scope: { type: "tool_org", toolId: params.toolId, orgId: params.orgId },
     namespace: "tool_builder",
     key,
     value: { windowStart, count: count + 1 },

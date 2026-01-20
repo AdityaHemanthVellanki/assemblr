@@ -1,4 +1,4 @@
-import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 export type ToolBudget = {
   monthlyLimit: number;
@@ -24,9 +24,9 @@ const DEFAULT_BUDGET: ToolBudget = {
 };
 
 export async function getToolBudget(orgId: string, toolId: string) {
-  const budget = await loadToolMemory({
-    toolId,
-    orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId };
+  const budget = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "token_budget",
   });
@@ -34,9 +34,9 @@ export async function getToolBudget(orgId: string, toolId: string) {
 }
 
 export async function getToolBudgetUsage(orgId: string, toolId: string) {
-  const usage = await loadToolMemory({
-    toolId,
-    orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId };
+  const usage = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "token_usage",
   });
@@ -54,9 +54,9 @@ export async function updateToolBudget(
 ) {
   const current = await getToolBudget(orgId, toolId);
   const next = { ...current, ...patch };
-  await saveToolMemory({
-    toolId,
-    orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId };
+  await saveMemory({
+    scope,
     namespace: "tool_builder",
     key: "token_budget",
     value: next,
@@ -80,9 +80,9 @@ export async function consumeToolBudget(params: {
   if (budget.monthlyLimit > 0 && nextUsage.tokensUsed > budget.monthlyLimit) {
     throw new BudgetExceededError("monthly", "Monthly token budget exceeded");
   }
-  await saveToolMemory({
-    toolId,
-    orgId,
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId };
+  await saveMemory({
+    scope,
     namespace: "tool_builder",
     key: "token_usage",
     value: nextUsage,

@@ -4,7 +4,7 @@ import { ExecutionTracer } from "@/lib/observability/tracer";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
-import { loadToolMemory, saveToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 export class EventLoop {
   private isRunning = false;
@@ -43,9 +43,9 @@ export class EventLoop {
         spec = version?.tool_spec ?? spec;
       }
       if (!isToolSystemSpec(spec)) continue;
-      const paused = await loadToolMemory({
-        toolId: project.id,
-        orgId: project.org_id,
+      const scope: MemoryScope = { type: "tool_org", toolId: project.id, orgId: project.org_id };
+      const paused = await loadMemory({
+        scope,
         namespace: "tool_builder",
         key: "automation_paused",
       });
@@ -56,26 +56,23 @@ export class EventLoop {
         const intervalMinutes = resolveIntervalMinutes(trigger.condition ?? {});
         const lastKey = `trigger.${trigger.id}.last_run_at`;
         const failureKey = `trigger.${trigger.id}.failure_count`;
-        const failureCount = await loadToolMemory({
-          toolId: project.id,
-          orgId: project.org_id,
+        const failureCount = await loadMemory({
+          scope,
           namespace: spec.memory.tool.namespace,
           key: failureKey,
         });
         const threshold = Number(trigger.condition?.failureThreshold ?? 0);
         if (threshold > 0 && Number(failureCount ?? 0) >= threshold) {
-          await saveToolMemory({
-            toolId: project.id,
-            orgId: project.org_id,
+          await saveMemory({
+            scope,
             namespace: "tool_builder",
             key: "automation_paused",
             value: true,
           });
           continue;
         }
-        const lastRun = await loadToolMemory({
-          toolId: project.id,
-          orgId: project.org_id,
+        const lastRun = await loadMemory({
+          scope,
           namespace: spec.memory.tool.namespace,
           key: lastKey,
         });
@@ -89,35 +86,31 @@ export class EventLoop {
           trigger,
         });
         if (ok) {
-          await saveToolMemory({
-            toolId: project.id,
-            orgId: project.org_id,
+          await saveMemory({
+            scope,
             namespace: spec.memory.tool.namespace,
             key: failureKey,
             value: 0,
           });
         } else {
           const nextCount = Number(failureCount ?? 0) + 1;
-          await saveToolMemory({
-            toolId: project.id,
-            orgId: project.org_id,
+          await saveMemory({
+            scope,
             namespace: spec.memory.tool.namespace,
             key: failureKey,
             value: nextCount,
           });
           if (threshold > 0 && nextCount >= threshold) {
-            await saveToolMemory({
-              toolId: project.id,
-              orgId: project.org_id,
+            await saveMemory({
+              scope,
               namespace: "tool_builder",
               key: "automation_paused",
               value: true,
             });
           }
         }
-        await saveToolMemory({
-          toolId: project.id,
-          orgId: project.org_id,
+        await saveMemory({
+          scope,
           namespace: spec.memory.tool.namespace,
           key: lastKey,
           value: now,

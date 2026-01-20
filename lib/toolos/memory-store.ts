@@ -1,159 +1,145 @@
 import "server-only";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createHash } from "crypto";
+import { normalizeUUID } from "@/lib/utils";
+import {
+  MemoryAdapter,
+  MemoryAdapterError,
+  MemoryDeleteParams,
+  MemoryReadParams,
+  MemoryScope,
+  MemoryWriteParams,
+  createFallbackMemoryAdapter,
+} from "@/lib/toolos/memory/memory-adapter";
+import { createEphemeralMemoryAdapter } from "@/lib/toolos/memory/ephemeral-memory";
+import { createSupabaseMemoryAdapter, ensureSupabaseMemoryTables } from "@/lib/toolos/memory/supabase-memory";
 
-export async function loadToolMemory(params: {
-  toolId: string;
-  orgId: string;
-  namespace: string;
-  key: string;
-  userId?: string | null;
-}) {
-  const { toolId, orgId, namespace, key, userId } = params;
+export type { MemoryScope } from "@/lib/toolos/memory/memory-adapter";
+
+function normalizeSessionId(sessionId: string) {
+  const trimmed = sessionId.trim();
+  const normalized = normalizeUUID(trimmed);
+  if (normalized) return normalized;
+  const hash = createHash("sha256").update(trimmed).digest("hex").slice(0, 32);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+}
+
+function normalizeScope(scope: MemoryScope): MemoryScope {
+  if (scope.type === "session") {
+    const sessionId = typeof scope.sessionId === "string" ? scope.sessionId.trim() : "";
+    if (!sessionId) {
+      throw new Error("Invalid sessionId for memory scope");
+    }
+    return { type: "session", sessionId: normalizeSessionId(sessionId) };
+  }
+  if (scope.type === "tool") {
+    const toolId = normalizeUUID(scope.toolId);
+    if (!toolId) {
+      throw new Error("Invalid toolId for memory scope");
+    }
+    return { type: "tool", toolId };
+  }
+  if (scope.type === "tool_user") {
+    const toolId = normalizeUUID(scope.toolId);
+    const userId = normalizeUUID(scope.userId);
+    if (!toolId || !userId) {
+      throw new Error("Invalid tool_user scope");
+    }
+    return { type: "tool_user", toolId, userId };
+  }
+  if (scope.type === "tool_org") {
+    const toolId = normalizeUUID(scope.toolId);
+    const orgId = normalizeUUID(scope.orgId);
+    if (!toolId || !orgId) {
+      throw new Error("Invalid tool_org scope");
+    }
+    return { type: "tool_org", toolId, orgId };
+  }
+  if (scope.type === "user") {
+    const userId = normalizeUUID(scope.userId);
+    if (!userId) {
+      throw new Error("Invalid user scope");
+    }
+    return { type: "user", userId };
+  }
+  const orgId = normalizeUUID(scope.orgId);
+  if (!orgId) {
+    throw new Error("Invalid org scope");
+  }
+  return { type: "org", orgId };
+}
+
+let adapterPromise: Promise<MemoryAdapter> | null = null;
+let adapterFactoryOverride: (() => Promise<MemoryAdapter>) | null = null;
+let bootstrapPromise: Promise<void> | null = null;
+
+function startMemoryBootstrapCheck() {
+  if (bootstrapPromise) return bootstrapPromise;
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
+    bootstrapPromise = Promise.resolve();
+    return bootstrapPromise;
+  }
+  bootstrapPromise = (async () => {
+    try {
+      const { missingTables } = await ensureSupabaseMemoryTables();
+      if (missingTables.length > 0) {
+        console.warn(`[MemoryBootstrap] Missing memory tables: ${missingTables.join(", ")}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[MemoryBootstrap] Failed to check memory tables: ${message}`);
+    }
+  })();
+  return bootstrapPromise;
+}
+
+void startMemoryBootstrapCheck();
+
+async function createDefaultAdapter() {
+  const primary = createSupabaseMemoryAdapter();
+  const fallback = createEphemeralMemoryAdapter();
+  let initialPrimaryAvailable = true;
   try {
-    const supabase = await createSupabaseServerClient();
-    const { data, error } = await (supabase.from("tool_memory") as any)
-      .select("value")
-      .eq("tool_id", toolId)
-      .eq("org_id", orgId)
-      .eq("namespace", namespace)
-      .eq("key", key)
-      .eq("user_id", userId ?? null)
-      .maybeSingle();
-    if (error) {
-      if (error.message?.includes("tool_memory")) {
-        return await loadFallbackMemory(toolId, orgId, namespace, key, userId ?? null);
-      }
-      throw error;
-    }
-    return data?.value ?? null;
-  } catch (err) {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await (supabase.from("tool_memory") as any)
-      .select("value")
-      .eq("tool_id", toolId)
-      .eq("org_id", orgId)
-      .eq("namespace", namespace)
-      .eq("key", key)
-      .eq("user_id", userId ?? null)
-      .maybeSingle();
-    if (error) {
-      if (error.message?.includes("tool_memory")) {
-        return await loadFallbackMemory(toolId, orgId, namespace, key, userId ?? null);
-      }
-      throw new Error(`Failed to load tool memory: ${error.message}`);
-    }
-    return data?.value ?? null;
-  }
-}
-
-export async function saveToolMemory(params: {
-  toolId: string;
-  orgId: string;
-  namespace: string;
-  key: string;
-  value: any;
-  userId?: string | null;
-}) {
-  const { toolId, orgId, namespace, key, value, userId } = params;
-  const payload = {
-    tool_id: toolId,
-    org_id: orgId,
-    namespace,
-    key,
-    value,
-    user_id: userId ?? null,
-    updated_at: new Date().toISOString(),
-  };
-  try {
-    const supabase = await createSupabaseServerClient();
-    const { error } = await (supabase.from("tool_memory") as any).upsert(payload, {
-      onConflict: "org_id,tool_id,namespace,key,user_id",
-    });
-    if (error) {
-      if (error.message?.includes("tool_memory")) {
-        await saveFallbackMemory(toolId, orgId, namespace, key, value, userId ?? null);
-        return;
-      }
-      throw error;
+    const { missingTables } = await ensureSupabaseMemoryTables();
+    if (missingTables.length > 0) {
+      initialPrimaryAvailable = false;
     }
   } catch (err) {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await (supabase.from("tool_memory") as any).upsert(payload, {
-      onConflict: "org_id,tool_id,namespace,key,user_id",
-    });
-    if (error) {
-      if (error.message?.includes("tool_memory")) {
-        await saveFallbackMemory(toolId, orgId, namespace, key, value, userId ?? null);
-        return;
-      }
-      throw new Error(`Failed to save tool memory: ${error.message}`);
+    if (err instanceof MemoryAdapterError && err.kind === "missing_table") {
+      initialPrimaryAvailable = false;
+    } else {
+      initialPrimaryAvailable = false;
     }
   }
+  return createFallbackMemoryAdapter({ primary, fallback, initialPrimaryAvailable });
 }
 
-async function loadFallbackMemory(
-  toolId: string,
-  orgId: string,
-  namespace: string,
-  key: string,
-  userId: string | null,
-) {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("projects")
-    .select("spec")
-    .eq("id", toolId)
-    .eq("org_id", orgId)
-    .single();
-  if (error || !data?.spec) {
-    throw new Error(`Failed to load fallback memory: ${error?.message ?? "missing spec"}`);
+async function getAdapter() {
+  if (!adapterPromise) {
+    adapterPromise = (adapterFactoryOverride ?? createDefaultAdapter)();
   }
-  const spec = data.spec as Record<string, any>;
-  const store = (spec.runtimeMemory as Record<string, any>) ?? {};
-  const space = store[namespace] ?? {};
-  const scopeKey = userId ?? "tool";
-  return space?.[scopeKey]?.[key] ?? null;
+  return adapterPromise;
 }
 
-async function saveFallbackMemory(
-  toolId: string,
-  orgId: string,
-  namespace: string,
-  key: string,
-  value: any,
-  userId: string | null,
-) {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("projects")
-    .select("spec")
-    .eq("id", toolId)
-    .eq("org_id", orgId)
-    .single();
-  if (error || !data?.spec) {
-    throw new Error(`Failed to load fallback spec: ${error?.message ?? "missing spec"}`);
-  }
-  const spec = data.spec as Record<string, any>;
-  const runtimeMemory = (spec.runtimeMemory as Record<string, any>) ?? {};
-  const scopeKey = userId ?? "tool";
-  const namespaceMem = runtimeMemory[namespace] ?? {};
-  const scopedMem = namespaceMem[scopeKey] ?? {};
-  const nextRuntime = {
-    ...runtimeMemory,
-    [namespace]: {
-      ...namespaceMem,
-      [scopeKey]: { ...scopedMem, [key]: value },
-    },
-  };
-  const nextSpec = { ...spec, runtimeMemory: nextRuntime };
-  const { error: updateError } = await supabase
-    .from("projects")
-    .update({ spec: nextSpec })
-    .eq("id", toolId)
-    .eq("org_id", orgId);
-  if (updateError) {
-    throw new Error(`Failed to save fallback memory: ${updateError.message}`);
-  }
+export function setMemoryAdapterFactory(factory: (() => Promise<MemoryAdapter>) | null) {
+  adapterFactoryOverride = factory;
+  adapterPromise = null;
+}
+
+export async function loadMemory(params: MemoryReadParams) {
+  const { scope, namespace, key } = params;
+  const adapter = await getAdapter();
+  return await adapter.get({ scope: normalizeScope(scope), namespace, key });
+}
+
+export async function saveMemory(params: MemoryWriteParams) {
+  const { scope, namespace, key, value } = params;
+  const adapter = await getAdapter();
+  await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
+}
+
+export async function deleteMemory(params: MemoryDeleteParams) {
+  const { scope, namespace, key } = params;
+  const adapter = await getAdapter();
+  await adapter.delete({ scope: normalizeScope(scope), namespace, key });
 }

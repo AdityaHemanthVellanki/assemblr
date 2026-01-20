@@ -2,7 +2,7 @@ import { ToolSystemSpec, WorkflowSpec, WorkflowNode } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { loadToolState } from "@/lib/toolos/state-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
-import { loadToolMemory } from "@/lib/toolos/memory-store";
+import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 export async function runWorkflow(params: {
   orgId: string;
@@ -17,12 +17,12 @@ export async function runWorkflow(params: {
   if (!workflow) {
     throw new Error(`Workflow ${workflowId} not found`);
   }
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId };
   const order = topologicalOrder(workflow);
   const nodeResults: Record<string, any> = {};
   const actionMap = new Map(spec.actions.map((action) => [action.id, action]));
-  const paused = await loadToolMemory({
-    toolId,
-    orgId,
+  const paused = await loadMemory({
+    scope,
     namespace: "tool_builder",
     key: "automation_paused",
   });
