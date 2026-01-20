@@ -6,6 +6,7 @@ import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { compileToolSystem } from "@/lib/toolos/compiler";
+import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { executeToolAction } from "@/lib/toolos/runtime";
@@ -105,9 +106,10 @@ export async function processToolChat(
   const steps = createBuildSteps();
   const builderNamespace = "tool_builder";
   const machine = new ToolBuildStateMachine();
+  const builderSessionId = `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`;
   const builderScope: MemoryScope = {
     type: "session",
-    sessionId: `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`,
+    sessionId: builderSessionId,
   };
   const pendingQuestions = await loadMemory({
     scope: builderScope,
@@ -140,19 +142,42 @@ export async function processToolChat(
   };
 
   try {
-    markStep(steps, "intent", "running", "Parsing prompt and intent");
-    const intentStart = Date.now();
-    const intentAgent = await withTimeout(
-      runIntentAgent(prompt, consumeTokens),
-      TIME_BUDGETS.intentMs,
-      "Intent parsing exceeded time budget",
-    );
-    const intentDuration = Date.now() - intentStart;
-    if (intentDuration > TIME_BUDGETS.intentMs) {
-      appendStep(stepsById.get("intent"), `Intent parsing slow (${intentDuration}ms).`);
-    }
-    const clarifications = limitClarifications(mergeClarifications(intentAgent.clarifications, prompt));
-    if (!pendingQuestions && clarifications.length > 0) {
+    const stageToStep: Record<string, string> = {
+      "understand-purpose": "intent",
+      "extract-entities": "entities",
+      "resolve-integrations": "integrations",
+      "define-actions": "actions",
+      "build-workflows": "workflows",
+      "design-views": "views",
+      "validate-spec": "compile",
+    };
+    const compilerResult = await ToolCompiler.run({
+      prompt,
+      sessionId: builderSessionId,
+      userId: input.userId,
+      orgId: input.orgId,
+      toolId: input.toolId,
+      connectedIntegrationIds: input.connectedIntegrationIds,
+      onUsage: consumeTokens,
+      onProgress: (event) => {
+        const stepId = stageToStep[event.stage];
+        if (!stepId) return;
+        if (event.status === "started") {
+          markStep(steps, stepId, "running", event.message);
+          return;
+        }
+        if (event.status === "completed") {
+          markStep(steps, stepId, "success", event.message);
+          return;
+        }
+        markStep(steps, stepId, "error", event.message);
+      },
+    });
+
+    spec = canonicalizeToolSpec(compilerResult.spec);
+    machine.transition("INTENT_PARSED", "ToolSpec generated");
+    if (compilerResult.status === "awaiting_clarification" && compilerResult.clarifications.length > 0) {
+      const clarifications = limitClarifications(compilerResult.clarifications);
       markStep(steps, "intent", "error", "Clarifications required");
       machine.transition("AWAITING_CLARIFICATION", "Clarifications required", "warn");
       await saveMemory({
@@ -170,18 +195,17 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed",
         message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        metadata: { persist: false, build_steps: steps, clarifications, state: machine.state, build_logs: machine.logs },
+        spec,
+        metadata: {
+          persist: true,
+          build_steps: steps,
+          clarifications,
+          state: machine.state,
+          build_logs: machine.logs,
+        },
       };
     }
 
-    spec = await generateIntent(prompt, consumeTokens);
-    spec = canonicalizeToolSpec(spec);
-    machine.transition("INTENT_PARSED", "ToolSpec generated");
-    markStep(steps, "intent", "success", "Intent captured");
-    markStep(steps, "entities", "success", `Entities: ${spec.entities.map((e) => e.name).join(", ") || "none"}`);
-    markStep(steps, "integrations", "success", `Integrations: ${spec.integrations.map((i) => i.id).join(", ") || "none"}`);
-    markStep(steps, "actions", "success", `Actions: ${spec.actions.length}`);
-    markStep(steps, "workflows", "success", `Workflows: ${spec.workflows.length}`);
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
     compileToolSystem(spec);
     markStep(steps, "compile", "success", "Runtime compiled");
