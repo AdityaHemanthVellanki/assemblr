@@ -14,7 +14,8 @@ export class LinearRuntime implements IntegrationRuntime {
 
   checkPermissions(capabilityId: string, userPermissions: Permission[]) {
       const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
-      const allowed = checkPermission(perms, this.id, capabilityId, "read");
+      const access = WRITE_CAPABILITIES.has(capabilityId) ? "write" : "read";
+      const allowed = checkPermission(perms, this.id, capabilityId, access);
       if (!allowed) {
           throw new PermissionDeniedError(this.id, capabilityId);
       }
@@ -132,9 +133,153 @@ export class LinearRuntime implements IntegrationRuntime {
             }
         }
     };
+
+    this.capabilities["linear_issue_update_status"] = {
+        id: "linear_issue_update_status",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            issueId: z.string(),
+            stateId: z.string(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const query = `mutation IssueUpdate($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success issue { id state { id name } } } }`;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { id: params.issueId, stateId: params.stateId } }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.issueUpdate ?? {};
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_issue_update_status",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_issue_assign"] = {
+        id: "linear_issue_assign",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            issueId: z.string(),
+            assigneeId: z.string(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const query = `mutation IssueAssign($id: String!, $assigneeId: String!) { issueUpdate(id: $id, input: { assigneeId: $assigneeId }) { success issue { id assignee { id name } } } }`;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { id: params.issueId, assigneeId: params.assigneeId } }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.issueUpdate ?? {};
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_issue_assign",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_issue_comment"] = {
+        id: "linear_issue_comment",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            issueId: z.string(),
+            body: z.string(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const query = `mutation CommentCreate($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success comment { id body } } }`;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { issueId: params.issueId, body: params.body } }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.commentCreate ?? {};
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_issue_comment",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
   }
 
   async resolveContext(token: string) {
     return { token };
   }
 }
+
+const WRITE_CAPABILITIES = new Set([
+  "linear_issue_update_status",
+  "linear_issue_assign",
+  "linear_issue_comment",
+]);

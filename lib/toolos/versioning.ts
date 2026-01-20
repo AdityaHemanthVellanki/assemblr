@@ -53,6 +53,11 @@ export async function promoteToolVersion(params: { toolId: string; versionId: st
   if (error || !data) {
     throw new Error("Version not found");
   }
+  await (supabase.from("tool_versions") as any)
+    .update({ status: "archived" })
+    .eq("tool_id", params.toolId)
+    .eq("status", "active")
+    .neq("id", params.versionId);
   await (supabase.from("projects") as any).update({
     spec: data.tool_spec,
     active_version_id: params.versionId,

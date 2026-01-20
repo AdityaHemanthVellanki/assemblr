@@ -4,12 +4,14 @@ import * as React from "react";
 import { Share, User } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { ToolRenderer } from "@/components/dashboard/tool-renderer";
+import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 
 interface ProjectWorkspaceProps {
   project?: {
@@ -24,11 +26,13 @@ interface ProjectWorkspaceProps {
       action?: "connect_integration";
     };
   }>;
+  role: OrgRole;
 }
 
 export function ProjectWorkspace({
   project,
   initialMessages,
+  role,
 }: ProjectWorkspaceProps) {
   // State
   const [inputValue, setInputValue] = React.useState("");
@@ -39,6 +43,13 @@ export function ProjectWorkspace({
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
   const [showBuildSteps, setShowBuildSteps] = React.useState(true);
   const [showChat, setShowChat] = React.useState(true);
+  const [showVersions, setShowVersions] = React.useState(false);
+  const [versionsLoading, setVersionsLoading] = React.useState(false);
+  const [versionsError, setVersionsError] = React.useState<string | null>(null);
+  const [versions, setVersions] = React.useState<VersionSummary[]>([]);
+  const [selectedVersionId, setSelectedVersionId] = React.useState<string | null>(null);
+  const [activeVersionId, setActiveVersionId] = React.useState<string | null>(null);
+  const [promotingVersionId, setPromotingVersionId] = React.useState<string | null>(null);
 
   // Derived state
   const isZeroState = messages.length === 0;
@@ -63,6 +74,57 @@ export function ProjectWorkspace({
       console.error(e);
     }
   }, [headerTitle]);
+
+  const loadVersions = React.useCallback(async () => {
+    if (!toolId) return;
+    setVersionsLoading(true);
+    setVersionsError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/versions`);
+      const payload = await res.json();
+      if (!res.ok) {
+        setVersionsError(payload?.error ?? "Failed to load versions");
+        setVersions([]);
+        return;
+      }
+      setVersions(payload.versions ?? []);
+      setActiveVersionId(payload.active_version_id ?? null);
+      if (!selectedVersionId && payload.versions?.[0]?.id) {
+        setSelectedVersionId(payload.versions[0].id);
+      }
+    } catch (err) {
+      setVersionsError(err instanceof Error ? err.message : "Failed to load versions");
+      setVersions([]);
+    } finally {
+      setVersionsLoading(false);
+    }
+  }, [toolId, selectedVersionId]);
+
+  const promoteVersion = React.useCallback(
+    async (versionId: string) => {
+      if (!toolId) return;
+      setPromotingVersionId(versionId);
+      try {
+        const res = await fetch(`/api/tools/${toolId}/versions/${versionId}/promote`, { method: "POST" });
+        const payload = await res.json();
+        if (!res.ok) {
+          setVersionsError(payload?.error ?? "Failed to promote version");
+          return;
+        }
+        setActiveVersionId(versionId);
+        const promoted = versions.find((v) => v.id === versionId);
+        if (promoted?.tool_spec) {
+          setCurrentSpec(promoted.tool_spec);
+        }
+        await loadVersions();
+      } catch (err) {
+        setVersionsError(err instanceof Error ? err.message : "Failed to promote version");
+      } finally {
+        setPromotingVersionId(null);
+      }
+    },
+    [toolId, versions, loadVersions],
+  );
 
   const handleSubmit = async () => {
     if (!inputValue.trim()) return;
@@ -133,6 +195,19 @@ export function ProjectWorkspace({
           <div className="flex-1" />
           <div className="font-semibold">{headerTitle}</div>
           <div className="flex-1 flex justify-end items-center gap-4">
+            {toolId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-2 text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setShowVersions(true);
+                  void loadVersions();
+                }}
+              >
+                Versions
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -227,8 +302,179 @@ export function ProjectWorkspace({
           </div>
         )}
       </div>
+      <Dialog open={showVersions} onOpenChange={setShowVersions}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Tool Versions</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6">
+            <ScrollArea className="h-[420px] rounded-md border border-border/60">
+              <div className="divide-y divide-border/60">
+                {versionsLoading ? (
+                  <div className="p-4 text-sm text-muted-foreground">Loading versions…</div>
+                ) : versions.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">No versions found.</div>
+                ) : (
+                  versions.map((version) => {
+                    const isActive = activeVersionId === version.id;
+                    const isSelected = selectedVersionId === version.id;
+                    return (
+                      <button
+                        key={version.id}
+                        className={[
+                          "w-full px-4 py-3 text-left text-sm transition",
+                          isSelected ? "bg-muted/60" : "hover:bg-muted/40",
+                        ].join(" ")}
+                        onClick={() => setSelectedVersionId(version.id)}
+                        type="button"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium">{version.prompt_used}</div>
+                          <div className="flex items-center gap-2 text-xs">
+                            {version.breaking_change && (
+                              <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-700">
+                                Breaking
+                              </span>
+                            )}
+                            <span className="rounded-full border border-border/60 px-2 py-0.5">
+                              {version.status}
+                            </span>
+                            {isActive && (
+                              <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-700">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                          <span>{new Date(version.created_at).toLocaleString()}</span>
+                          <span>Workflows: {version.workflows_count}</span>
+                          <span>Triggers: {version.triggers_count}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Integrations: {version.integrations_used.join(", ") || "none"}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </ScrollArea>
+            <div className="flex h-[420px] flex-col rounded-md border border-border/60 p-4">
+              {versionsError && (
+                <div className="mb-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700">
+                  {versionsError}
+                </div>
+              )}
+              {!selectedVersionId ? (
+                <div className="text-sm text-muted-foreground">Select a version to view details.</div>
+              ) : (
+                <VersionDetails
+                  version={versions.find((v) => v.id === selectedVersionId) ?? null}
+                  canPromote={canEditProjects(role)}
+                  isActive={activeVersionId === selectedVersionId}
+                  promoting={promotingVersionId === selectedVersionId}
+                  onPromote={promoteVersion}
+                />
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+type VersionSummary = {
+  id: string;
+  status: string;
+  created_at: string;
+  created_by: string | null;
+  prompt_used: string;
+  integrations_used: string[];
+  workflows_count: number;
+  triggers_count: number;
+  breaking_change: boolean;
+  diff: Record<string, any> | null;
+  tool_spec: ToolSpec;
+};
+
+function VersionDetails({
+  version,
+  canPromote,
+  isActive,
+  promoting,
+  onPromote,
+}: {
+  version: VersionSummary | null;
+  canPromote: boolean;
+  isActive: boolean;
+  promoting: boolean;
+  onPromote: (id: string) => void;
+}) {
+  if (!version) {
+    return <div className="text-sm text-muted-foreground">Select a version to view details.</div>;
+  }
+  const diffEntries = formatDiff(version.diff);
+  return (
+    <div className="flex h-full flex-col gap-4">
+      <div className="space-y-2 text-sm">
+        <div className="flex items-center justify-between">
+          <div className="font-semibold">{version.prompt_used}</div>
+          <div className="text-xs text-muted-foreground">{new Date(version.created_at).toLocaleString()}</div>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <span>Status: {version.status}</span>
+          <span>Workflows: {version.workflows_count}</span>
+          <span>Triggers: {version.triggers_count}</span>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Integrations: {version.integrations_used.join(", ") || "none"}
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto rounded-md border border-border/60 p-3 text-xs">
+        {diffEntries.length === 0 ? (
+          <div className="text-muted-foreground">No spec-level diff available.</div>
+        ) : (
+          <div className="space-y-2">
+            {diffEntries.map((entry) => (
+              <div key={entry.label} className="flex items-start justify-between gap-4 border-b border-border/40 pb-2 last:border-b-0">
+                <div className="font-medium text-foreground">{entry.label}</div>
+                <div className="text-muted-foreground">{entry.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {version.breaking_change ? "Breaking change detected" : "No breaking changes"}
+        </div>
+        <Button
+          size="sm"
+          disabled={!canPromote || isActive || promoting}
+          onClick={() => onPromote(version.id)}
+        >
+          {isActive ? "Active" : promoting ? "Promoting…" : "Roll back"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function formatDiff(diff: Record<string, any> | null) {
+  if (!diff) return [];
+  const entries: Array<{ label: string; value: string }> = [];
+  for (const [key, value] of Object.entries(diff)) {
+    if (typeof value === "boolean") {
+      if (value) entries.push({ label: key.replace(/_/g, " "), value: "true" });
+      continue;
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      entries.push({ label: key.replace(/_/g, " "), value: value.join(", ") });
+    }
+  }
+  return entries;
 }
 
 function defaultBuildSteps(): BuildStep[] {

@@ -13,7 +13,8 @@ export class GoogleRuntime implements IntegrationRuntime {
 
   checkPermissions(capabilityId: string, userPermissions: Permission[]) {
       const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
-      const allowed = checkPermission(perms, this.id, capabilityId, "read");
+      const access = WRITE_CAPABILITIES.has(capabilityId) ? "write" : "read";
+      const allowed = checkPermission(perms, this.id, capabilityId, access);
       if (!allowed) {
           throw new PermissionDeniedError(this.id, capabilityId);
       }
@@ -161,5 +162,136 @@ export class GoogleRuntime implements IntegrationRuntime {
         }
       }
     };
+
+    this.capabilities["google_gmail_reply"] = {
+      id: "google_gmail_reply",
+      integrationId: "google",
+      paramsSchema: z.object({
+        messageId: z.string(),
+        body: z.string(),
+        subject: z.string().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        try {
+          const messageRes = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${params.messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`,
+            { headers: { Authorization: `Bearer ${token}` } },
+          );
+          if (!messageRes.ok) throw new Error(`Gmail API error: ${messageRes.statusText}`);
+          const message = await messageRes.json();
+          const headers = Array.isArray(message.payload?.headers) ? message.payload.headers : [];
+          const fromHeader = headers.find((h: any) => h.name?.toLowerCase() === "from");
+          const subjectHeader = headers.find((h: any) => h.name?.toLowerCase() === "subject");
+          const to = fromHeader?.value ?? "";
+          const subject = params.subject ?? `Re: ${subjectHeader?.value ?? ""}`.trim();
+          const raw = buildRawEmail({ to, subject, body: params.body });
+          const sendRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ raw, threadId: message.threadId }),
+          });
+          if (!sendRes.ok) throw new Error(`Gmail send error: ${sendRes.statusText}`);
+          return await sendRes.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_gmail_reply",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+          });
+        }
+      },
+    };
+
+    this.capabilities["google_gmail_archive"] = {
+      id: "google_gmail_archive",
+      integrationId: "google",
+      paramsSchema: z.object({
+        messageId: z.string(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        try {
+          const res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${params.messageId}/modify`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ removeLabelIds: ["INBOX"] }),
+            },
+          );
+          if (!res.ok) throw new Error(`Gmail modify error: ${res.statusText}`);
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_gmail_archive",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+          });
+        }
+      },
+    };
+
+    this.capabilities["google_gmail_label"] = {
+      id: "google_gmail_label",
+      integrationId: "google",
+      paramsSchema: z.object({
+        messageId: z.string(),
+        labelIds: z.array(z.string()),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        try {
+          const res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${params.messageId}/modify`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ addLabelIds: params.labelIds }),
+            },
+          );
+          if (!res.ok) throw new Error(`Gmail modify error: ${res.statusText}`);
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_gmail_label",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+          });
+        }
+      },
+    };
   }
+}
+
+const WRITE_CAPABILITIES = new Set([
+  "google_gmail_reply",
+  "google_gmail_archive",
+  "google_gmail_label",
+]);
+
+function buildRawEmail(params: { to: string; subject: string; body: string }) {
+  const raw = [`To: ${params.to}`, `Subject: ${params.subject}`, "", params.body].join("\r\n");
+  return Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }

@@ -62,16 +62,23 @@ export async function executeToolAction(params: {
     : null;
   const runLogs: Array<Record<string, any>> = [];
   if (run) {
+    const startedAt = new Date().toISOString();
     runLogs.push({
-      timestamp: new Date().toISOString(),
-      status: "pending",
-      message: `Executing ${action.id}`,
+      id: `${action.id}:start`,
+      timestamp: startedAt,
+      status: "running",
+      actionId: action.id,
+      integrationId: action.integrationId,
+      capabilityId: action.capabilityId,
+      input: sanitizeLogData(input),
+      retries: 0,
     });
     await updateExecutionRun({ runId: run.id, status: "running", currentStep: action.id, logs: runLogs });
   }
 
   let output: any;
   try {
+    const startedAt = Date.now();
     const token = await getValidAccessToken(orgId, action.integrationId);
     const context = await runtime.resolveContext(token);
     if (runtime.checkPermissions) {
@@ -80,19 +87,31 @@ export async function executeToolAction(params: {
     const tracer = new ExecutionTracer("run");
     output = await executor.execute(input, context, tracer);
     if (run) {
+      const durationMs = Date.now() - startedAt;
       runLogs.push({
+        id: `${action.id}:done`,
         timestamp: new Date().toISOString(),
         status: "done",
-        message: `Completed ${action.id}`,
+        actionId: action.id,
+        integrationId: action.integrationId,
+        capabilityId: action.capabilityId,
+        durationMs,
+        output: summarizeOutput(output),
       });
       await updateExecutionRun({ runId: run.id, status: "completed", currentStep: action.id, logs: runLogs });
     }
   } catch (err) {
     if (run) {
+      const durationMs = runLogs.length ? Date.now() - Date.parse(runLogs[0].timestamp) : undefined;
       runLogs.push({
+        id: `${action.id}:failed`,
         timestamp: new Date().toISOString(),
         status: "failed",
-        message: `Failed ${action.id}: ${err instanceof Error ? err.message : "error"}`,
+        actionId: action.id,
+        integrationId: action.integrationId,
+        capabilityId: action.capabilityId,
+        durationMs,
+        error: err instanceof Error ? err.message : "error",
       });
       await updateExecutionRun({ runId: run.id, status: "failed", currentStep: action.id, logs: runLogs });
     }
@@ -197,4 +216,51 @@ function applyReducer(
     return { ...state, [reducer.target]: current.filter((item: any) => !removeIds.has(String(item?.id ?? item))) };
   }
   return state;
+}
+
+function sanitizeLogData(value: any, depth = 0): any {
+  if (depth > 3) return "[truncated]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return value.length > 500 ? value.slice(0, 500) : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeLogData(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [key, val] of Object.entries(value)) {
+      if (shouldRedactKey(key)) {
+        out[key] = "[redacted]";
+        continue;
+      }
+      out[key] = sanitizeLogData(val, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function shouldRedactKey(key: string) {
+  const lower = key.toLowerCase();
+  return (
+    lower.includes("token") ||
+    lower.includes("secret") ||
+    lower.includes("password") ||
+    lower.includes("authorization") ||
+    lower.includes("api_key")
+  );
+}
+
+function summarizeOutput(output: any) {
+  if (Array.isArray(output)) {
+    const sample = output.slice(0, 3).map((item) => sanitizeLogData(item));
+    return { type: "array", count: output.length, sample };
+  }
+  if (typeof output === "object" && output !== null) {
+    const keys = Object.keys(output);
+    return { type: "object", keys, sample: sanitizeLogData(output) };
+  }
+  return sanitizeLogData(output);
 }

@@ -13,7 +13,7 @@ export async function GET(
 
   const { data, error } = await supabase
     .from("execution_runs")
-    .select("id, status, current_step, retries, created_at, updated_at")
+    .select("id, status, current_step, retries, action_id, workflow_id, logs, created_at, updated_at")
     .eq("tool_id", toolId)
     .eq("org_id", ctx.orgId)
     .order("created_at", { ascending: false })

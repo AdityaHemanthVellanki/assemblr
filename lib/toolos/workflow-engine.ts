@@ -19,6 +19,7 @@ export async function runWorkflow(params: {
   }
   const order = topologicalOrder(workflow);
   const nodeResults: Record<string, any> = {};
+  const actionMap = new Map(spec.actions.map((action) => [action.id, action]));
   const paused = await loadToolMemory({
     toolId,
     orgId,
@@ -57,21 +58,31 @@ export async function runWorkflow(params: {
       await updateExecutionRun({ runId: run.id, currentStep: node.id });
       const retryPolicy = workflow.retryPolicy;
       let attempts = 0;
+      const inputPayload = { ...input, ...(nodeResults[node.id] ?? {}) };
+      const actionSpec = actionMap.get(node.actionId);
       while (true) {
+        const startedAt = Date.now();
         try {
           const result = await executeToolAction({
             orgId,
             toolId,
             spec,
             actionId: node.actionId,
-            input: { ...input, ...(nodeResults[node.id] ?? {}) },
+            input: inputPayload,
             recordRun: false,
           });
           nodeResults[node.id] = result.output;
           runLogs.push({
+            id: `${node.id}:done`,
             timestamp: new Date().toISOString(),
             status: "done",
-            message: `Executed ${node.actionId}`,
+            actionId: node.actionId,
+            integrationId: actionSpec?.integrationId,
+            capabilityId: actionSpec?.capabilityId,
+            durationMs: Date.now() - startedAt,
+            retries: attempts,
+            input: sanitizeLogData(inputPayload),
+            output: summarizeOutput(result.output),
           });
           await updateExecutionRun({
             runId: run.id,
@@ -82,9 +93,16 @@ export async function runWorkflow(params: {
           attempts += 1;
           if (attempts > retryPolicy.maxRetries) {
             runLogs.push({
+              id: `${node.id}:failed`,
               timestamp: new Date().toISOString(),
               status: "failed",
-              message: `Failed ${node.actionId}: ${err instanceof Error ? err.message : "error"}`,
+              actionId: node.actionId,
+              integrationId: actionSpec?.integrationId,
+              capabilityId: actionSpec?.capabilityId,
+              durationMs: Date.now() - startedAt,
+              retries: attempts,
+              input: sanitizeLogData(inputPayload),
+              error: err instanceof Error ? err.message : "error",
             });
             await updateExecutionRun({
               runId: run.id,
@@ -105,9 +123,10 @@ export async function runWorkflow(params: {
       const value = resolveStatePath(state, path);
       if (!value) {
         runLogs.push({
+          id: `${node.id}:blocked`,
           timestamp: new Date().toISOString(),
           status: "blocked",
-          message: `Blocked on condition ${path}`,
+          condition: path,
         });
         await updateExecutionRun({
           runId: run.id,
@@ -125,9 +144,10 @@ export async function runWorkflow(params: {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
       }
       runLogs.push({
+        id: `${node.id}:done`,
         timestamp: new Date().toISOString(),
         status: "done",
-        message: `Waited ${waitMs}ms`,
+        waitMs,
       });
       await updateExecutionRun({
         runId: run.id,
@@ -139,9 +159,10 @@ export async function runWorkflow(params: {
     if (node.type === "transform") {
       nodeResults[node.id] = nodeResults[node.id] ?? input;
       runLogs.push({
+        id: `${node.id}:done`,
         timestamp: new Date().toISOString(),
         status: "done",
-        message: `Transformed ${node.id}`,
+        transform: node.transform ?? null,
       });
       await updateExecutionRun({
         runId: run.id,
@@ -208,4 +229,51 @@ function resolveStatePath(state: Record<string, any>, path: string) {
     current = current[part];
   }
   return current ?? null;
+}
+
+function sanitizeLogData(value: any, depth = 0): any {
+  if (depth > 3) return "[truncated]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return value.length > 500 ? value.slice(0, 500) : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeLogData(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [key, val] of Object.entries(value)) {
+      if (shouldRedactKey(key)) {
+        out[key] = "[redacted]";
+        continue;
+      }
+      out[key] = sanitizeLogData(val, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function shouldRedactKey(key: string) {
+  const lower = key.toLowerCase();
+  return (
+    lower.includes("token") ||
+    lower.includes("secret") ||
+    lower.includes("password") ||
+    lower.includes("authorization") ||
+    lower.includes("api_key")
+  );
+}
+
+function summarizeOutput(output: any) {
+  if (Array.isArray(output)) {
+    const sample = output.slice(0, 3).map((item) => sanitizeLogData(item));
+    return { type: "array", count: output.length, sample };
+  }
+  if (typeof output === "object" && output !== null) {
+    const keys = Object.keys(output);
+    return { type: "object", keys, sample: sanitizeLogData(output) };
+  }
+  return sanitizeLogData(output);
 }

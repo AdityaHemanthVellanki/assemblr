@@ -16,7 +16,8 @@ export class GitHubRuntime implements IntegrationRuntime {
       // or enforce strict check.
       // The requirement says: "Runtime must hard-fail unauthorized access"
       const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
-      const allowed = checkPermission(perms, this.id, capabilityId, "read"); // Assume read for these fetchers
+      const access = WRITE_CAPABILITIES.has(capabilityId) ? "write" : "read";
+      const allowed = checkPermission(perms, this.id, capabilityId, access);
       if (!allowed) {
           throw new PermissionDeniedError(this.id, capabilityId);
       }
@@ -163,6 +164,143 @@ export class GitHubRuntime implements IntegrationRuntime {
             }
         }
     };
+
+    this.capabilities["github_issue_comment"] = {
+        id: "github_issue_comment",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            issueNumber: z.number(),
+            body: z.string(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, issueNumber, body } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ body }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_issue_comment",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url },
+                });
+            }
+        },
+    };
+
+    this.capabilities["github_issue_close"] = {
+        id: "github_issue_close",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            issueNumber: z.number(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, issueNumber } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    method: "PATCH",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ state: "closed" }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_issue_close",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url },
+                });
+            }
+        },
+    };
+
+    this.capabilities["github_issue_assign"] = {
+        id: "github_issue_assign",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            issueNumber: z.number(),
+            assignees: z.array(z.string()),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, issueNumber, assignees } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    method: "PATCH",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ assignees }),
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_issue_assign",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url },
+                });
+            }
+        },
+    };
   }
 
   async resolveContext(token: string): Promise<Record<string, any>> {
@@ -179,3 +317,9 @@ export class GitHubRuntime implements IntegrationRuntime {
       };
   }
 }
+
+const WRITE_CAPABILITIES = new Set([
+  "github_issue_comment",
+  "github_issue_close",
+  "github_issue_assign",
+]);

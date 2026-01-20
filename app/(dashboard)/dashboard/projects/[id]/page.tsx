@@ -77,6 +77,7 @@ export default async function ProjectPage({
     <ProjectWorkspace
       project={{ id: projectRes.data.id, spec }}
       initialMessages={messages}
+      role={role}
     />
   );
 }

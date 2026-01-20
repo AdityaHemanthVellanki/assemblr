@@ -80,6 +80,62 @@ const TextInputComponent = ({ component, state, onEvent }: ComponentProps) => {
   );
 };
 
+const CheckboxComponent = ({ component, state, onEvent }: ComponentProps) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const checked = bindKey ? Boolean(state[bindKey]) : Boolean(component.properties?.checked);
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onEvent("onChange", { value: e.target.checked, bindKey })}
+      />
+      {component.label || component.properties?.label || "Checkbox"}
+    </label>
+  );
+};
+
+const DatePickerComponent = ({ component, state, onEvent }: ComponentProps) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const value = bindKey ? state[bindKey] || "" : "";
+  return (
+    <div className="space-y-2">
+      {component.label && <label className="text-sm font-medium">{component.label}</label>}
+      <Input
+        type="date"
+        value={value}
+        onChange={(e) => onEvent("onChange", { value: e.target.value, bindKey })}
+      />
+    </div>
+  );
+};
+
+const TabsComponent = ({ component, renderChildren }: ComponentProps) => {
+  const children = component.children || [];
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const active = children[activeIndex];
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {children.map((child: any, index: number) => (
+          <button
+            key={child.id || index}
+            className={[
+              "rounded-md border px-3 py-1 text-xs",
+              index === activeIndex ? "border-primary text-foreground" : "border-border/60 text-muted-foreground",
+            ].join(" ")}
+            type="button"
+            onClick={() => setActiveIndex(index)}
+          >
+            {child.label || child.name || `Tab ${index + 1}`}
+          </button>
+        ))}
+      </div>
+      {renderChildren && active ? renderChildren([active]) : null}
+    </div>
+  );
+};
+
 const SelectComponent = ({ component, state, onEvent }: ComponentProps) => {
   const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
   const value = bindKey ? state[bindKey] || "" : undefined;
@@ -373,12 +429,11 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRenderer> = {
   metric: simple(TextComponent), 
   chart: simple(LineChartComponent), 
 
-  // Stubs for other required types
-  Checkbox: simple(TextInputComponent, ["onChange"]), // Placeholder
-  DatePicker: simple(TextInputComponent, ["onChange"]), // Placeholder
-  Grid: simple(ContainerComponent), // Alias
-  Tabs: simple(ContainerComponent), // Placeholder
-  Markdown: simple(TextComponent), // Alias
+  Checkbox: simple(CheckboxComponent, ["onChange"]),
+  DatePicker: simple(DatePickerComponent, ["onChange"]),
+  Grid: simple(ContainerComponent),
+  Tabs: simple(TabsComponent),
+  Markdown: simple(TextComponent),
 };
 
 export function getComponent(type: string): ComponentRenderer {

@@ -5,6 +5,7 @@ export default function ChatPage() {
     <ProjectWorkspace 
       project={null}
       initialMessages={[]}
+      role="viewer"
     />
   );
 }

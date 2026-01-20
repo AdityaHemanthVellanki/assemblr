@@ -5,6 +5,8 @@ import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec, type ViewSpec, type ActionSpec } from "@/lib/toolos/spec";
 import { getCapability } from "@/lib/capabilities/registry";
 import { linkEntities } from "@/lib/toolos/linking-engine";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 
 type DataEvidence = {
   integration: string;
@@ -23,6 +25,34 @@ type ViewProjection = {
   actions: string[];
 };
 
+type TriggerSummary = {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  actionId?: string | null;
+  workflowId?: string | null;
+  condition: Record<string, any>;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  failure_count?: number;
+};
+
+type TriggerDraft = {
+  cron: string;
+  intervalMinutes: number;
+  failureThreshold: number;
+  enabled: boolean;
+};
+
+type BudgetSummary = {
+  budget: { monthlyLimit: number; perRunLimit: number };
+  usage: { monthKey: string; tokensUsed: number };
+  costEstimate: number;
+  projectedMonthlyTokens: number;
+  projectedMonthlyCost: number;
+};
+
 export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec | null }) {
   const [activeViewId, setActiveViewId] = React.useState<string | null>(null);
   const [projection, setProjection] = React.useState<ViewProjection | null>(null);
@@ -35,6 +65,18 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [runs, setRuns] = React.useState<Array<Record<string, any>>>([]);
   const [paused, setPaused] = React.useState(false);
   const autoFetchedRef = React.useRef<string | null>(null);
+  const [runInspectorOpen, setRunInspectorOpen] = React.useState(false);
+  const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null);
+  const [runDetails, setRunDetails] = React.useState<Record<string, any> | null>(null);
+  const [runDetailsLoading, setRunDetailsLoading] = React.useState(false);
+  const [scrubIndex, setScrubIndex] = React.useState(0);
+  const [triggers, setTriggers] = React.useState<TriggerSummary[]>([]);
+  const [triggersLoading, setTriggersLoading] = React.useState(false);
+  const [triggersError, setTriggersError] = React.useState<string | null>(null);
+  const [triggerDrafts, setTriggerDrafts] = React.useState<Record<string, TriggerDraft>>({});
+  const [budgetInfo, setBudgetInfo] = React.useState<BudgetSummary | null>(null);
+  const [budgetLoading, setBudgetLoading] = React.useState(false);
+  const [budgetDraft, setBudgetDraft] = React.useState<{ monthlyLimit: number; perRunLimit: number } | null>(null);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
@@ -109,6 +151,118 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     }
   }, [toolId]);
 
+  const fetchTriggers = React.useCallback(async () => {
+    setTriggersLoading(true);
+    setTriggersError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/triggers`);
+      const payload = await res.json();
+      if (!res.ok) {
+        setTriggersError(payload?.error ?? "Failed to load triggers");
+        setTriggers([]);
+        return;
+      }
+      const items = Array.isArray(payload.triggers) ? payload.triggers : [];
+      setTriggers(items);
+      setPaused(payload.paused === true);
+      setTriggerDrafts((prev) => {
+        const next = { ...prev };
+        for (const trigger of items) {
+          if (!next[trigger.id]) {
+            next[trigger.id] = {
+              cron: trigger.condition?.cron ?? "",
+              intervalMinutes: trigger.condition?.intervalMinutes ?? 1,
+              failureThreshold: trigger.condition?.failureThreshold ?? 0,
+              enabled: trigger.enabled,
+            };
+          }
+        }
+        return next;
+      });
+    } catch (err) {
+      setTriggersError(err instanceof Error ? err.message : "Failed to load triggers");
+      setTriggers([]);
+    } finally {
+      setTriggersLoading(false);
+    }
+  }, [toolId]);
+
+  const fetchBudget = React.useCallback(async () => {
+    setBudgetLoading(true);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/budget`);
+      const payload = await res.json();
+      if (res.ok) {
+        setBudgetInfo(payload);
+        setBudgetDraft({
+          monthlyLimit: payload?.budget?.monthlyLimit ?? 0,
+          perRunLimit: payload?.budget?.perRunLimit ?? 0,
+        });
+      }
+    } finally {
+      setBudgetLoading(false);
+    }
+  }, [toolId]);
+
+  const saveBudget = React.useCallback(
+    async (patch: { monthlyLimit?: number; perRunLimit?: number }) => {
+      await fetch(`/api/tools/${toolId}/budget`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      await fetchBudget();
+    },
+    [toolId, fetchBudget],
+  );
+
+  const updateTriggerDraft = React.useCallback((id: string, patch: Partial<TriggerDraft>) => {
+    setTriggerDrafts((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? { cron: "", intervalMinutes: 1, failureThreshold: 0, enabled: true }), ...patch },
+    }));
+  }, []);
+
+  const saveTrigger = React.useCallback(
+    async (triggerId: string) => {
+      const draft = triggerDrafts[triggerId];
+      if (!draft) return;
+      await fetch(`/api/tools/${toolId}/triggers`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          triggerId,
+          enabled: draft.enabled,
+          cron: draft.cron || undefined,
+          intervalMinutes: draft.intervalMinutes,
+          failureThreshold: draft.failureThreshold,
+        }),
+      });
+      await fetchTriggers();
+    },
+    [toolId, triggerDrafts, fetchTriggers],
+  );
+
+  const fetchRunDetails = React.useCallback(
+    async (runId: string) => {
+      setRunDetailsLoading(true);
+      try {
+        const res = await fetch(`/api/tools/${toolId}/runs/${runId}`);
+        const payload = await res.json();
+        if (!res.ok) {
+          throw new Error(payload?.error ?? "Failed to load run");
+        }
+        setRunDetails(payload.run ?? null);
+        setScrubIndex(0);
+      } catch (err) {
+        setRunDetails(null);
+      } finally {
+        setRunDetailsLoading(false);
+      }
+    },
+    [toolId],
+  );
+
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
     void fetchView(activeViewId);
@@ -118,7 +272,14 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     if (!spec || !isToolSystemSpec(spec)) return;
     void fetchRuns();
     void fetchAutomation();
-  }, [spec, fetchRuns, fetchAutomation]);
+    void fetchTriggers();
+    void fetchBudget();
+  }, [spec, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget]);
+
+  React.useEffect(() => {
+    if (!runInspectorOpen || !selectedRunId) return;
+    void fetchRunDetails(selectedRunId);
+  }, [runInspectorOpen, selectedRunId, fetchRunDetails]);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
@@ -190,6 +351,36 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       targetField: "title",
     });
   }, [toolState, systemSpec]);
+
+  const stepHeatmap = React.useMemo(() => {
+    const entries: Array<{ id: string; fails: number; avgDurationMs: number; runs: number }> = [];
+    const map = new Map<string, { fails: number; totalDuration: number; runs: number }>();
+    for (const run of runs) {
+      const logs = Array.isArray(run.logs) ? run.logs : [];
+      for (const log of logs) {
+        const actionId = log.actionId ?? log.id;
+        if (!actionId) continue;
+        const entry = map.get(actionId) ?? { fails: 0, totalDuration: 0, runs: 0 };
+        entry.runs += 1;
+        if (log.status === "failed") entry.fails += 1;
+        if (typeof log.durationMs === "number") entry.totalDuration += log.durationMs;
+        map.set(actionId, entry);
+      }
+    }
+    for (const [id, stats] of map.entries()) {
+      const avgDurationMs = stats.runs > 0 ? Math.round(stats.totalDuration / stats.runs) : 0;
+      entries.push({ id, fails: stats.fails, avgDurationMs, runs: stats.runs });
+    }
+    return entries.sort((a, b) => b.fails - a.fails || b.avgDurationMs - a.avgDurationMs).slice(0, 8);
+  }, [runs]);
+  const runTimeline = React.useMemo(
+    () => buildRunTimeline(runDetails?.logs, systemSpec),
+    [runDetails, systemSpec],
+  );
+  const activeLog = React.useMemo(() => {
+    if (!Array.isArray(runDetails?.logs)) return null;
+    return runDetails.logs[scrubIndex] ?? null;
+  }, [runDetails, scrubIndex]);
 
   React.useEffect(() => {
     if (!activeView || !actionSpecs.length) return;
@@ -350,13 +541,11 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
       {systemSpec.automations && (
         <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-          <div className="mb-2 text-[11px] font-semibold uppercase">Automation</div>
-          <div className="flex flex-wrap gap-4">
+          <div className="mb-2 text-[11px] font-semibold uppercase">Automation Scheduling</div>
+          <div className="flex flex-wrap items-center gap-4">
             <div>Auto-ready: {systemSpec.automations.capabilities.canRunWithoutUI ? "yes" : "no"}</div>
             <div>Max frequency: {systemSpec.automations.capabilities.maxFrequency}/day</div>
             <div>Triggers: {systemSpec.automations.capabilities.supportedTriggers.join(", ") || "none"}</div>
-            <div>Last run: {systemSpec.automations.lastRunAt ?? "unknown"}</div>
-            <div>Next run: {systemSpec.automations.nextRunAt ?? "unknown"}</div>
           </div>
           <div className="mt-3 flex items-center gap-2">
             <button
@@ -375,6 +564,98 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
             </button>
             <div>{paused ? "Paused by user" : "Runs active"}</div>
           </div>
+          {triggersError && (
+            <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-700">
+              {triggersError}
+            </div>
+          )}
+          <div className="mt-4 space-y-3">
+            {triggersLoading ? (
+              <div>Loading schedules…</div>
+            ) : triggers.filter((t) => t.type === "cron").length === 0 ? (
+              <div>No cron triggers configured.</div>
+            ) : (
+              triggers
+                .filter((t) => t.type === "cron")
+                .map((trigger) => {
+                  const draft = triggerDrafts[trigger.id];
+                  const cronValue = draft?.cron ?? trigger.condition?.cron ?? "";
+                  const intervalValue = draft?.intervalMinutes ?? trigger.condition?.intervalMinutes ?? 1;
+                  const thresholdValue = draft?.failureThreshold ?? trigger.condition?.failureThreshold ?? 0;
+                  const enabledValue = draft?.enabled ?? trigger.enabled;
+                  return (
+                    <div key={trigger.id} className="rounded-md border border-border/60 bg-background px-3 py-3">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium text-foreground">{trigger.name}</div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                            type="button"
+                            onClick={() => {
+                              void fetch(`/api/tools/${toolId}/triggers/${trigger.id}/run`, { method: "POST" });
+                              void fetchRuns();
+                            }}
+                          >
+                            Run now
+                          </button>
+                          <button
+                            className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                            type="button"
+                            onClick={() => saveTrigger(trigger.id)}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+                        <label className="flex items-center gap-2">
+                          <span>Cron</span>
+                          <input
+                            className="rounded-md border border-border/60 bg-background px-2 py-1"
+                            value={cronValue}
+                            onChange={(e) => updateTriggerDraft(trigger.id, { cron: e.target.value })}
+                          />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span>Every (min)</span>
+                          <input
+                            className="w-16 rounded-md border border-border/60 bg-background px-2 py-1"
+                            type="number"
+                            min={1}
+                            value={intervalValue}
+                            onChange={(e) => updateTriggerDraft(trigger.id, { intervalMinutes: Number(e.target.value) })}
+                          />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span>Pause after failures</span>
+                          <input
+                            className="w-16 rounded-md border border-border/60 bg-background px-2 py-1"
+                            type="number"
+                            min={0}
+                            value={thresholdValue}
+                            onChange={(e) => updateTriggerDraft(trigger.id, { failureThreshold: Number(e.target.value) })}
+                          />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span>Enabled</span>
+                          <input
+                            type="checkbox"
+                            checked={enabledValue}
+                            onChange={(e) => updateTriggerDraft(trigger.id, { enabled: e.target.checked })}
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-muted-foreground">
+                        <span>Next run: {trigger.next_run_at ?? "pending"}</span>
+                        <span>Last run: {trigger.last_run_at ?? "never"}</span>
+                        <span>Failures: {trigger.failure_count ?? 0}</span>
+                        <span>{describeCron(cronValue, intervalValue)}</span>
+                      </div>
+                    </div>
+                  );
+                })
+            )}
+          </div>
         </div>
       )}
 
@@ -389,6 +670,16 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
                 <span>{run.status}</span>
                 <div className="flex items-center gap-2">
                   <span>{new Date(run.created_at).toLocaleString()}</span>
+                  <button
+                    className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                    type="button"
+                    onClick={() => {
+                      setSelectedRunId(run.id);
+                      setRunInspectorOpen(true);
+                    }}
+                  >
+                    Inspect
+                  </button>
                   {run.status === "failed" && (
                     <button
                       className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
@@ -414,6 +705,63 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       </div>
 
       <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+        <div className="mb-2 text-[11px] font-semibold uppercase">Budget & Cost</div>
+        {budgetLoading ? (
+          <div>Loading budget…</div>
+        ) : budgetInfo ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-4">
+              <span>Tokens used: {budgetInfo.usage.tokensUsed}</span>
+              <span>Cost estimate: ${budgetInfo.costEstimate.toFixed(4)}</span>
+              <span>Projected tokens: {budgetInfo.projectedMonthlyTokens}</span>
+              <span>Projected cost: ${budgetInfo.projectedMonthlyCost.toFixed(4)}</span>
+            </div>
+            {budgetDraft && (
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2">
+                  <span>Monthly cap</span>
+                  <input
+                    className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
+                    type="number"
+                    min={0}
+                    value={budgetDraft.monthlyLimit}
+                    onChange={(e) =>
+                      setBudgetDraft((prev) =>
+                        prev ? { ...prev, monthlyLimit: Number(e.target.value) } : prev,
+                      )
+                    }
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  <span>Per-run cap</span>
+                  <input
+                    className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
+                    type="number"
+                    min={0}
+                    value={budgetDraft.perRunLimit}
+                    onChange={(e) =>
+                      setBudgetDraft((prev) =>
+                        prev ? { ...prev, perRunLimit: Number(e.target.value) } : prev,
+                      )
+                    }
+                  />
+                </label>
+                <button
+                  className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                  type="button"
+                  onClick={() => budgetDraft && saveBudget(budgetDraft)}
+                >
+                  Save budget
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div>No budget data.</div>
+        )}
+      </div>
+
+      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
         <div className="mb-2 text-[11px] font-semibold uppercase">Error Heatmap</div>
         <div className="flex gap-2">
           {errorHeatmap.days.map((day) => (
@@ -431,6 +779,26 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       </div>
 
       <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+        <div className="mb-2 text-[11px] font-semibold uppercase">Step Heatmap</div>
+        {stepHeatmap.length === 0 ? (
+          <div>No step telemetry yet.</div>
+        ) : (
+          <div className="space-y-2">
+            {stepHeatmap.map((step) => (
+              <div key={step.id} className="flex items-center justify-between gap-4 rounded-md border border-border/60 px-3 py-2">
+                <div className="text-foreground">{step.id}</div>
+                <div className="flex items-center gap-3">
+                  <span>Avg: {step.avgDurationMs}ms</span>
+                  <span>Fails: {step.fails}</span>
+                  <span>Runs: {step.runs}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
         <div className="mb-2 text-[11px] font-semibold uppercase">Integration Health</div>
         <div className="flex flex-wrap gap-3">
           {integrationHealth.map((integration) => (
@@ -440,6 +808,57 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           ))}
         </div>
       </div>
+      <Dialog open={runInspectorOpen} onOpenChange={setRunInspectorOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Run Inspector</DialogTitle>
+          </DialogHeader>
+          {runDetailsLoading ? (
+            <div className="text-sm text-muted-foreground">Loading run…</div>
+          ) : !runDetails ? (
+            <div className="text-sm text-muted-foreground">Select a run to inspect.</div>
+          ) : (
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6">
+              <div className="flex flex-col gap-4">
+                <ExecutionTimeline steps={runTimeline} />
+                <div className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs">
+                  <div className="text-muted-foreground">Timeline scrubber</div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, runTimeline.length - 1)}
+                    value={Math.min(scrubIndex, Math.max(0, runTimeline.length - 1))}
+                    onChange={(e) => setScrubIndex(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+              <div className="flex h-full flex-col gap-3 rounded-md border border-border/60 p-4 text-xs">
+                <div className="text-sm font-medium text-foreground">Step Details</div>
+                {activeLog ? (
+                  <div className="space-y-3">
+                    <DetailRow label="Action" value={resolveActionLabel(activeLog, systemSpec)} />
+                    <DetailRow label="Integration" value={activeLog.integrationId ?? "unknown"} />
+                    <DetailRow label="Duration" value={activeLog.durationMs ? `${activeLog.durationMs}ms` : "n/a"} />
+                    <DetailRow label="Retries" value={String(activeLog.retries ?? 0)} />
+                    <DetailRow label="Status" value={String(activeLog.status ?? "unknown")} />
+                    {activeLog.error && <DetailRow label="Failure" value={String(activeLog.error)} />}
+                    <div className="rounded-md border border-border/60 p-3">
+                      <div className="mb-2 text-[11px] font-semibold uppercase text-muted-foreground">Inputs</div>
+                      <StructuredPreview value={activeLog.input} />
+                    </div>
+                    <div className="rounded-md border border-border/60 p-3">
+                      <div className="mb-2 text-[11px] font-semibold uppercase text-muted-foreground">Outputs</div>
+                      <StructuredPreview value={activeLog.output} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">No step selected.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -650,6 +1069,91 @@ function CommandView() {
       Command palette ready. Trigger actions from here.
     </div>
   );
+}
+
+function buildRunTimeline(logs: any[] | null | undefined, spec: any): TimelineStep[] {
+  if (!Array.isArray(logs)) return [];
+  return logs.map((log, index) => {
+    const status = mapRunStatus(log.status);
+    const label = resolveActionLabel(log, spec) || `Step ${index + 1}`;
+    const narrative = log.error ? String(log.error) : log.integrationId ? String(log.integrationId) : undefined;
+    return {
+      id: log.id ?? `${index}`,
+      label,
+      status,
+      narrative,
+      resultAvailable: Boolean(log.output),
+    };
+  });
+}
+
+function mapRunStatus(status: string | undefined): TimelineStep["status"] {
+  if (status === "done") return "success";
+  if (status === "failed") return "error";
+  if (status === "running") return "running";
+  if (status === "blocked") return "error";
+  return "pending";
+}
+
+function describeCron(cron: string, intervalMinutes: number) {
+  const trimmed = cron.trim();
+  if (!trimmed) return `Every ${intervalMinutes} minutes`;
+  const match = trimmed.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
+  if (match) return `Every ${match[1]} minutes`;
+  const hourMatch = trimmed.match(/^0\s+\*\/(\d+)\s+\*\s+\*\s+\*$/);
+  if (hourMatch) return `Every ${hourMatch[1]} hours`;
+  return `Cron: ${trimmed}`;
+}
+
+function resolveActionLabel(log: any, spec: any) {
+  const actionId = log.actionId ?? log.id;
+  if (!actionId || !spec?.actions) return String(actionId ?? "Step");
+  const action = spec.actions.find((a: any) => a.id === actionId);
+  return action?.name ?? actionId;
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border/40 pb-2 last:border-b-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function StructuredPreview({ value }: { value: any }) {
+  if (value === null || value === undefined) {
+    return <div className="text-muted-foreground">n/a</div>;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return <div>{String(value)}</div>;
+  }
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, 3);
+    return (
+      <div className="space-y-2">
+        <div className="text-muted-foreground">Items: {value.length}</div>
+        {sample.map((item, index) => (
+          <StructuredPreview key={index} value={item} />
+        ))}
+      </div>
+    );
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return <div className="text-muted-foreground">Empty</div>;
+    return (
+      <div className="space-y-2">
+        {entries.map(([key, val]) => (
+          <div key={key} className="flex items-start justify-between gap-4 border-b border-border/40 pb-2 last:border-b-0">
+            <span className="text-muted-foreground">{key}</span>
+            <span className="text-foreground">{String(val)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return <div className="text-muted-foreground">{String(value)}</div>;
 }
 
 function ActionButton({

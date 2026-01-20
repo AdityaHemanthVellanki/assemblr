@@ -14,6 +14,7 @@ import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
+import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -124,11 +125,26 @@ export async function processToolChat(
   let spec: ToolSystemSpec;
   let latestEvidence: Record<string, DataEvidence> = {};
   let activeVersionId: string | null = null;
+  let runTokens = 0;
+  const consumeTokens = async (usage?: { total_tokens?: number }) => {
+    if (!usage?.total_tokens) return;
+    runTokens += usage.total_tokens;
+    await consumeToolBudget({
+      orgId: input.orgId,
+      toolId: input.toolId,
+      tokens: usage.total_tokens,
+      runTokens,
+    });
+  };
 
   try {
     markStep(steps, "intent", "running", "Parsing prompt and intent");
     const intentStart = Date.now();
-    const intentAgent = await withTimeout(runIntentAgent(prompt), TIME_BUDGETS.intentMs, "Intent parsing exceeded time budget");
+    const intentAgent = await withTimeout(
+      runIntentAgent(prompt, consumeTokens),
+      TIME_BUDGETS.intentMs,
+      "Intent parsing exceeded time budget",
+    );
     const intentDuration = Date.now() - intentStart;
     if (intentDuration > TIME_BUDGETS.intentMs) {
       appendStep(stepsById.get("intent"), `Intent parsing slow (${intentDuration}ms).`);
@@ -158,7 +174,7 @@ export async function processToolChat(
       };
     }
 
-    spec = await generateIntent(prompt);
+    spec = await generateIntent(prompt, consumeTokens);
     spec = canonicalizeToolSpec(spec);
     machine.transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "intent", "success", "Intent captured");
@@ -171,7 +187,12 @@ export async function processToolChat(
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
 
-    const confidenceQuestions = limitClarifications(collectLowConfidenceQuestions(spec));
+    const confidenceQuestions = limitClarifications([
+      ...collectLowConfidenceQuestions(spec),
+      ...collectIntegrationAmbiguityQuestions(spec, input.connectedIntegrationIds),
+      ...collectCorrelationQuestions(spec),
+      ...collectDestructiveActionQuestions(spec),
+    ]);
     if (confidenceQuestions.length > 0) {
       markStep(steps, "intent", "error", "Low confidence detected");
       machine.transition("AWAITING_CLARIFICATION", "Low confidence detected", "warn");
@@ -375,10 +396,33 @@ export async function processToolChat(
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
     machine.transition("DEGRADED", message, "error");
+    if (err instanceof BudgetExceededError) {
+      return {
+        explanation: "Budget limit reached",
+        message: {
+          type: "text",
+          content:
+            err.limitType === "per_run"
+              ? "Run token cap exceeded. Reduce scope or increase the per-run budget."
+              : "Monthly token budget exceeded. Increase the monthly budget to continue.",
+        },
+        metadata: {
+          persist: false,
+          build_steps: steps,
+          state: machine.state,
+          build_logs: machine.logs,
+          budget_error: { type: err.limitType, message: err.message },
+        },
+      };
+    }
     throw err;
   }
 
-  const refinements = await withTimeout(runRefinementAgent(spec), 500, "Refinement suggestions timed out").catch(
+    const refinements = await withTimeout(
+      runRefinementAgent(spec, consumeTokens),
+      500,
+      "Refinement suggestions timed out",
+    ).catch(
     () => [],
   );
   return {
@@ -398,7 +442,10 @@ export async function processToolChat(
   };
 }
 
-async function generateIntent(prompt: string): Promise<ToolSystemSpec> {
+async function generateIntent(
+  prompt: string,
+  onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
+): Promise<ToolSystemSpec> {
   const requiredIntegrations = detectIntegrations(prompt);
   const enforcedPrompt = requiredIntegrations.length
     ? `${prompt}\n\nYou MUST include these integrations as sections: ${requiredIntegrations.join(", ")}.`
@@ -413,6 +460,7 @@ async function generateIntent(prompt: string): Promise<ToolSystemSpec> {
     max_tokens: 800,
     response_format: { type: "json_object" },
   });
+  await onUsage?.(response.usage);
 
   const content = response.choices[0]?.message?.content;
   const first = parseIntent(content);
@@ -434,6 +482,7 @@ async function generateIntent(prompt: string): Promise<ToolSystemSpec> {
     max_tokens: 800,
     response_format: { type: "json_object" },
   });
+  await onUsage?.(retry.usage);
 
   const retryContent = retry.choices[0]?.message?.content;
   const second = parseIntent(retryContent);
@@ -516,7 +565,10 @@ function appendStep(step: BuildStep | undefined, log: string) {
   step.logs.push(log);
 }
 
-async function runIntentAgent(prompt: string): Promise<IntentAnalysis> {
+async function runIntentAgent(
+  prompt: string,
+  onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
+): Promise<IntentAnalysis> {
   const response = await azureOpenAIClient.chat.completions.create({
     model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
@@ -530,6 +582,7 @@ async function runIntentAgent(prompt: string): Promise<IntentAnalysis> {
     max_tokens: 300,
     response_format: { type: "json_object" },
   });
+  await onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
   if (!content) return { clarifications: [], assumptions: [] };
   try {
@@ -575,6 +628,41 @@ function collectLowConfidenceQuestions(spec: ToolSystemSpec) {
   for (const action of spec.actions) {
     if ((action.confidence ?? 1) < 0.7) {
       questions.push(`Confirm what "${action.name}" should do.`);
+    }
+  }
+  return questions;
+}
+
+function collectIntegrationAmbiguityQuestions(
+  spec: ToolSystemSpec,
+  connectedIntegrationIds: string[],
+) {
+  if (connectedIntegrationIds.length <= 1) return [];
+  const used = new Set<string>(spec.integrations.map((i) => i.id));
+  const overlaps = connectedIntegrationIds.filter((id) => used.has(id));
+  if (overlaps.length <= 1) return [];
+  return [
+    `Confirm which integrations should be used for this tool: ${overlaps.join(", ")}.`,
+  ];
+}
+
+function collectCorrelationQuestions(spec: ToolSystemSpec) {
+  const questions: string[] = [];
+  for (const entity of spec.entities) {
+    if (!entity.identifiers || entity.identifiers.length === 0) {
+      questions.push(`Provide identifiers for ${entity.name} to correlate records.`);
+    }
+  }
+  return questions;
+}
+
+function collectDestructiveActionQuestions(spec: ToolSystemSpec) {
+  const questions: string[] = [];
+  for (const action of spec.actions) {
+    const cap = getCapability(action.capabilityId);
+    const isWrite = !(cap?.allowedOperations.includes("read") ?? true);
+    if (isWrite) {
+      questions.push(`Confirm "${action.name}" should perform write actions.`);
     }
   }
   return questions;
@@ -748,7 +836,10 @@ function missingEvidenceForViews(spec: ToolSystemSpec, evidence: Record<string, 
   return missing;
 }
 
-async function runRefinementAgent(spec: ToolSystemSpec): Promise<string[]> {
+async function runRefinementAgent(
+  spec: ToolSystemSpec,
+  onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
+): Promise<string[]> {
   const response = await azureOpenAIClient.chat.completions.create({
     model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
@@ -762,6 +853,7 @@ async function runRefinementAgent(spec: ToolSystemSpec): Promise<string[]> {
     max_tokens: 200,
     response_format: { type: "json_object" },
   });
+  await onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
   if (!content) return [];
   try {
