@@ -4,6 +4,37 @@ import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/to
 export async function runExtractEntities(
   ctx: ToolCompilerStageContext,
 ): Promise<ToolCompilerStageResult> {
+  // Heuristic: Handle simple entity declarations directly to avoid LLM roundtrip/failure
+  const answerMatch = ctx.prompt.match(/User answers:\s*(.+)$/i);
+  const userAnswer = answerMatch ? answerMatch[1].trim().toLowerCase() : ctx.prompt.trim().toLowerCase();
+
+  if (userAnswer === "repos" || userAnswer === "repositories") {
+    return {
+      specPatch: {
+        entities: [{
+          name: "Repo",
+          sourceIntegration: "github",
+          identifiers: ["id", "fullName"],
+          supportedActions: ["github.repos.list"],
+          fields: [{ name: "name", type: "string", required: true }, { name: "owner", type: "string" }]
+        }]
+      }
+    };
+  }
+  if (userAnswer === "issues") {
+    return {
+      specPatch: {
+        entities: [{
+          name: "Issue",
+          sourceIntegration: "linear",
+          identifiers: ["id"],
+          supportedActions: ["linear.issues.list"],
+          fields: [{ name: "title", type: "string", required: true }, { name: "status", type: "string" }]
+        }]
+      }
+    };
+  }
+
   const integrations = Array.from(
     new Set(ctx.spec.integrations.map((i) => i.id)),
   );

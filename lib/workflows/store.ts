@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getSessionContext, requireUserRole, requiresApproval, canCreateWorkflows } from "@/lib/auth/permissions.server";
+import { getRequestContext, requireOrgMember, requiresApproval, canCreateWorkflows, OrgRole } from "@/lib/auth/permissions.server";
 import { createApprovalRequest, logAudit } from "@/lib/governance/store";
 
 export type WorkflowAction = {
@@ -36,8 +36,8 @@ export type WorkflowRun = {
 
 export async function createWorkflow(input: Omit<Workflow, "id" | "approvalStatus" | "requiresApproval">): Promise<Workflow> {
   const supabase = await createSupabaseServerClient();
-  const ctx = await getSessionContext();
-  const { role } = await requireUserRole(ctx);
+  const { ctx } = await requireOrgMember();
+  const role = ctx.org.role as OrgRole;
 
   if (!canCreateWorkflows(role)) {
     throw new Error("Insufficient permissions to create workflows");

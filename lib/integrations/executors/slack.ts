@@ -33,7 +33,9 @@ export class SlackExecutor implements IntegrationExecutor {
       const res = await fetch(`https://slack.com/api/${method}?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const json = await res.json();
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : {};
+      
       if (!json.ok) throw new Error(`Slack API error: ${json.error}`);
       
       // Slack responses usually have a key matching the resource name or "members" for users

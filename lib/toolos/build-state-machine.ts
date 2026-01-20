@@ -1,14 +1,6 @@
-export type ToolBuildState =
-  | "INIT"
-  | "INTENT_PARSED"
-  | "NEEDS_CLARIFICATION"
-  | "AWAITING_CLARIFICATION"
-  | "VALIDATING_INTEGRATIONS"
-  | "FETCHING_DATA"
-  | "DATA_READY"
-  | "BUILDING_VIEWS"
-  | "READY"
-  | "DEGRADED";
+import { ToolLifecycleState } from "./spec";
+
+export type ToolBuildState = ToolLifecycleState;
 
 export type ToolBuildLog = {
   state: ToolBuildState;

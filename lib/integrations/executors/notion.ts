@@ -31,7 +31,8 @@ export class NotionExecutor implements IntegrationExecutor {
         });
         
         if (!res.ok) throw new Error(`Notion API error: ${res.statusText}`);
-        const json = await res.json();
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         data = json.results || [];
       } else {
          // Fallback: Try generic GET request to https://api.notion.com/v1/{resource}
@@ -44,7 +45,8 @@ export class NotionExecutor implements IntegrationExecutor {
         });
         
         if (!res.ok) throw new Error(`Notion API error: ${res.statusText}`);
-        const json = await res.json();
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         
         if (json.results && Array.isArray(json.results)) {
             data = json.results;

@@ -41,8 +41,9 @@ export async function executeToolAction(params: {
   // Use coalesce for reads, serialized for writes?
   // Actually, requestCoordinator.run is a mutex. We might want to relax this for READ actions.
   const isRead = action.type === "READ";
-  const coordinationKey = `tool:${toolId}`;
-  
+  // ToolRunLock: Only ONE active run per tool per user
+  const coordinationKey = `tool:${toolId}:user:${userId || "anon"}`;
+
   const runner = async () => {
     const runtime = RUNTIMES[action.integrationId];
     if (!runtime) {

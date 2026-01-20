@@ -41,7 +41,7 @@ export async function GET(
     let lifecycle = lifecycleState || "INIT";
     if (project.is_activated) {
       lifecycle = "RUNNING";
-    } else if (lifecycle === "READY") {
+    } else if (lifecycle === "ACTIVE") {
       // If ready but not activated, it's waiting for activation
       lifecycle = "READY_TO_ACTIVATE";
     }

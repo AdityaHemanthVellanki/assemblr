@@ -154,12 +154,17 @@ export async function processToolChat(
   const consumeTokens = async (usage?: { total_tokens?: number }) => {
     if (!usage?.total_tokens) return;
     runTokens += usage.total_tokens;
-    await consumeToolBudget({
-      orgId: input.orgId,
-      toolId: input.toolId,
-      tokens: usage.total_tokens,
-      runTokens,
-    });
+    try {
+      await consumeToolBudget({
+        orgId: input.orgId,
+        toolId: input.toolId,
+        tokens: usage.total_tokens,
+        runTokens,
+      });
+    } catch (err) {
+      console.error("[Budget] Update failed (non-fatal):", err);
+      // We don't throw here to avoid failing the build due to stats/billing glitches
+    }
   };
 
   try {
@@ -174,35 +179,50 @@ export async function processToolChat(
       "design-views": "views",
       "validate-spec": "compile",
     };
-    const compilerResult = await ToolCompiler.run({
-      prompt,
-      sessionId: builderSessionId,
-      userId: input.userId,
-      orgId: input.orgId,
-      toolId: input.toolId,
-      connectedIntegrationIds: input.connectedIntegrationIds,
-      onUsage: consumeTokens,
-      onProgress: (event) => {
-        const stepId = stageToStep[event.stage];
-        if (!stepId) return;
-        if (event.status === "started") {
-          markStep(steps, stepId, "running", event.message);
-          return;
-        }
-        if (event.status === "completed") {
-          markStep(steps, stepId, "success", event.message);
-          return;
-        }
-        markStep(steps, stepId, "error", event.message);
-      },
-    });
+    const compilerResult = await runWithRetry(
+      () => ToolCompiler.run({
+        prompt,
+        sessionId: builderSessionId,
+        userId: input.userId,
+        orgId: input.orgId,
+        toolId: input.toolId,
+        connectedIntegrationIds: input.connectedIntegrationIds,
+        onUsage: consumeTokens,
+        onProgress: (event) => {
+          const stepId = stageToStep[event.stage];
+          if (!stepId) return;
+          
+          // Map stages to state machine transitions
+          if (event.status === "completed") {
+            if (event.stage === "extract-entities") transition("ENTITIES_EXTRACTED", "Entities identified");
+            if (event.stage === "resolve-integrations") transition("INTEGRATIONS_RESOLVED", "Integrations selected");
+            if (event.stage === "define-actions") transition("ACTIONS_DEFINED", "Actions defined");
+            if (event.stage === "build-workflows") transition("WORKFLOWS_COMPILED", "Workflows built");
+            if (event.stage === "validate-spec") transition("RUNTIME_READY", "Runtime compiled");
+          }
+
+          if (event.status === "started") {
+            markStep(steps, stepId, "running", event.message);
+            return;
+          }
+          if (event.status === "completed") {
+            markStep(steps, stepId, "success", event.message);
+            return;
+          }
+          markStep(steps, stepId, "error", event.message);
+        },
+      }),
+      3, // retries
+      30000, // timeout
+      1000 // backoff
+    );
 
     spec = canonicalizeToolSpec(compilerResult.spec);
-    await transition("INTENT_PARSED", "ToolSpec generated");
+    transition("INTENT_PARSED", "ToolSpec generated");
     if (compilerResult.status === "awaiting_clarification" && compilerResult.clarifications.length > 0) {
       const clarifications = limitClarifications(compilerResult.clarifications);
       markStep(steps, "intent", "error", "Clarifications required");
-      await transition("NEEDS_CLARIFICATION", "Clarifications required", "warn");
+      transition("NEEDS_CLARIFICATION", "Clarifications required", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -240,7 +260,7 @@ export async function processToolChat(
     ) {
       const clarifications = limitClarifications(toolSystemValidation.errors);
       markStep(steps, "compile", "error", "Tool system incomplete");
-      await transition("NEEDS_CLARIFICATION", "Tool system incomplete", "warn");
+      transition("NEEDS_CLARIFICATION", "Tool system incomplete", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -297,7 +317,7 @@ export async function processToolChat(
     ]);
     if (confidenceQuestions.length > 0) {
       markStep(steps, "intent", "error", "Low confidence detected");
-      await transition("NEEDS_CLARIFICATION", "Low confidence detected", "warn");
+      transition("NEEDS_CLARIFICATION", "Low confidence detected", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -421,7 +441,7 @@ export async function processToolChat(
 
     markStep(steps, "runtime", "pending", "Awaiting activation");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
-    await transition("READY", "Tool compiled");
+    await transition("ACTIVE", "Tool compiled");
     await saveMemory({
       scope: builderScope,
       namespace: builderNamespace,
@@ -442,6 +462,19 @@ export async function processToolChat(
     });
     await promoteToolVersion({ toolId: input.toolId, versionId: version.id });
     activeVersionId = version.id;
+
+    return {
+      explanation: spec.purpose,
+      message: { type: "text", content: spec.purpose },
+      spec: { ...spec, clarifications: [], lifecycle_state: machine.state },
+      metadata: {
+        tokens: runTokens,
+        status: compilerResult.status,
+        versionId: activeVersionId,
+        clarifications: compilerResult.clarifications,
+        progress: compilerResult.progress,
+      },
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
@@ -830,6 +863,26 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   } finally {
     clearTimeout(timeoutId!);
   }
+}
+
+async function runWithRetry<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  timeoutMs = 15000,
+  backoffMs = 1000
+): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await withTimeout(fn(), timeoutMs, "Timeout exceeded");
+    } catch (err) {
+      lastError = err;
+      if (i < retries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, backoffMs * Math.pow(2, i)));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {

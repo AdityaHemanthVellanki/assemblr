@@ -229,14 +229,17 @@ export type ObservabilitySpec = z.infer<typeof ObservabilitySpecSchema>;
 export const ToolLifecycleStateSchema = z.enum([
   "INIT",
   "INTENT_PARSED",
-  "AWAITING_CLARIFICATION",
-  "VALIDATING_INTEGRATIONS",
-  "FETCHING_DATA",
-  "DATA_READY",
-  "BUILDING_VIEWS",
-  "READY",
+  "ENTITIES_EXTRACTED",
+  "INTEGRATIONS_RESOLVED",
+  "ACTIONS_DEFINED",
+  "WORKFLOWS_COMPILED",
+  "RUNTIME_READY",
+  "DATA_FETCHED",
+  "ACTIVE",
   "DEGRADED",
+  "FAILED",
   "NEEDS_CLARIFICATION",
+  "AWAITING_CLARIFICATION",
 ]);
 export type ToolLifecycleState = z.infer<typeof ToolLifecycleStateSchema>;
 

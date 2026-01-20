@@ -38,7 +38,8 @@ export class LinearExecutor implements IntegrationExecutor {
         body: JSON.stringify({ query }),
       });
       
-      const json = await res.json();
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : {};
       
       if (json.errors) {
         throw new Error(`Linear API error: ${json.errors[0].message}`);

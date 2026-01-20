@@ -1,63 +1,91 @@
-
-import "server-only";
-
 import { cache } from "react";
-import { cookies } from "next/headers";
+import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { PermissionError } from "@/lib/auth/permissions.client";
-import { requestCoordinator } from "@/lib/security/rate-limit";
+import { User } from "@supabase/supabase-js";
+import { ApiError } from "@/lib/api/client";
 
-export type RequestContext = {
+export interface ExecutionContext {
+  requestId: string;
   userId: string;
   orgId: string;
-  user: any;
-};
+  user: User;
+  org: { id: string; role: string };
+  toolId?: string;
+  permissions: string[];
+  rateLimitBudget: number;
+  startTime: number;
+}
 
-// Cached per request lifecycle
-const getCachedUser = cache(async () => {
-  const cookieStore = await cookies();
-  const all = cookieStore.getAll();
-  const key = all.find((c) => c.name.includes("access-token"))?.value ?? "anon";
+// Alias for backward compatibility if needed, but we encourage ExecutionContext
+export type RequestContext = ExecutionContext;
+
+// Global request-scoped cache for ExecutionContext
+export const getRequestContext = cache(async (): Promise<ExecutionContext> => {
+  const headersList = await headers();
+  const requestId = headersList.get("x-request-id") ?? crypto.randomUUID();
+  const startTime = Date.now();
+
+  const supabase = await createSupabaseServerClient();
   
-  // Coalesce concurrent calls for the same session
-  return requestCoordinator.coalesce(`auth:user:${key}`, async () => {
-    const supabase = await createSupabaseServerClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user) return null;
-    return user;
-  });
-});
-
-const getCachedOrgId = cache(async (userId: string) => {
-  return requestCoordinator.coalesce(`auth:org:${userId}`, async () => {
-    const supabase = await createSupabaseServerClient();
-    // For now, assume single org or pick first. 
-    // In a real app, this might come from a header or cookie.
-    const { data } = await supabase
-      .from("memberships")
-      .select("org_id")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    return data?.org_id ?? null;
-  });
-});
-
-export const getRequestContext = cache(async (): Promise<RequestContext> => {
-  const user = await getCachedUser();
-  if (!user) {
-    throw new PermissionError("Unauthorized", 401);
+  // 1. Resolve User (Handle 429 Gracefully)
+  let user: User | null = null;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      if (error.status === 429) {
+        console.warn("[Auth] Rate limited by Supabase. Treating as soft failure.");
+        throw new ApiError("Rate limit exceeded", 429);
+      } else if (error.status !== 401) {
+         console.error("[Auth] Unexpected error:", error);
+      }
+    }
+    user = data?.user ?? null;
+  } catch (e) {
+    console.error("[Auth] Exception:", e);
   }
 
-  const orgId = await getCachedOrgId(user.id);
-  if (!orgId) {
-    throw new PermissionError("No organization found", 403);
+  if (!user) {
+      throw new ApiError("Unauthorized: No session found", 401);
+  }
+
+  // 2. Resolve Org (if user exists)
+  let org: { id: string; role: string } | null = null;
+  
+  // Try to get org context from header (if passed by middleware/client) or default to first membership
+  // In a real app, we might check 'x-org-id'
+  const targetOrgId = headersList.get("x-org-id");
+  
+  try {
+      let query = supabase
+        .from("memberships")
+        .select("org_id, role")
+        .eq("user_id", user.id);
+
+      if (targetOrgId) {
+          query = query.eq("org_id", targetOrgId);
+      }
+      
+      const { data: memberships, error } = await query.limit(1);
+          
+      if (!error && memberships && memberships.length > 0) {
+          org = { id: memberships[0].org_id, role: memberships[0].role };
+      }
+  } catch (e) {
+      console.warn("[Auth] Failed to fetch org membership", e);
+  }
+
+  if (!org) {
+      throw new ApiError("Unauthorized: No organization membership", 403);
   }
 
   return {
+    requestId,
     userId: user.id,
-    orgId,
+    orgId: org.id,
     user,
+    org,
+    permissions: [org.role],
+    rateLimitBudget: 1000,
+    startTime,
   };
 });

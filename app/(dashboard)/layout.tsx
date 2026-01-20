@@ -3,7 +3,7 @@ import Script from "next/script";
 
 import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getSessionContext, PermissionError, requireUserRole } from "@/lib/auth/permissions.server";
+import { getRequestContext, PermissionError, requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +12,10 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  let role: Awaited<ReturnType<typeof requireUserRole>>["role"];
+  let role: OrgRole;
   try {
-    const ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    const { ctx } = await requireOrgMember();
+    role = ctx.org.role as OrgRole;
   } catch (err) {
     if (err instanceof PermissionError && err.status === 401) redirect("/login");
     if (err instanceof PermissionError) {

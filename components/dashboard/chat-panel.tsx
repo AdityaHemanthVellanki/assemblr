@@ -34,7 +34,7 @@ type RawMessage = {
 };
 
 type Message =
-  | { role: "user" | "assistant"; type: "text"; content: string }
+  | { role: "user" | "assistant"; type: "text"; content: string; progress?: any[] }
   | { role: "assistant"; type: "integration_action"; integrations: IntegrationCTA[] }
   | { role: "assistant"; type: "data"; result: { result_type: "list" | "table" | "json" | "text"; rows?: any[]; object?: Record<string, any>; summary?: string } };
 
@@ -48,8 +48,14 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [messages, setMessages] = React.useState<Message[]>(() => {
     return initialMessages.map((m) => {
       const meta = m.metadata ?? undefined;
+      let progress: any[] | undefined;
+      
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {
         const rec = meta as Record<string, unknown>;
+        if (Array.isArray(rec.progress)) {
+            progress = rec.progress;
+        }
+
         const type = rec.type;
         const integrations = rec.integrations;
         if (type === "integration_action" && Array.isArray(integrations)) {
@@ -81,7 +87,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
           };
         }
       }
-      return { role: m.role, type: "text", content: m.content };
+      return { role: m.role, type: "text", content: m.content, progress };
     });
   });
   const [input, setInput] = React.useState("");
@@ -408,7 +414,25 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
               )}
             >
               {msg.type === "text" ? (
-                <div>{msg.content}</div>
+                <div>
+                    {msg.content}
+                    {msg.progress && msg.progress.length > 0 && (
+                        <div className="mt-3 space-y-1 rounded-md border border-border/50 bg-background/50 p-2 text-xs">
+                            <div className="mb-1 font-semibold opacity-70">Build Log</div>
+                            {msg.progress.map((step, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                    <div className={cn(
+                                        "h-1.5 w-1.5 rounded-full",
+                                        step.status === "completed" ? "bg-green-500" :
+                                        step.status === "started" ? "bg-blue-500 animate-pulse" :
+                                        step.status === "waiting_for_user" ? "bg-yellow-500" : "bg-red-500"
+                                    )} />
+                                    <span className="opacity-80">{step.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
               ) : msg.type === "data" ? (
                 <div className="space-y-2">
                   {msg.result.summary ? (

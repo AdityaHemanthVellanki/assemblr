@@ -44,8 +44,8 @@ export function validateMRT(
     errors.push("Tool is not activated.");
   }
 
-  if (lifecycleState === "DEGRADED") {
-    errors.push("Tool build is degraded.");
+  if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {
+    errors.push("Tool build is degraded or failed.");
   }
   
   // Note: NEEDS_CLARIFICATION stops activation, but doesn't necessarily mean the artifact is invalid

@@ -24,14 +24,18 @@ export class GoogleExecutor implements IntegrationExecutor {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error(`Google Drive API error: ${res.statusText}`);
-        const json = await res.json();
+        
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         data = json.files || [];
       } else if (plan.resource === "gmail" || plan.resource === "messages") {
         const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20", {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error(`Gmail API error: ${res.statusText}`);
-        const json = await res.json();
+        
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         data = json.messages || [];
       } else {
         throw new Error(`Unsupported Google resource: ${plan.resource}`);

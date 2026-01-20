@@ -42,24 +42,13 @@ export const getSessionContext = cache(async (): Promise<SessionContext> => {
 
 export async function requireOrgMember() {
   const ctx = await getRequestContext();
-  // Org membership is already validated in getRequestContext
   return { ctx };
 }
 
 export async function requireRole(minRole: OrgRole) {
   const ctx = await getRequestContext();
-  const supabase = await createSupabaseServerClient();
+  const userRole = ctx.org.role as OrgRole;
   
-  const { data: membership } = await supabase
-    .from("memberships")
-    .select("role")
-    .eq("user_id", ctx.userId)
-    .eq("org_id", ctx.orgId)
-    .single();
-    
-  if (!membership) throw new PermissionError("Not a member", 403);
-  
-  const userRole = membership.role as OrgRole;
   if (ORG_ROLE_ORDER[userRole] < ORG_ROLE_ORDER[minRole]) {
     throw new PermissionError(`Requires ${roleLabel(minRole)} role`, 403);
   }

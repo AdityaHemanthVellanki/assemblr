@@ -61,7 +61,7 @@ export function ProjectWorkspace({
   // Derived state
   const isZeroState = messages.length === 0;
   const lifecycleState = project?.lifecycle_state ?? (currentSpec as any)?.lifecycle_state ?? null;
-  const canRenderTool = Boolean(currentSpec && toolId && lifecycleState === "READY");
+  const canRenderTool = Boolean(currentSpec && toolId && lifecycleState === "ACTIVE");
 
   // Dynamic Header Title
   const headerTitle =
@@ -303,7 +303,7 @@ export function ProjectWorkspace({
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {lifecycleState === "AWAITING_CLARIFICATION"
                     ? "Answer the questions in chat to continue building this tool."
-                    : lifecycleState && lifecycleState !== "READY"
+                    : lifecycleState && lifecycleState !== "ACTIVE"
                       ? "Tool is still building. Check build progress for updates."
                       : "Describe the tool you want to build to see a live preview."}
                 </div>
@@ -508,7 +508,7 @@ function deriveBuildSteps(
 ): BuildStep[] {
   const steps = defaultBuildSteps();
   if (!lifecycleState) return steps;
-  if (lifecycleState === "READY") return markAllSuccess(steps);
+  if (lifecycleState === "ACTIVE") return markAllSuccess(steps);
 
   const order = steps.map((step) => step.id);
   const current = resolveLifecycleStep(lifecycleState);
@@ -541,12 +541,21 @@ function resolveLifecycleStep(
 ): { stepId: string | null; status: BuildStep["status"] | null } {
   if (lifecycleState === "INIT") return { stepId: "intent", status: "pending" };
   if (lifecycleState === "INTENT_PARSED") return { stepId: "entities", status: "running" };
-  if (lifecycleState === "AWAITING_CLARIFICATION") return { stepId: "intent", status: "error" };
-  if (lifecycleState === "VALIDATING_INTEGRATIONS") return { stepId: "integrations", status: "running" };
-  if (lifecycleState === "FETCHING_DATA") return { stepId: "readiness", status: "running" };
-  if (lifecycleState === "DATA_READY") return { stepId: "runtime", status: "running" };
-  if (lifecycleState === "BUILDING_VIEWS") return { stepId: "views", status: "running" };
-  if (lifecycleState === "DEGRADED") return { stepId: "compile", status: "error" };
+  if (lifecycleState === "ENTITIES_EXTRACTED") return { stepId: "integrations", status: "running" };
+  if (lifecycleState === "INTEGRATIONS_RESOLVED") return { stepId: "actions", status: "running" };
+  if (lifecycleState === "ACTIONS_DEFINED") return { stepId: "workflows", status: "running" };
+  if (lifecycleState === "WORKFLOWS_COMPILED") return { stepId: "compile", status: "running" };
+  if (lifecycleState === "RUNTIME_READY") return { stepId: "readiness", status: "running" };
+  if (lifecycleState === "DATA_FETCHED") return { stepId: "views", status: "running" };
+  
+  if (lifecycleState === "AWAITING_CLARIFICATION" || lifecycleState === "NEEDS_CLARIFICATION") {
+    return { stepId: "intent", status: "error" };
+  }
+  
+  if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {
+    return { stepId: "compile", status: "error" };
+  }
+  
   return { stepId: null, status: null };
 }
 

@@ -66,7 +66,8 @@ export class GitHubExecutor implements IntegrationExecutor {
         if (!res.ok) {
           throw new Error(`GitHub API error: ${res.statusText}`);
         }
-        const json = await res.json();
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         return {
           viewId: plan.viewId,
           status: "success",
@@ -83,7 +84,8 @@ export class GitHubExecutor implements IntegrationExecutor {
           },
         });
         if (!res.ok) throw new Error(`GitHub API error: ${res.statusText}`);
-        const json = await res.json();
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : {};
         data = [json]; // Wrap in array
       } else {
         // Fallback: Try to fetch as direct path
@@ -96,8 +98,9 @@ export class GitHubExecutor implements IntegrationExecutor {
             },
           });
           if (res.ok) {
-            const json = await res.json();
-             data = Array.isArray(json) ? json : [json];
+            const text = await res.text();
+            const json = text ? JSON.parse(text) : {};
+            data = Array.isArray(json) ? json : [json];
           } else {
              // If generic fetch fails, throw error
              throw new Error(`Unsupported GitHub resource: ${resource}`);

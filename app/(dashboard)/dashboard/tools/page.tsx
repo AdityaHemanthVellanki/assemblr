@@ -11,18 +11,19 @@ import { NewProjectButton } from "@/components/dashboard/new-project-button";
 import { Button } from "@/components/ui/button";
 import {
   canEditProjects,
-  getSessionContext,
+  getRequestContext,
   PermissionError,
-  requireUserRole,
+  requireOrgMember,
+  OrgRole
 } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ToolsPage() {
-  let ctx: Awaited<ReturnType<typeof getSessionContext>>;
-  let role: Awaited<ReturnType<typeof requireUserRole>>["role"];
+  let ctx: Awaited<ReturnType<typeof getRequestContext>>;
+  let role: OrgRole;
   try {
-    ctx = await getSessionContext();
-    ({ role } = await requireUserRole(ctx));
+    ({ ctx } = await requireOrgMember());
+    role = ctx.org.role as OrgRole;
   } catch (err) {
     if (err instanceof PermissionError) {
       return (

@@ -237,6 +237,57 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
         );
         return;
       }
+
+      // Specialized routing for tool builder artifacts
+      if (scope.type === "tool_org" && namespace === "tool_builder") {
+        if (key === "lifecycle_state") {
+          await queryWithServerFallback(
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert({
+                tool_id: scope.toolId,
+                state: typeof value === 'string' ? value : JSON.stringify(value),
+                details: typeof value === 'object' ? value : null,
+                updated_at: new Date().toISOString(),
+              }, { onConflict: "tool_id" });
+              if (error) throw error;
+            },
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert({
+                tool_id: scope.toolId,
+                state: typeof value === 'string' ? value : JSON.stringify(value),
+                details: typeof value === 'object' ? value : null,
+                updated_at: new Date().toISOString(),
+              }, { onConflict: "tool_id" });
+              if (error) throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to save lifecycle state");
+            }
+          );
+          return;
+        }
+        if (key === "build_logs") {
+          await queryWithServerFallback(
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_build_logs") as any).upsert({
+                tool_id: scope.toolId,
+                build_id: "latest", // Singleton build log for now
+                logs: Array.isArray(value) ? value : [value],
+                updated_at: new Date().toISOString(),
+              }, { onConflict: "tool_id,build_id" });
+              if (error) throw error;
+            },
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_build_logs") as any).upsert({
+                tool_id: scope.toolId,
+                build_id: "latest",
+                logs: Array.isArray(value) ? value : [value],
+                updated_at: new Date().toISOString(),
+              }, { onConflict: "tool_id,build_id" });
+              if (error) throw toAdapterError(error, ["tool_build_logs"], "Failed to save build logs");
+            }
+          );
+          return;
+        }
+      }
+
       const payload = buildToolPayload(scope, namespace, key, value);
       const onConflict = resolveToolConflictTarget(scope);
       await queryWithServerFallback(
