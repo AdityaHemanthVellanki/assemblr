@@ -4,6 +4,7 @@ import { assertNoMocks } from "@/lib/core/guard";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { IntegrationId, isToolSystemSpec } from "@/lib/toolos/spec";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 
@@ -71,6 +72,7 @@ async function runTest() {
       if (missing.length > 0) {
         throw new Error(`Missing integrations: ${missing.join(", ")}`);
       }
+      const compiledTool = buildCompiledToolArtifact(result.spec);
       for (const integration of expected) {
         const action = result.spec.actions.find((a) => a.integrationId === integration);
         if (!action) {
@@ -81,7 +83,7 @@ async function runTest() {
           const exec = await executeToolAction({
             orgId,
             toolId: project.id,
-            spec: result.spec,
+            compiledTool,
             actionId: action.id,
             input: {},
           });

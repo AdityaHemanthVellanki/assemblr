@@ -4,6 +4,7 @@ import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permission
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
+import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 
 export async function POST(
@@ -16,7 +17,7 @@ export async function POST(
   const supabase = await createSupabaseServerClient();
 
   const { data: project } = await (supabase.from("projects") as any)
-    .select("spec, active_version_id")
+    .select("spec, active_version_id, is_activated")
     .eq("id", toolId)
     .eq("org_id", ctx.orgId)
     .single();
@@ -24,14 +25,26 @@ export async function POST(
   if (!project?.spec) {
     return NextResponse.json({ error: "Tool not found" }, { status: 404 });
   }
+  if (!project.is_activated) {
+    return NextResponse.json(
+      {
+        status: "blocked",
+        reason: "Tool not activated",
+        action: "Activate the tool before running triggers",
+      },
+      { status: 409 },
+    );
+  }
 
   let spec = project.spec;
+  let compiledTool: unknown = null;
   if (project.active_version_id) {
     const { data: version } = await (supabase.from("tool_versions") as any)
-      .select("tool_spec")
+      .select("tool_spec, compiled_tool")
       .eq("id", project.active_version_id)
       .single();
     spec = version?.tool_spec ?? spec;
+    compiledTool = version?.compiled_tool ?? null;
   }
 
   if (!isToolSystemSpec(spec)) {
@@ -44,10 +57,20 @@ export async function POST(
   }
 
   if (trigger.actionId) {
+    if (!isCompiledToolArtifact(compiledTool)) {
+      return NextResponse.json(
+        {
+          status: "blocked",
+          reason: "CompiledTool not found for active version",
+          action: "Recompile the tool to generate a CompiledTool artifact",
+        },
+        { status: 400 },
+      );
+    }
     await executeToolAction({
       orgId: ctx.orgId,
       toolId,
-      spec,
+      compiledTool,
       actionId: trigger.actionId,
       input: trigger.condition ?? {},
       userId: ctx.userId,
@@ -57,10 +80,20 @@ export async function POST(
   }
 
   if (trigger.workflowId) {
+    if (!isCompiledToolArtifact(compiledTool)) {
+      return NextResponse.json(
+        {
+          status: "blocked",
+          reason: "CompiledTool not found for active version",
+          action: "Recompile the tool to generate a CompiledTool artifact",
+        },
+        { status: 400 },
+      );
+    }
     await runWorkflow({
       orgId: ctx.orgId,
       toolId,
-      spec,
+      compiledTool,
       workflowId: trigger.workflowId,
       input: trigger.condition ?? {},
       triggerId: trigger.id,

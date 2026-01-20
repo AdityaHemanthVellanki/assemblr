@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createHash } from "crypto";
-
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
 
 const patchSchema = z.object({
@@ -112,10 +111,7 @@ export async function PATCH(
   });
 
   const nextSpec: ToolSystemSpec = { ...spec, triggers: updatedTriggers };
-  const compiledTool = {
-    compiledAt: new Date().toISOString(),
-    specHash: createHash("sha256").update(JSON.stringify(nextSpec)).digest("hex"),
-  };
+  const compiledTool = buildCompiledToolArtifact(nextSpec);
   const version = await createToolVersion({
     orgId: ctx.orgId,
     toolId,

@@ -5,19 +5,13 @@ import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
-import { compileToolSystem, validateToolSystem } from "@/lib/toolos/compiler";
+import { buildCompiledToolArtifact, validateToolSystem } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
-import { RUNTIMES } from "@/lib/integrations/map";
-import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
-import { executeToolAction } from "@/lib/toolos/runtime";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
-import { loadToolState } from "@/lib/toolos/state-store";
-import { linkEntities } from "@/lib/toolos/linking-engine";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -129,7 +123,7 @@ export async function processToolChat(
 
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
-  let latestEvidence: Record<string, DataEvidence> = {};
+  const latestEvidence: Record<string, DataEvidence> = {};
   let activeVersionId: string | null = null;
   let runTokens = 0;
   const consumeTokens = async (usage?: { total_tokens?: number }) => {
@@ -144,6 +138,7 @@ export async function processToolChat(
   };
 
   try {
+    let compiledTool = null as ReturnType<typeof buildCompiledToolArtifact> | null;
     const stageToStep: Record<string, string> = {
       "understand-purpose": "intent",
       "extract-entities": "entities",
@@ -245,7 +240,7 @@ export async function processToolChat(
         },
       };
     }
-    compileToolSystem(spec);
+    compiledTool = buildCompiledToolArtifact(spec);
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
 
@@ -358,7 +353,7 @@ export async function processToolChat(
 
     markStep(steps, "readiness", "running", "Validating data readiness");
     const readinessStart = Date.now();
-    const readiness = await runDataReadiness(spec, input.orgId);
+    const readiness = await runDataReadiness(spec);
     const readinessDuration = Date.now() - readinessStart;
     if (readinessDuration > TIME_BUDGETS.readinessMs) {
       appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
@@ -390,90 +385,9 @@ export async function processToolChat(
     }
     markStep(steps, "readiness", "success", "Data readiness checks complete");
 
-    markStep(steps, "runtime", "running", "Executing initial fetches");
-    machine.transition("FETCHING_DATA", "Fetching initial data");
-    const execution = await runInitialFetches(spec, input.orgId, input.toolId, builderScope);
-    latestEvidence = execution.evidence;
-    execution.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
-    const correlation = await runEntityCorrelation(spec, input.orgId, input.toolId);
-    correlation.logs.forEach((log) => appendStep(stepsById.get("runtime"), log));
-    if (correlation.linksByPair) {
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "entity_links",
-        value: correlation.linksByPair,
-      });
-    }
-    const readinessGate = resolveDataReadinessGate(spec);
-    const readinessCheck = evaluateDataReadinessGate(readinessGate, execution.evidence);
-    if (!readinessCheck.ready) {
-      appendStep(stepsById.get("runtime"), "Waiting for initial data fetch");
-      return {
-        explanation: "Waiting for initial data fetch",
-        message: { type: "text", content: "Waiting for initial data fetch…" },
-        spec,
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          state: machine.state,
-          build_logs: machine.logs,
-          data_evidence: execution.evidence,
-          data_readiness: readinessCheck,
-        },
-      };
-    }
-    const missingEvidence = missingEvidenceForViews(spec, execution.evidence);
-    if (missingEvidence.length > 0) {
-      markStep(steps, "runtime", "error", "Data evidence missing");
-      machine.transition("AWAITING_CLARIFICATION", "Data evidence missing", "warn");
-      const questions = limitClarifications(
-        missingEvidence.map((viewName) => `Confirm data scope for ${viewName} and provide required filters.`),
-      );
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: questions,
-      });
-      return {
-        explanation: "Data evidence required",
-        message: { type: "text", content: formatClarificationPrompt(questions) },
-        spec,
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          clarifications: questions,
-          state: machine.state,
-          build_logs: machine.logs,
-          data_evidence: execution.evidence,
-        },
-      };
-    }
-    if (execution.empty.length > 0) {
-      markStep(steps, "runtime", "error", "No data returned");
-      machine.transition("DEGRADED", "No data returned", "warn");
-      return {
-        explanation: "No data returned",
-        message: {
-          type: "text",
-          content: `No data returned from ${execution.empty.join(", ")}. Refine filters or confirm access.`,
-        },
-        spec,
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          empty_sources: execution.empty,
-          state: machine.state,
-          build_logs: machine.logs,
-          data_evidence: execution.evidence,
-        },
-      };
-    }
-    markStep(steps, "runtime", "success", "Initial data loaded");
-    machine.transition("DATA_READY", "Data ready");
+    markStep(steps, "runtime", "pending", "Awaiting activation");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
-    machine.transition("READY", "Tool ready");
+    machine.transition("READY", "Tool compiled");
     await saveMemory({
       scope: builderScope,
       namespace: builderNamespace,
@@ -481,10 +395,9 @@ export async function processToolChat(
       value: null,
     });
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    const compiledTool = {
-      compiledAt: new Date().toISOString(),
-      specHash: createHash("sha256").update(JSON.stringify(spec)).digest("hex"),
-    };
+    if (!compiledTool) {
+      throw new Error("Compiled tool artifact missing");
+    }
     const version = await createToolVersion({
       orgId: input.orgId,
       toolId: input.toolId,
@@ -521,13 +434,11 @@ export async function processToolChat(
     throw err;
   }
 
-    const refinements = await withTimeout(
-      runRefinementAgent(spec, consumeTokens),
-      500,
-      "Refinement suggestions timed out",
-    ).catch(
-    () => [],
-  );
+  const refinements = await withTimeout(
+    runRefinementAgent(spec, consumeTokens),
+    500,
+    "Refinement suggestions timed out",
+  ).catch(() => []);
   return {
     explanation: spec.purpose,
     message: { type: "text", content: spec.purpose },
@@ -651,7 +562,7 @@ function createBuildSteps(): BuildStep[] {
     { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
     { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
     { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
-    { id: "runtime", title: "Executing initial fetch", status: "pending", logs: [] },
+    { id: "runtime", title: "Awaiting activation", status: "pending", logs: [] },
     { id: "views", title: "Rendering views", status: "pending", logs: [] },
   ];
 }
@@ -771,7 +682,7 @@ function collectDestructiveActionQuestions(spec: ToolSystemSpec) {
   return questions;
 }
 
-async function runDataReadiness(spec: ToolSystemSpec, orgId: string) {
+async function runDataReadiness(spec: ToolSystemSpec) {
   const clarifications: string[] = [];
   const logs: string[] = [];
   const readActions = spec.actions.filter((action) => {
@@ -779,98 +690,24 @@ async function runDataReadiness(spec: ToolSystemSpec, orgId: string) {
     return cap?.allowedOperations.includes("read");
   });
 
-  const tasks = readActions.map(async (action) => {
+  for (const action of readActions) {
     const cap = getCapability(action.capabilityId);
-    if (!cap) return;
+    if (!cap) {
+      logs.push(`Capability missing for ${action.name}.`);
+      continue;
+    }
     const required = cap.constraints?.requiredFilters ?? [];
     const missing = required.filter((field) => !(action.inputSchema && field in action.inputSchema));
     if (missing.length > 0) {
       clarifications.push(
         `Provide ${missing.join(", ")} for ${action.name} (${action.integrationId}).`,
       );
-      return;
+      continue;
     }
-    const input = buildDefaultInput(cap);
-    try {
-      const runtime = RUNTIMES[action.integrationId];
-      const token = await withTimeout(getValidAccessToken(orgId, action.integrationId), TIME_BUDGETS.readinessMs, "Token timeout");
-      const context = await withTimeout(runtime.resolveContext(token), TIME_BUDGETS.readinessMs, "Context timeout");
-      const executor = runtime.capabilities[action.capabilityId];
-      const output = await withTimeout(
-        executor.execute(input, context, new ExecutionTracer("run")),
-        TIME_BUDGETS.readinessMs,
-        "Dry-run timeout",
-      );
-      const count = Array.isArray(output) ? output.length : output ? 1 : 0;
-      logs.push(`Validated ${action.integrationId} connectivity (sample: ${count}).`);
-    } catch (err) {
-      logs.push(`Validation failed for ${action.integrationId}: ${err instanceof Error ? err.message : "error"}.`);
-    }
-  });
-
-  await Promise.allSettled(tasks);
+    logs.push(`Validated inputs for ${action.name} (${action.integrationId}).`);
+  }
 
   return { clarifications, logs };
-}
-
-async function runInitialFetches(
-  spec: ToolSystemSpec,
-  orgId: string,
-  toolId: string,
-  builderScope: MemoryScope,
-) {
-  const logs: string[] = [];
-  const empty: string[] = [];
-  const evidence: Record<string, DataEvidence> = {};
-  const actionIds = new Set<string>();
-  for (const view of spec.views) {
-    view.actions.forEach((id) => actionIds.add(id));
-  }
-  const actions = spec.actions.filter((a) => actionIds.has(a.id));
-  const tasks = actions.map(async (action) => {
-    const cap = getCapability(action.capabilityId);
-    if (!cap || !cap.allowedOperations.includes("read")) return;
-    const input = buildDefaultInput(cap);
-    try {
-      const result = await withTimeout(
-        executeToolAction({
-          orgId,
-          toolId,
-          spec,
-          actionId: action.id,
-          input,
-          recordRun: false,
-        }),
-        TIME_BUDGETS.initialFetchMs,
-        "Fetch timeout",
-      );
-      const sample = Array.isArray(result.output) ? result.output : result.output ? [result.output] : [];
-      const count = sample.length;
-      logs.push(`Pulled ${count} records from ${action.integrationId}.`);
-      if (count === 0) empty.push(action.integrationId);
-      const evidenceForAction = buildEvidenceForAction(spec, action.id, action.integrationId, sample);
-      Object.assign(evidence, evidenceForAction);
-      const viewId = Object.keys(evidenceForAction)[0];
-      if (viewId) {
-        const entry = evidenceForAction[viewId];
-        logs.push(
-          `Evidence for ${entry.entity}: ${entry.sampleCount} records, confidence ${entry.confidenceScore.toFixed(2)}.`,
-        );
-      }
-    } catch (err) {
-      logs.push(`Fetch failed for ${action.integrationId}: ${err instanceof Error ? err.message : "error"}.`);
-      empty.push(action.integrationId);
-    }
-  });
-
-  await Promise.allSettled(tasks);
-  await saveMemory({
-    scope: builderScope,
-    namespace: "tool_builder",
-    key: "data_evidence",
-    value: evidence,
-  });
-  return { logs, empty, evidence };
 }
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
@@ -897,139 +734,6 @@ function buildQueryPlans(spec: ToolSystemSpec) {
   });
 }
 
-function buildEvidenceForAction(
-  spec: ToolSystemSpec,
-  actionId: string,
-  integration: string,
-  sample: Array<Record<string, any>>,
-) {
-  const evidence: Record<string, DataEvidence> = {};
-  const action = spec.actions.find((a) => a.id === actionId);
-  if (!action) return evidence;
-  const reducer = spec.state.reducers.find((r) => r.id === action.reducerId);
-  const statePath = reducer?.target;
-  const view = spec.views.find((v) => v.source.statePath === statePath);
-  if (!view) return evidence;
-  const entity = spec.entities.find((e) => e.name === view.source.entity);
-  const sampleFields = sample[0] ? Object.keys(sample[0]) : [];
-  const required = entity?.fields.filter((f) => f.required).map((f) => f.name) ?? [];
-  const requiredPresent = required.filter((field) => sampleFields.includes(field));
-  const confidenceScore = required.length === 0 ? 0.8 : requiredPresent.length / required.length;
-  evidence[view.id] = {
-    integration,
-    entity: view.source.entity,
-    sampleCount: sample.length,
-    sampleFields,
-    fetchedAt: new Date().toISOString(),
-    confidenceScore,
-  };
-  return evidence;
-}
-
-function resolveDataReadinessGate(spec: ToolSystemSpec) {
-  if (spec.dataReadiness) return spec.dataReadiness;
-  return {
-    requiredEntities: spec.entities.map((entity) => entity.name),
-    minimumRecords: 1,
-  };
-}
-
-function evaluateDataReadinessGate(
-  gate: { requiredEntities: string[]; minimumRecords: number },
-  evidence: Record<string, DataEvidence>,
-) {
-  const countsByEntity = new Map<string, number>();
-  for (const entry of Object.values(evidence)) {
-    countsByEntity.set(entry.entity, Math.max(countsByEntity.get(entry.entity) ?? 0, entry.sampleCount));
-  }
-  const missing = gate.requiredEntities.filter(
-    (entity) => (countsByEntity.get(entity) ?? 0) < gate.minimumRecords,
-  );
-  return {
-    ready: missing.length === 0,
-    missingEntities: missing,
-    minimumRecords: gate.minimumRecords,
-  };
-}
-
-async function runEntityCorrelation(
-  spec: ToolSystemSpec,
-  orgId: string,
-  toolId: string,
-): Promise<{ logs: string[]; linksByPair: Record<string, any[]> | null }> {
-  const logs: string[] = [];
-  const entityStatePaths = new Map<string, string>();
-  for (const view of spec.views) {
-    if (!entityStatePaths.has(view.source.entity)) {
-      entityStatePaths.set(view.source.entity, view.source.statePath);
-    }
-  }
-  const state = await loadToolState(toolId, orgId);
-  const entityData = new Map<string, Array<Record<string, any>>>();
-  for (const entity of spec.entities) {
-    const path = entityStatePaths.get(entity.name);
-    if (!path) continue;
-    const raw = readStateValue(state, path);
-    const rows = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    entityData.set(entity.name, rows);
-  }
-
-  const linksByPair: Record<string, any[]> = {};
-  for (let i = 0; i < spec.entities.length; i += 1) {
-    for (let j = i + 1; j < spec.entities.length; j += 1) {
-      const source = spec.entities[i];
-      const target = spec.entities[j];
-      const sourceRows = entityData.get(source.name) ?? [];
-      const targetRows = entityData.get(target.name) ?? [];
-      const sourceField = source.identifiers?.[0];
-      const targetField = target.identifiers?.[0];
-      if (!sourceField || !targetField) {
-        logs.push(`Skipped correlation between ${source.name} and ${target.name}.`);
-        continue;
-      }
-      if (sourceRows.length === 0 || targetRows.length === 0) {
-        logs.push(`No data to correlate for ${source.name} and ${target.name}.`);
-        continue;
-      }
-      const links = linkEntities({
-        source: sourceRows,
-        target: targetRows,
-        sourceField,
-        targetField,
-      });
-      if (links.length > 0) {
-        const key = `${source.name}::${target.name}`;
-        linksByPair[key] = links;
-        logs.push(`Linked ${links.length} records between ${source.name} and ${target.name}.`);
-      } else {
-        logs.push(`No correlations found for ${source.name} and ${target.name}.`);
-      }
-    }
-  }
-
-  return { logs, linksByPair: Object.keys(linksByPair).length > 0 ? linksByPair : null };
-}
-
-function readStateValue(state: Record<string, any>, path: string) {
-  if (path in state) return state[path];
-  return path.split(".").reduce((value: any, key) => {
-    if (value && typeof value === "object") return value[key];
-    return undefined;
-  }, state);
-}
-
-function missingEvidenceForViews(spec: ToolSystemSpec, evidence: Record<string, DataEvidence>) {
-  const requiredTypes = new Set(["table", "kanban", "timeline"]);
-  const missing: string[] = [];
-  for (const view of spec.views) {
-    if (!requiredTypes.has(view.type)) continue;
-    const entry = evidence[view.id];
-    if (!entry || entry.sampleCount === 0) {
-      missing.push(view.name);
-    }
-  }
-  return missing;
-}
 
 async function runRefinementAgent(
   spec: ToolSystemSpec,

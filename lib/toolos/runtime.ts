@@ -2,8 +2,8 @@ import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
-import { compileToolSystem } from "@/lib/toolos/compiler";
-import { ToolSystemSpec, StateReducer } from "@/lib/toolos/spec";
+import { CompiledToolArtifact } from "@/lib/toolos/compiler";
+import { StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
@@ -18,17 +18,16 @@ export type ToolExecutionResult = {
 export async function executeToolAction(params: {
   orgId: string;
   toolId: string;
-  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
   actionId: string;
   input: Record<string, any>;
   userId?: string | null;
   triggerId?: string | null;
   recordRun?: boolean;
 }) {
-  const { orgId, toolId, spec, actionId, input, userId, triggerId, recordRun = true } = params;
+  const { orgId, toolId, compiledTool, actionId, input, userId, triggerId, recordRun = true } = params;
   const toolScope: MemoryScope = { type: "tool_org", toolId, orgId };
-  const compiled = compileToolSystem(spec);
-  const action = compiled.actions.get(actionId);
+  const action = compiledTool.actions.find((item) => item.id === actionId);
   if (!action) {
     throw new Error(`Action ${actionId} not found`);
   }
@@ -122,7 +121,7 @@ export async function executeToolAction(params: {
     }
 
     const state = await loadToolState(toolId, orgId);
-    const nextState = applyReducer(spec.state.reducers, action.reducerId, state, output);
+    const nextState = applyReducer(compiledTool.reducers, action.reducerId, state, output);
     await saveToolState(toolId, orgId, nextState);
     const snapshots = (await loadMemory({
       scope: toolScope,
@@ -139,14 +138,14 @@ export async function executeToolAction(params: {
     });
     await saveMemory({
       scope: toolScope,
-      namespace: spec.memory.tool.namespace,
+      namespace: compiledTool.memory.tool.namespace,
       key: actionId,
       value: output,
     });
     if (userId) {
       await saveMemory({
         scope: { type: "tool_user", toolId, userId },
-        namespace: spec.memory.user.namespace,
+        namespace: compiledTool.memory.user.namespace,
         key: actionId,
         value: output,
       });

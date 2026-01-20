@@ -3,6 +3,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 
@@ -44,10 +45,11 @@ async function runLiveFlowTest() {
     .eq("id", project.id);
 
   const action = result.spec.actions[0];
+  const compiledTool = buildCompiledToolArtifact(result.spec);
   const exec = await executeToolAction({
     orgId,
     toolId: project.id,
-    spec: result.spec,
+    compiledTool,
     actionId: action.id,
     input: {},
   });

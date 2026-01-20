@@ -78,8 +78,18 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [budgetInfo, setBudgetInfo] = React.useState<BudgetSummary | null>(null);
   const [budgetLoading, setBudgetLoading] = React.useState(false);
   const [budgetDraft, setBudgetDraft] = React.useState<{ monthlyLimit: number; perRunLimit: number } | null>(null);
+  const [isActivated, setIsActivated] = React.useState<boolean | null>(null);
+  const [activationLoading, setActivationLoading] = React.useState(false);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
+  const activeView = React.useMemo(
+    () => systemSpec?.views.find((v) => v.id === activeViewId),
+    [systemSpec, activeViewId],
+  );
+  const actionSpecs = React.useMemo(
+    () => (systemSpec ? systemSpec.actions.filter((a) => activeView?.actions.includes(a.id)) : []),
+    [systemSpec, activeView],
+  );
 
   React.useEffect(() => {
     if (!systemSpec) return;
@@ -105,6 +115,10 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   }, [systemSpec, activeEntityId, activeViewId]);
 
   const fetchView = React.useCallback(async (viewId: string) => {
+    if (isActivated === false) {
+      setError("Tool compiled but not activated.");
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -114,6 +128,10 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         body: JSON.stringify({ viewId }),
       });
       const payload = await res.json();
+      if (res.status === 409 && payload?.status === "blocked") {
+        setIsActivated(false);
+        throw new Error(payload?.reason ?? "Tool not activated");
+      }
       if (!res.ok) {
         throw new Error(payload?.error ?? "Failed to load view");
       }
@@ -132,6 +150,10 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   }, [toolId]);
 
   const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
+    if (isActivated === false) {
+      setError("Tool compiled but not activated.");
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -141,6 +163,10 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         body: JSON.stringify({ actionId, viewId: activeViewId, input }),
       });
       const payload = await res.json();
+      if (res.status === 409 && payload?.status === "blocked") {
+        setIsActivated(false);
+        throw new Error(payload?.reason ?? "Tool not activated");
+      }
       if (!res.ok) {
         throw new Error(payload?.error ?? "Failed to run action");
       }
@@ -223,6 +249,50 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     }
   }, [toolId]);
 
+  const fetchActivation = React.useCallback(async () => {
+    setActivationLoading(true);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/activation`);
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.error ?? "Failed to load activation status");
+      }
+      setIsActivated(payload?.activated === true);
+    } catch (err) {
+      setIsActivated(false);
+      setError(err instanceof Error ? err.message : "Failed to load activation status");
+    } finally {
+      setActivationLoading(false);
+    }
+  }, [toolId]);
+
+  const activateTool = React.useCallback(async () => {
+    setActivationLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tools/${toolId}/activation`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activated: true }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.error ?? "Failed to activate tool");
+      }
+      setIsActivated(true);
+      if (activeViewId && actionSpecs.length > 0) {
+        autoFetchedRef.current = activeViewId;
+        const firstAction = actionSpecs[0];
+        const loadInput = buildLoadInput(firstAction.capabilityId, 5);
+        await runAction(firstAction.id, loadInput);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to activate tool");
+    } finally {
+      setActivationLoading(false);
+    }
+  }, [toolId, activeViewId, actionSpecs, runAction]);
+
   const saveBudget = React.useCallback(
     async (patch: { monthlyLimit?: number; perRunLimit?: number }) => {
       await fetch(`/api/tools/${toolId}/budget`, {
@@ -284,8 +354,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
+    if (isActivated !== true) return;
     void fetchView(activeViewId);
-  }, [spec, activeViewId, fetchView]);
+  }, [spec, activeViewId, fetchView, isActivated]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
@@ -293,21 +364,14 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     void fetchAutomation();
     void fetchTriggers();
     void fetchBudget();
-  }, [spec, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget]);
+    void fetchActivation();
+  }, [spec, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchActivation]);
 
   React.useEffect(() => {
     if (!runInspectorOpen || !selectedRunId) return;
     void fetchRunDetails(selectedRunId);
   }, [runInspectorOpen, selectedRunId, fetchRunDetails]);
 
-  const activeView = React.useMemo(
-    () => systemSpec?.views.find((v) => v.id === activeViewId),
-    [systemSpec, activeViewId],
-  );
-  const actionSpecs = React.useMemo(
-    () => (systemSpec ? systemSpec.actions.filter((a) => activeView?.actions.includes(a.id)) : []),
-    [systemSpec, activeView],
-  );
   const rows = React.useMemo(
     () => normalizeRows(activeView, projection?.data),
     [activeView, projection?.data],
@@ -404,11 +468,12 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     if (!activeView || !actionSpecs.length) return;
     if (rows.length > 0) return;
     if (autoFetchedRef.current === activeView.id) return;
+    if (isActivated !== true) return;
     autoFetchedRef.current = activeView.id;
     const firstAction = actionSpecs[0];
     const loadInput = buildLoadInput(firstAction.capabilityId, 5);
     void runAction(firstAction.id, loadInput);
-  }, [activeView, actionSpecs, rows, runAction]);
+  }, [activeView, actionSpecs, rows, runAction, isActivated]);
 
   if (!spec) {
     return (
@@ -475,13 +540,24 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       <div className="flex-1 overflow-auto px-6 py-6">
         {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
         {isLoading && <div className="mb-4 text-sm text-muted-foreground">Loading view…</div>}
+        {isActivated === false && (
+          <div className="mb-4 flex items-center justify-between rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <div>Tool compiled but not activated.</div>
+            <button
+              className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-60"
+              onClick={activateTool}
+              type="button"
+              disabled={activationLoading}
+            >
+              {activationLoading ? "Activating…" : "Activate Tool"}
+            </button>
+          </div>
+        )}
         {activeView ? (
           <div className="flex gap-6">
             <div className="flex-1">
               {requiresEvidence(activeView.type) && !evidence && (
-                <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
-                  Waiting for data evidence before rendering this view.
-                </div>
+                <SchemaPreview fields={activeView.fields} />
               )}
               {requiresEvidence(activeView.type) && evidence ? (
                 <div className="space-y-3">
@@ -898,6 +974,29 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function SchemaPreview({ fields }: { fields: string[] }) {
+  const items = Array.isArray(fields) ? fields.filter(Boolean) : [];
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/10 px-4 py-3 text-sm text-muted-foreground">
+      <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Schema Preview</div>
+      {items.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {items.slice(0, 12).map((field) => (
+            <span
+              key={field}
+              className="rounded-full border border-border/60 bg-background px-2 py-1 text-[11px] text-foreground"
+            >
+              {field}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs">No fields defined yet.</div>
+      )}
     </div>
   );
 }

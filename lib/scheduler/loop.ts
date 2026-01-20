@@ -1,6 +1,7 @@
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ExecutionTracer } from "@/lib/observability/tracer";
+import { CompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
@@ -35,14 +36,17 @@ export class EventLoop {
     if (error || !projects) return;
     for (const project of projects) {
       let spec = project.spec;
+      let compiledTool: unknown = null;
       if (project.active_version_id) {
         const { data: version } = await (supabase.from("tool_versions") as any)
-          .select("tool_spec")
+          .select("tool_spec, compiled_tool")
           .eq("id", project.active_version_id)
           .single();
         spec = version?.tool_spec ?? spec;
+        compiledTool = version?.compiled_tool ?? null;
       }
       if (!isToolSystemSpec(spec)) continue;
+      if (!isCompiledToolArtifact(compiledTool)) continue;
       const scope: MemoryScope = { type: "tool_org", toolId: project.id, orgId: project.org_id };
       const paused = await loadMemory({
         scope,
@@ -50,7 +54,7 @@ export class EventLoop {
         key: "automation_paused",
       });
       if (paused === true) continue;
-      for (const trigger of spec.triggers) {
+      for (const trigger of compiledTool.triggers) {
         if (!trigger.enabled) continue;
         if (trigger.type !== "cron") continue;
         const intervalMinutes = resolveIntervalMinutes(trigger.condition ?? {});
@@ -58,7 +62,7 @@ export class EventLoop {
         const failureKey = `trigger.${trigger.id}.failure_count`;
         const failureCount = await loadMemory({
           scope,
-          namespace: spec.memory.tool.namespace,
+          namespace: compiledTool.memory.tool.namespace,
           key: failureKey,
         });
         const threshold = Number(trigger.condition?.failureThreshold ?? 0);
@@ -73,7 +77,7 @@ export class EventLoop {
         }
         const lastRun = await loadMemory({
           scope,
-          namespace: spec.memory.tool.namespace,
+          namespace: compiledTool.memory.tool.namespace,
           key: lastKey,
         });
         const now = Date.now();
@@ -82,13 +86,13 @@ export class EventLoop {
         const ok = await this.dispatch({
           orgId: project.org_id,
           toolId: project.id,
-          spec,
+          compiledTool,
           trigger,
         });
         if (ok) {
           await saveMemory({
             scope,
-            namespace: spec.memory.tool.namespace,
+            namespace: compiledTool.memory.tool.namespace,
             key: failureKey,
             value: 0,
           });
@@ -96,7 +100,7 @@ export class EventLoop {
           const nextCount = Number(failureCount ?? 0) + 1;
           await saveMemory({
             scope,
-            namespace: spec.memory.tool.namespace,
+            namespace: compiledTool.memory.tool.namespace,
             key: failureKey,
             value: nextCount,
           });
@@ -111,7 +115,7 @@ export class EventLoop {
         }
         await saveMemory({
           scope,
-          namespace: spec.memory.tool.namespace,
+          namespace: compiledTool.memory.tool.namespace,
           key: lastKey,
           value: now,
         });
@@ -122,10 +126,10 @@ export class EventLoop {
   async dispatch(input: {
     orgId: string;
     toolId: string;
-    spec: any;
+    compiledTool: CompiledToolArtifact;
     trigger: any;
   }): Promise<boolean> {
-    const { orgId, toolId, spec, trigger } = input;
+    const { orgId, toolId, compiledTool, trigger } = input;
     console.log(`[EventLoop] Dispatching trigger ${trigger.id}`);
     const tracer = new ExecutionTracer("run");
     try {
@@ -133,7 +137,7 @@ export class EventLoop {
         await executeToolAction({
           orgId,
           toolId,
-          spec,
+          compiledTool,
           actionId: trigger.actionId,
           input: trigger.condition ?? {},
           triggerId: trigger.id,
@@ -142,7 +146,7 @@ export class EventLoop {
         await runWorkflow({
           orgId,
           toolId,
-          spec,
+          compiledTool,
           workflowId: trigger.workflowId,
           input: trigger.condition ?? {},
           triggerId: trigger.id,

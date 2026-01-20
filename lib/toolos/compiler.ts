@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { getCapability } from "@/lib/capabilities/registry";
 import {
   ToolSystemSpec,
@@ -5,6 +6,12 @@ import {
   WorkflowSpec,
   TriggerSpec,
   ViewSpec,
+  StateReducer,
+  MemorySpec,
+  IntegrationSpec,
+  DataReadinessGate,
+  AutomationsSpec,
+  ObservabilitySpec,
 } from "@/lib/toolos/spec";
 
 export type ExecutableTool = {
@@ -23,6 +30,55 @@ export type ToolSystemValidation = {
   viewsBound: boolean;
   errors: string[];
 };
+
+export type CompiledToolArtifact = {
+  compiledAt: string;
+  specHash: string;
+  actions: ActionSpec[];
+  workflows: WorkflowSpec[];
+  triggers: TriggerSpec[];
+  views: ViewSpec[];
+  reducers: StateReducer[];
+  memory: MemorySpec;
+  integrations: IntegrationSpec[];
+  dataReadiness?: DataReadinessGate;
+  automations?: AutomationsSpec;
+  observability?: ObservabilitySpec;
+};
+
+export function buildCompiledToolArtifact(spec: ToolSystemSpec): CompiledToolArtifact {
+  compileToolSystem(spec);
+  return {
+    compiledAt: new Date().toISOString(),
+    specHash: createHash("sha256").update(JSON.stringify(spec)).digest("hex"),
+    actions: spec.actions,
+    workflows: spec.workflows,
+    triggers: spec.triggers,
+    views: spec.views,
+    reducers: spec.state.reducers ?? [],
+    memory: spec.memory,
+    integrations: spec.integrations,
+    dataReadiness: spec.dataReadiness,
+    automations: spec.automations,
+    observability: spec.observability,
+  };
+}
+
+export function isCompiledToolArtifact(value: any): value is CompiledToolArtifact {
+  return (
+    value &&
+    typeof value === "object" &&
+    typeof value.compiledAt === "string" &&
+    typeof value.specHash === "string" &&
+    Array.isArray(value.actions) &&
+    Array.isArray(value.workflows) &&
+    Array.isArray(value.triggers) &&
+    Array.isArray(value.views) &&
+    Array.isArray(value.reducers) &&
+    value.memory &&
+    Array.isArray(value.integrations)
+  );
+}
 
 export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
   const errors: string[] = [];

@@ -5,6 +5,7 @@ import { ExecutionResult } from "@/lib/execution/types";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runtime";
+import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 
 export async function executeToolAction(
@@ -19,15 +20,17 @@ export async function executeToolAction(
 
   try {
     let spec: unknown;
+    let compiledTool: unknown = null;
     let orgId: string | undefined;
 
     if (versionId) {
       const { data: version } = await (supabase.from("tool_versions") as any)
-        .select("tool_spec, status, tool_id")
+        .select("tool_spec, compiled_tool, status, tool_id")
         .eq("id", versionId)
         .single();
       if (!version) throw new Error("Version not found");
       spec = version.tool_spec;
+      compiledTool = version.compiled_tool ?? null;
       const { data: project } = await supabase
         .from("projects")
         .select("org_id")
@@ -45,10 +48,11 @@ export async function executeToolAction(
       orgId = project.org_id;
       if (project.active_version_id) {
         const { data: version } = await (supabase.from("tool_versions") as any)
-          .select("tool_spec")
+          .select("tool_spec, compiled_tool")
           .eq("id", project.active_version_id)
           .single();
         spec = version?.tool_spec ?? project.spec;
+        compiledTool = version?.compiled_tool ?? null;
       } else {
         spec = project.spec;
       }
@@ -58,11 +62,14 @@ export async function executeToolAction(
     if (!isToolSystemSpec(spec)) {
       throw new Error("I need a few details before I can finish building this tool.");
     }
+    if (!isCompiledToolArtifact(compiledTool)) {
+      throw new Error("CompiledTool not found for active version.");
+    }
 
     const result = await executeToolSystemAction({
       orgId,
       toolId,
-      spec,
+      compiledTool,
       actionId,
       input: args,
     });

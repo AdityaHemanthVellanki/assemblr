@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
@@ -17,7 +18,7 @@ export async function POST(
   const supabase = await createSupabaseServerClient();
 
   const { data: project, error } = await (supabase.from("projects") as any)
-    .select("spec, active_version_id")
+    .select("spec, active_version_id, is_activated")
     .eq("id", toolId)
     .eq("org_id", ctx.orgId)
     .single();
@@ -25,14 +26,26 @@ export async function POST(
   if (error || !project?.spec) {
     return NextResponse.json({ error: "Tool not found" }, { status: 404 });
   }
+  if (!project.is_activated) {
+    return NextResponse.json(
+      {
+        status: "blocked",
+        reason: "Tool not activated",
+        action: "Click 'Activate Tool' in the UI to enable execution",
+      },
+      { status: 409 },
+    );
+  }
 
   let spec = project.spec;
+  let compiledTool: unknown = null;
   if (project.active_version_id) {
     const { data: version } = await (supabase.from("tool_versions") as any)
-      .select("tool_spec")
+      .select("tool_spec, compiled_tool")
       .eq("id", project.active_version_id)
       .single();
     spec = version?.tool_spec ?? spec;
+    compiledTool = version?.compiled_tool ?? null;
   }
   if (!isToolSystemSpec(spec)) {
     return NextResponse.json(
@@ -54,10 +67,20 @@ export async function POST(
   });
 
   if (actionId) {
+    if (!isCompiledToolArtifact(compiledTool)) {
+      return NextResponse.json(
+        {
+          status: "blocked",
+          reason: "CompiledTool not found for active version",
+          action: "Recompile the tool to generate a CompiledTool artifact",
+        },
+        { status: 400 },
+      );
+    }
     const result = await executeToolAction({
       orgId: ctx.orgId,
       toolId,
-      spec,
+      compiledTool,
       actionId,
       input,
       userId: ctx.userId,

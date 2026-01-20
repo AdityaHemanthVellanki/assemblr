@@ -1,4 +1,5 @@
-import { ToolSystemSpec, WorkflowSpec, WorkflowNode } from "@/lib/toolos/spec";
+import { CompiledToolArtifact } from "@/lib/toolos/compiler";
+import { WorkflowSpec, WorkflowNode } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { loadToolState } from "@/lib/toolos/state-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
@@ -7,20 +8,20 @@ import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 export async function runWorkflow(params: {
   orgId: string;
   toolId: string;
-  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
   workflowId: string;
   input: Record<string, any>;
   triggerId?: string | null;
 }) {
-  const { orgId, toolId, spec, workflowId, input, triggerId } = params;
-  const workflow = spec.workflows.find((w) => w.id === workflowId);
+  const { orgId, toolId, compiledTool, workflowId, input, triggerId } = params;
+  const workflow = compiledTool.workflows.find((w) => w.id === workflowId);
   if (!workflow) {
     throw new Error(`Workflow ${workflowId} not found`);
   }
   const scope: MemoryScope = { type: "tool_org", toolId, orgId };
   const order = topologicalOrder(workflow);
   const nodeResults: Record<string, any> = {};
-  const actionMap = new Map(spec.actions.map((action) => [action.id, action]));
+  const actionMap = new Map(compiledTool.actions.map((action) => [action.id, action]));
   const paused = await loadMemory({
     scope,
     namespace: "tool_builder",
@@ -63,14 +64,14 @@ export async function runWorkflow(params: {
       while (true) {
         const startedAt = Date.now();
         try {
-          const result = await executeToolAction({
-            orgId,
-            toolId,
-            spec,
-            actionId: node.actionId,
-            input: inputPayload,
-            recordRun: false,
-          });
+      const result = await executeToolAction({
+        orgId,
+        toolId,
+        compiledTool,
+        actionId: node.actionId,
+        input: inputPayload,
+        recordRun: false,
+      });
           nodeResults[node.id] = result.output;
           runLogs.push({
             id: `${node.id}:done`,

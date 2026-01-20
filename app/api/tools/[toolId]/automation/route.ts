@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 
 const bodySchema = z.object({
@@ -29,6 +30,25 @@ export async function PATCH(
 ) {
   const { toolId } = await params;
   const { ctx } = await requireOrgMember();
+  const supabase = await createSupabaseServerClient();
+  const { data: project } = await (supabase.from("projects") as any)
+    .select("is_activated")
+    .eq("id", toolId)
+    .eq("org_id", ctx.orgId)
+    .single();
+  if (!project) {
+    return NextResponse.json({ error: "Tool not found" }, { status: 404 });
+  }
+  if (!project.is_activated) {
+    return NextResponse.json(
+      {
+        status: "blocked",
+        reason: "Tool not activated",
+        action: "Activate the tool before adjusting automation",
+      },
+      { status: 409 },
+    );
+  }
   const json = await req.json().catch(() => ({}));
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) {
