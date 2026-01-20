@@ -12,11 +12,15 @@ import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { ToolRenderer } from "@/components/dashboard/tool-renderer";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
+import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
+import { type ToolLifecycleState } from "@/lib/toolos/spec";
 
 interface ProjectWorkspaceProps {
   project?: {
     id: string;
     spec: ToolSpec | null;
+    lifecycle_state?: ToolLifecycleState | null;
+    build_logs?: ToolBuildLog[] | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -37,7 +41,9 @@ export function ProjectWorkspace({
   // State
   const [inputValue, setInputValue] = React.useState("");
   const [messages, setMessages] = React.useState<any[]>(initialMessages || []);
-  const [buildSteps, setBuildSteps] = React.useState<BuildStep[]>(defaultBuildSteps());
+  const [buildSteps, setBuildSteps] = React.useState<BuildStep[]>(() =>
+    deriveBuildSteps(project?.lifecycle_state ?? null, project?.build_logs ?? null),
+  );
   const [isExecuting, setIsExecuting] = React.useState(false);
   const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
@@ -53,6 +59,8 @@ export function ProjectWorkspace({
 
   // Derived state
   const isZeroState = messages.length === 0;
+  const lifecycleState = project?.lifecycle_state ?? (currentSpec as any)?.lifecycle_state ?? null;
+  const canRenderTool = Boolean(currentSpec && toolId && lifecycleState === "READY");
 
   // Dynamic Header Title
   const headerTitle =
@@ -187,6 +195,12 @@ export function ProjectWorkspace({
     }
   };
 
+  React.useEffect(() => {
+    if (isExecuting) return;
+    if (!project?.lifecycle_state && !project?.build_logs) return;
+    setBuildSteps(deriveBuildSteps(project?.lifecycle_state ?? null, project?.build_logs ?? null));
+  }, [project?.lifecycle_state, project?.build_logs, isExecuting]);
+
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       {/* Header */}
@@ -290,11 +304,15 @@ export function ProjectWorkspace({
             )}
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
-              {currentSpec && toolId ? (
+              {canRenderTool && toolId && currentSpec ? (
                 <ToolRenderer toolId={toolId} spec={currentSpec} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
-                  Describe the tool you want to build to see a live preview.
+                  {lifecycleState === "AWAITING_CLARIFICATION"
+                    ? "Answer the questions in chat to continue building this tool."
+                    : lifecycleState && lifecycleState !== "READY"
+                      ? "Tool is still building. Check build progress for updates."
+                      : "Describe the tool you want to build to see a live preview."}
                 </div>
               )}
             </div>
@@ -489,6 +507,54 @@ function defaultBuildSteps(): BuildStep[] {
     { id: "runtime", title: "Executing initial fetch", status: "pending", logs: [] },
     { id: "views", title: "Rendering views", status: "pending", logs: [] },
   ];
+}
+
+function deriveBuildSteps(
+  lifecycleState: ToolLifecycleState | null,
+  buildLogs: ToolBuildLog[] | null,
+): BuildStep[] {
+  const steps = defaultBuildSteps();
+  if (!lifecycleState) return steps;
+  if (lifecycleState === "READY") return markAllSuccess(steps);
+
+  const order = steps.map((step) => step.id);
+  const current = resolveLifecycleStep(lifecycleState);
+  if (current.stepId) {
+    const currentIndex = order.indexOf(current.stepId);
+    steps.forEach((step, index) => {
+      if (index < currentIndex) step.status = "success";
+      if (index === currentIndex && current.status) step.status = current.status;
+    });
+  }
+
+  if (Array.isArray(buildLogs)) {
+    const stepById = new Map(steps.map((step) => [step.id, step]));
+    for (const log of buildLogs) {
+      const stepId = resolveLifecycleStep(log.state).stepId;
+      if (!stepId) continue;
+      const target = stepById.get(stepId);
+      if (!target) continue;
+      target.logs.push(log.message);
+      if (log.level === "error") target.status = "error";
+      if (log.level === "warn" && target.status === "pending") target.status = "running";
+    }
+  }
+
+  return steps;
+}
+
+function resolveLifecycleStep(
+  lifecycleState: ToolLifecycleState,
+): { stepId: string | null; status: BuildStep["status"] | null } {
+  if (lifecycleState === "INIT") return { stepId: "intent", status: "pending" };
+  if (lifecycleState === "INTENT_PARSED") return { stepId: "entities", status: "running" };
+  if (lifecycleState === "AWAITING_CLARIFICATION") return { stepId: "intent", status: "error" };
+  if (lifecycleState === "VALIDATING_INTEGRATIONS") return { stepId: "integrations", status: "running" };
+  if (lifecycleState === "FETCHING_DATA") return { stepId: "readiness", status: "running" };
+  if (lifecycleState === "DATA_READY") return { stepId: "runtime", status: "running" };
+  if (lifecycleState === "BUILDING_VIEWS") return { stepId: "views", status: "running" };
+  if (lifecycleState === "DEGRADED") return { stepId: "compile", status: "error" };
+  return { stepId: null, status: null };
 }
 
 function markFirstRunning(steps: BuildStep[]): BuildStep[] {

@@ -127,19 +127,32 @@ export function setMemoryAdapterFactory(factory: (() => Promise<MemoryAdapter>) 
 }
 
 export async function loadMemory(params: MemoryReadParams) {
-  const { scope, namespace, key } = params;
-  const adapter = await getAdapter();
-  return await adapter.get({ scope: normalizeScope(scope), namespace, key });
+  try {
+    const { scope, namespace, key } = params;
+    const adapter = await getAdapter();
+    return await adapter.get({ scope: normalizeScope(scope), namespace, key });
+  } catch (err) {
+    console.warn(`[MemoryStore] Load failed for ${params.key}:`, err);
+    return null;
+  }
 }
 
 export async function saveMemory(params: MemoryWriteParams) {
-  const { scope, namespace, key, value } = params;
-  const adapter = await getAdapter();
-  await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
+  try {
+    const { scope, namespace, key, value } = params;
+    const adapter = await getAdapter();
+    await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
+  } catch (err) {
+    console.warn(`[MemoryStore] Save failed for ${params.key}:`, err);
+  }
 }
 
 export async function deleteMemory(params: MemoryDeleteParams) {
-  const { scope, namespace, key } = params;
-  const adapter = await getAdapter();
-  await adapter.delete({ scope: normalizeScope(scope), namespace, key });
+  try {
+    const { scope, namespace, key } = params;
+    const adapter = await getAdapter();
+    await adapter.delete({ scope: normalizeScope(scope), namespace, key });
+  } catch (err) {
+    console.warn(`[MemoryStore] Delete failed for ${params.key}:`, err);
+  }
 }

@@ -181,6 +181,28 @@ export const ObservabilitySpecSchema = z.object({
 });
 export type ObservabilitySpec = z.infer<typeof ObservabilitySpecSchema>;
 
+export const ToolLifecycleStateSchema = z.enum([
+  "INIT",
+  "INTENT_PARSED",
+  "AWAITING_CLARIFICATION",
+  "VALIDATING_INTEGRATIONS",
+  "FETCHING_DATA",
+  "DATA_READY",
+  "BUILDING_VIEWS",
+  "READY",
+  "DEGRADED",
+  "NEEDS_CLARIFICATION",
+]);
+export type ToolLifecycleState = z.infer<typeof ToolLifecycleStateSchema>;
+
+export const InitialFetchSchema = z.object({
+  entity: z.string().min(1),
+  integrationId: IntegrationIdSchema,
+  actionId: z.string().min(1),
+  limit: z.number().min(1).default(10),
+});
+export type InitialFetch = z.infer<typeof InitialFetchSchema>;
+
 export const ToolSystemSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -201,10 +223,13 @@ export const ToolSystemSpecSchema = z.object({
     grants: z.array(PermissionSpecSchema).default([]),
   }),
   integrations: z.array(IntegrationSpecSchema),
+  initialFetch: InitialFetchSchema.optional(),
   dataReadiness: DataReadinessGateSchema.optional(),
   memory: MemorySpecSchema,
   automations: AutomationsSpecSchema.optional(),
   observability: ObservabilitySpecSchema.optional(),
+  clarifications: z.array(z.string()).optional(),
+  lifecycle_state: ToolLifecycleStateSchema.optional(),
 });
 export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;
 

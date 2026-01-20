@@ -78,6 +78,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [budgetInfo, setBudgetInfo] = React.useState<BudgetSummary | null>(null);
   const [budgetLoading, setBudgetLoading] = React.useState(false);
   const [budgetDraft, setBudgetDraft] = React.useState<{ monthlyLimit: number; perRunLimit: number } | null>(null);
+  const [lifecycle, setLifecycle] = React.useState<string>("INIT");
   const [isActivated, setIsActivated] = React.useState<boolean | null>(null);
   const [activationLoading, setActivationLoading] = React.useState(false);
 
@@ -122,7 +123,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/run`, {
+      const res = await fetch(`/api/tools/${toolId}/run/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ viewId }),
@@ -147,7 +148,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     } finally {
       setIsLoading(false);
     }
-  }, [toolId]);
+  }, [toolId, isActivated]);
 
   const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
     if (isActivated === false) {
@@ -157,7 +158,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/run`, {
+      const res = await fetch(`/api/tools/${toolId}/run/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actionId, viewId: activeViewId, input }),
@@ -173,12 +174,16 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       if (payload.view) {
         setProjection(payload.view as ViewProjection);
       }
+      if (payload.state) {
+        setToolState(payload.state as Record<string, any>);
+      }
+      void fetchRuns();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to run action");
     } finally {
       setIsLoading(false);
     }
-  }, [activeViewId, toolId]);
+  }, [activeViewId, toolId, isActivated]);
 
   const fetchRuns = React.useCallback(async () => {
     const res = await fetch(`/api/tools/${toolId}/runs`);
@@ -249,18 +254,23 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     }
   }, [toolId]);
 
-  const fetchActivation = React.useCallback(async () => {
+  const fetchStatus = React.useCallback(async () => {
     setActivationLoading(true);
     try {
-      const res = await fetch(`/api/tools/${toolId}/activation`);
+      const res = await fetch(`/api/tools/${toolId}/status`);
       const payload = await res.json();
       if (!res.ok) {
-        throw new Error(payload?.error ?? "Failed to load activation status");
+        throw new Error(payload?.error ?? "Failed to load tool status");
       }
-      setIsActivated(payload?.activated === true);
+      setIsActivated(payload?.isActivated === true);
+      setLifecycle(payload?.lifecycle ?? "INIT");
+      if (payload?.lastError) {
+        setError(String(payload.lastError));
+      }
     } catch (err) {
       setIsActivated(false);
-      setError(err instanceof Error ? err.message : "Failed to load activation status");
+      setLifecycle("DEGRADED");
+      setError(err instanceof Error ? err.message : "Failed to load tool status");
     } finally {
       setActivationLoading(false);
     }
@@ -270,22 +280,24 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     setActivationLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tools/${toolId}/activation`, {
-        method: "PATCH",
+      const res = await fetch(`/api/tools/${toolId}/run/activate`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ activated: true }),
+        body: JSON.stringify({}),
       });
       const payload = await res.json();
       if (!res.ok) {
         throw new Error(payload?.error ?? "Failed to activate tool");
       }
       setIsActivated(true);
+      setLifecycle("RUNNING");
       if (activeViewId && actionSpecs.length > 0) {
         autoFetchedRef.current = activeViewId;
         const firstAction = actionSpecs[0];
         const loadInput = buildLoadInput(firstAction.capabilityId, 5);
         await runAction(firstAction.id, loadInput);
       }
+      void fetchRuns();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to activate tool");
     } finally {
@@ -360,12 +372,18 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
+    void fetchStatus();
+  }, [spec, fetchStatus]);
+
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec)) return;
+    if (isActivated !== true) return;
+    
     void fetchRuns();
     void fetchAutomation();
     void fetchTriggers();
     void fetchBudget();
-    void fetchActivation();
-  }, [spec, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchActivation]);
+  }, [spec, isActivated, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget]);
 
   React.useEffect(() => {
     if (!runInspectorOpen || !selectedRunId) return;
@@ -496,7 +514,16 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
         <div>
           <div className="text-xs uppercase text-muted-foreground">Tool Preview</div>
-          <div className="text-lg font-semibold">{systemSpec.purpose}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-lg font-semibold">{systemSpec.purpose}</div>
+            <div className={`rounded-full px-2 py-0.5 text-[10px] font-medium border ${
+              lifecycle === "RUNNING" ? "bg-green-500/10 text-green-600 border-green-200" :
+              lifecycle === "DEGRADED" ? "bg-red-500/10 text-red-600 border-red-200" :
+              "bg-muted text-muted-foreground border-border"
+            }`}>
+              {lifecycle}
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {systemSpec.entities.length > 0
@@ -654,7 +681,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         </div>
       </div>
 
-      {systemSpec.automations && (
+      {isActivated && systemSpec.automations && (
         <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
           <div className="mb-2 text-[11px] font-semibold uppercase">Automation Scheduling</div>
           <div className="flex flex-wrap items-center gap-4">
@@ -774,155 +801,159 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         </div>
       )}
 
-      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-        <div className="mb-2 text-[11px] font-semibold uppercase">Recent Runs</div>
-        {runs.length === 0 ? (
-          <div>No runs yet.</div>
-        ) : (
-          <div className="space-y-1">
-            {runs.slice(0, 5).map((run) => (
-              <div key={run.id} className="flex items-center justify-between">
-                <span>{run.status}</span>
-                <div className="flex items-center gap-2">
-                  <span>{new Date(run.created_at).toLocaleString()}</span>
-                  <button
-                    className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
-                    type="button"
-                    onClick={() => {
-                      setSelectedRunId(run.id);
-                      setRunInspectorOpen(true);
-                    }}
-                  >
-                    Inspect
-                  </button>
-                  {run.status === "failed" && (
+      {isActivated && (
+        <>
+          <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+            <div className="mb-2 text-[11px] font-semibold uppercase">Recent Runs</div>
+            {runs.length === 0 ? (
+              <div>No runs yet.</div>
+            ) : (
+              <div className="space-y-1">
+                {runs.slice(0, 5).map((run) => (
+                  <div key={run.id} className="flex items-center justify-between">
+                    <span>{run.status}</span>
+                    <div className="flex items-center gap-2">
+                      <span>{new Date(run.created_at).toLocaleString()}</span>
+                      <button
+                        className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                        type="button"
+                        onClick={() => {
+                          setSelectedRunId(run.id);
+                          setRunInspectorOpen(true);
+                        }}
+                      >
+                        Inspect
+                      </button>
+                      {run.status === "failed" && (
+                        <button
+                          className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+                          type="button"
+                          onClick={async () => {
+                            await fetch(`/api/tools/${toolId}/runs/${run.id}/retry`, { method: "POST" });
+                            void fetchRuns();
+                          }}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 flex flex-wrap gap-3 text-[11px]">
+              <span>Total: {runStats.total ?? 0}</span>
+              <span>Failed: {runStats.failed ?? 0}</span>
+              <span>Blocked: {runStats.blocked ?? 0}</span>
+            </div>
+          </div>
+
+          <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+            <div className="mb-2 text-[11px] font-semibold uppercase">Budget & Cost</div>
+            {budgetLoading ? (
+              <div>Loading budget…</div>
+            ) : budgetInfo ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-4">
+                  <span>Tokens used: {budgetInfo.usage.tokensUsed}</span>
+                  <span>Cost estimate: ${budgetInfo.costEstimate.toFixed(4)}</span>
+                  <span>Projected tokens: {budgetInfo.projectedMonthlyTokens}</span>
+                  <span>Projected cost: ${budgetInfo.projectedMonthlyCost.toFixed(4)}</span>
+                </div>
+                {budgetDraft && (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-2">
+                      <span>Monthly cap</span>
+                      <input
+                        className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
+                        type="number"
+                        min={0}
+                        value={budgetDraft.monthlyLimit}
+                        onChange={(e) =>
+                          setBudgetDraft((prev) =>
+                            prev ? { ...prev, monthlyLimit: Number(e.target.value) } : prev,
+                          )
+                        }
+                      />
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <span>Per-run cap</span>
+                      <input
+                        className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
+                        type="number"
+                        min={0}
+                        value={budgetDraft.perRunLimit}
+                        onChange={(e) =>
+                          setBudgetDraft((prev) =>
+                            prev ? { ...prev, perRunLimit: Number(e.target.value) } : prev,
+                          )
+                        }
+                      />
+                    </label>
                     <button
                       className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
                       type="button"
-                      onClick={async () => {
-                        await fetch(`/api/tools/${toolId}/runs/${run.id}/retry`, { method: "POST" });
-                        void fetchRuns();
-                      }}
+                      onClick={() => budgetDraft && saveBudget(budgetDraft)}
                     >
-                      Retry
+                      Save budget
                     </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
-            ))}
+            ) : (
+              <div>No budget data.</div>
+            )}
           </div>
-        )}
-        <div className="mt-3 flex flex-wrap gap-3 text-[11px]">
-          <span>Total: {runStats.total ?? 0}</span>
-          <span>Failed: {runStats.failed ?? 0}</span>
-          <span>Blocked: {runStats.blocked ?? 0}</span>
-        </div>
-      </div>
 
-      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-        <div className="mb-2 text-[11px] font-semibold uppercase">Budget & Cost</div>
-        {budgetLoading ? (
-          <div>Loading budget…</div>
-        ) : budgetInfo ? (
-          <div className="space-y-3">
-            <div className="flex flex-wrap gap-4">
-              <span>Tokens used: {budgetInfo.usage.tokensUsed}</span>
-              <span>Cost estimate: ${budgetInfo.costEstimate.toFixed(4)}</span>
-              <span>Projected tokens: {budgetInfo.projectedMonthlyTokens}</span>
-              <span>Projected cost: ${budgetInfo.projectedMonthlyCost.toFixed(4)}</span>
+          <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+            <div className="mb-2 text-[11px] font-semibold uppercase">Error Heatmap</div>
+            <div className="flex gap-2">
+              {errorHeatmap.days.map((day) => (
+                <div key={day.key} className="flex flex-col items-center gap-1">
+                  <div
+                    className="h-6 w-6 rounded-sm"
+                    style={{
+                      backgroundColor: `rgba(248, 113, 113, ${day.count / errorHeatmap.max})`,
+                    }}
+                  />
+                  <span className="text-[10px]">{day.count}</span>
+                </div>
+              ))}
             </div>
-            {budgetDraft && (
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2">
-                  <span>Monthly cap</span>
-                  <input
-                    className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
-                    type="number"
-                    min={0}
-                    value={budgetDraft.monthlyLimit}
-                    onChange={(e) =>
-                      setBudgetDraft((prev) =>
-                        prev ? { ...prev, monthlyLimit: Number(e.target.value) } : prev,
-                      )
-                    }
-                  />
-                </label>
-                <label className="flex items-center gap-2">
-                  <span>Per-run cap</span>
-                  <input
-                    className="w-28 rounded-md border border-border/60 bg-background px-2 py-1"
-                    type="number"
-                    min={0}
-                    value={budgetDraft.perRunLimit}
-                    onChange={(e) =>
-                      setBudgetDraft((prev) =>
-                        prev ? { ...prev, perRunLimit: Number(e.target.value) } : prev,
-                      )
-                    }
-                  />
-                </label>
-                <button
-                  className="rounded-md border border-border/60 bg-background px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
-                  type="button"
-                  onClick={() => budgetDraft && saveBudget(budgetDraft)}
-                >
-                  Save budget
-                </button>
+          </div>
+
+          <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+            <div className="mb-2 text-[11px] font-semibold uppercase">Step Heatmap</div>
+            {stepHeatmap.length === 0 ? (
+              <div>No step telemetry yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {stepHeatmap.map((step) => (
+                  <div key={step.id} className="flex items-center justify-between gap-4 rounded-md border border-border/60 px-3 py-2">
+                    <div className="text-foreground">{step.id}</div>
+                    <div className="flex items-center gap-3">
+                      <span>Avg: {step.avgDurationMs}ms</span>
+                      <span>Fails: {step.fails}</span>
+                      <span>Runs: {step.runs}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
-        ) : (
-          <div>No budget data.</div>
-        )}
-      </div>
 
-      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-        <div className="mb-2 text-[11px] font-semibold uppercase">Error Heatmap</div>
-        <div className="flex gap-2">
-          {errorHeatmap.days.map((day) => (
-            <div key={day.key} className="flex flex-col items-center gap-1">
-              <div
-                className="h-6 w-6 rounded-sm"
-                style={{
-                  backgroundColor: `rgba(248, 113, 113, ${day.count / errorHeatmap.max})`,
-                }}
-              />
-              <span className="text-[10px]">{day.count}</span>
+          <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
+            <div className="mb-2 text-[11px] font-semibold uppercase">Integration Health</div>
+            <div className="flex flex-wrap gap-3">
+              {integrationHealth.map((integration) => (
+                <span key={integration.id}>
+                  {integration.id}: {integration.status}
+                </span>
+              ))}
             </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-        <div className="mb-2 text-[11px] font-semibold uppercase">Step Heatmap</div>
-        {stepHeatmap.length === 0 ? (
-          <div>No step telemetry yet.</div>
-        ) : (
-          <div className="space-y-2">
-            {stepHeatmap.map((step) => (
-              <div key={step.id} className="flex items-center justify-between gap-4 rounded-md border border-border/60 px-3 py-2">
-                <div className="text-foreground">{step.id}</div>
-                <div className="flex items-center gap-3">
-                  <span>Avg: {step.avgDurationMs}ms</span>
-                  <span>Fails: {step.fails}</span>
-                  <span>Runs: {step.runs}</span>
-                </div>
-              </div>
-            ))}
           </div>
-        )}
-      </div>
-
-      <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
-        <div className="mb-2 text-[11px] font-semibold uppercase">Integration Health</div>
-        <div className="flex flex-wrap gap-3">
-          {integrationHealth.map((integration) => (
-            <span key={integration.id}>
-              {integration.id}: {integration.status}
-            </span>
-          ))}
-        </div>
-      </div>
+        </>
+      )}
       <Dialog open={runInspectorOpen} onOpenChange={setRunInspectorOpen}>
         <DialogContent className="max-w-5xl">
           <DialogHeader>

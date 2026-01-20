@@ -4,6 +4,9 @@ import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
 import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
+import { loadMemory, type MemoryScope } from "@/lib/toolos/memory-store";
+import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
+import { ToolLifecycleStateSchema } from "@/lib/toolos/spec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ProjectPage({
@@ -65,6 +68,27 @@ export default async function ProjectPage({
     }
   }
 
+  const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
+  const lifecycleState = await loadMemory({
+    scope,
+    namespace: "tool_builder",
+    key: "lifecycle_state",
+  });
+  const buildLogs = await loadMemory({
+    scope,
+    namespace: "tool_builder",
+    key: "build_logs",
+  });
+  const normalizedLifecycle = ToolLifecycleStateSchema.safeParse(lifecycleState).success
+    ? ToolLifecycleStateSchema.parse(lifecycleState)
+    : null;
+  const normalizedBuildLogs = Array.isArray(buildLogs)
+    ? (buildLogs as ToolBuildLog[])
+    : null;
+  if (spec && normalizedLifecycle) {
+    spec = { ...spec, lifecycle_state: normalizedLifecycle };
+  }
+
   const messages = messagesRes.data.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
@@ -75,7 +99,12 @@ export default async function ProjectPage({
 
   return (
     <ProjectWorkspace
-      project={{ id: projectRes.data.id, spec }}
+      project={{
+        id: projectRes.data.id,
+        spec,
+        lifecycle_state: normalizedLifecycle,
+        build_logs: normalizedBuildLogs,
+      }}
       initialMessages={messages}
       role={role}
     />

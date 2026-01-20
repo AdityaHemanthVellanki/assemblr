@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -26,14 +25,12 @@ export async function POST(
   if (error || !project?.spec) {
     return NextResponse.json({ error: "Tool not found" }, { status: 404 });
   }
+
+  // ENFORCEMENT: Tool must be activated
   if (!project.is_activated) {
     return NextResponse.json(
-      {
-        status: "blocked",
-        reason: "Tool not activated",
-        action: "Click 'Activate Tool' in the UI to enable execution",
-      },
-      { status: 409 },
+      { error: "Tool not activated yet" },
+      { status: 409 } // Conflict/Blocked
     );
   }
 
@@ -47,11 +44,9 @@ export async function POST(
     spec = version?.tool_spec ?? spec;
     compiledTool = version?.compiled_tool ?? null;
   }
+
   if (!isToolSystemSpec(spec)) {
-    return NextResponse.json(
-      { error: "I need a few details before I can finish building this tool." },
-      { status: 422 },
-    );
+    return NextResponse.json({ error: "Invalid tool spec" }, { status: 422 });
   }
 
   const body = await req.json().catch(() => ({}));
@@ -66,15 +61,12 @@ export async function POST(
     key: "data_evidence",
   });
 
+  // Action Execution
   if (actionId) {
     if (!isCompiledToolArtifact(compiledTool)) {
       return NextResponse.json(
-        {
-          status: "blocked",
-          reason: "CompiledTool not found for active version",
-          action: "Recompile the tool to generate a CompiledTool artifact",
-        },
-        { status: 400 },
+        { error: "Compiled tool artifact missing" },
+        { status: 500 }
       );
     }
     const result = await executeToolAction({
@@ -94,9 +86,15 @@ export async function POST(
         evidence: evidence ?? null,
       });
     }
-    return NextResponse.json({ state: result.state, output: result.output, events: result.events, evidence: evidence ?? null });
+    return NextResponse.json({
+      state: result.state,
+      output: result.output,
+      events: result.events,
+      evidence: evidence ?? null,
+    });
   }
 
+  // View Rendering (Read Only)
   const state = await loadToolState(toolId, ctx.orgId);
   if (viewId) {
     const view = renderView(spec, state, viewId);

@@ -107,6 +107,31 @@ export async function processToolChat(
     type: "session",
     sessionId: builderSessionId,
   };
+  const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: input.orgId };
+  const persistLifecycle = async () => {
+    await Promise.all([
+      saveMemory({
+        scope: toolScope,
+        namespace: builderNamespace,
+        key: "lifecycle_state",
+        value: machine.state,
+      }),
+      saveMemory({
+        scope: toolScope,
+        namespace: builderNamespace,
+        key: "build_logs",
+        value: machine.logs,
+      }),
+    ]);
+  };
+  const transition = async (
+    next: Parameters<ToolBuildStateMachine["transition"]>[0],
+    message: string,
+    level?: Parameters<ToolBuildStateMachine["transition"]>[2],
+  ) => {
+    machine.transition(next, message, level);
+    await persistLifecycle();
+  };
   const pendingQuestions = await loadMemory({
     scope: builderScope,
     namespace: builderNamespace,
@@ -138,6 +163,7 @@ export async function processToolChat(
   };
 
   try {
+    await persistLifecycle();
     let compiledTool = null as ReturnType<typeof buildCompiledToolArtifact> | null;
     const stageToStep: Record<string, string> = {
       "understand-purpose": "intent",
@@ -172,11 +198,11 @@ export async function processToolChat(
     });
 
     spec = canonicalizeToolSpec(compilerResult.spec);
-    machine.transition("INTENT_PARSED", "ToolSpec generated");
+    await transition("INTENT_PARSED", "ToolSpec generated");
     if (compilerResult.status === "awaiting_clarification" && compilerResult.clarifications.length > 0) {
       const clarifications = limitClarifications(compilerResult.clarifications);
       markStep(steps, "intent", "error", "Clarifications required");
-      machine.transition("AWAITING_CLARIFICATION", "Clarifications required", "warn");
+      await transition("NEEDS_CLARIFICATION", "Clarifications required", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -192,7 +218,7 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed",
         message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        spec,
+        spec: { ...spec, clarifications, lifecycle_state: machine.state },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -214,7 +240,7 @@ export async function processToolChat(
     ) {
       const clarifications = limitClarifications(toolSystemValidation.errors);
       markStep(steps, "compile", "error", "Tool system incomplete");
-      machine.transition("AWAITING_CLARIFICATION", "Tool system incomplete", "warn");
+      await transition("NEEDS_CLARIFICATION", "Tool system incomplete", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -230,7 +256,7 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed",
         message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        spec,
+        spec: { ...spec, clarifications, lifecycle_state: machine.state },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -271,7 +297,7 @@ export async function processToolChat(
     ]);
     if (confidenceQuestions.length > 0) {
       markStep(steps, "intent", "error", "Low confidence detected");
-      machine.transition("AWAITING_CLARIFICATION", "Low confidence detected", "warn");
+      await transition("NEEDS_CLARIFICATION", "Low confidence detected", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -281,7 +307,7 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed",
         message: { type: "text", content: formatClarificationPrompt(confidenceQuestions) },
-        spec,
+        spec: { ...spec, clarifications: confidenceQuestions, lifecycle_state: machine.state },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -292,14 +318,14 @@ export async function processToolChat(
       };
     }
 
-    machine.transition("VALIDATING_INTEGRATIONS", "Validating integrations");
+    await transition("VALIDATING_INTEGRATIONS", "Validating integrations");
     const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
     const missingRequired = requiredIntegrations.filter(
       (id) => !input.connectedIntegrationIds.includes(id),
     );
     if (missingRequired.length > 0) {
       markStep(steps, "readiness", "error", `Missing integrations: ${missingRequired.join(", ")}`);
-      machine.transition("AWAITING_CLARIFICATION", "Missing integrations", "warn");
+      await transition("AWAITING_CLARIFICATION", "Missing integrations", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -312,7 +338,11 @@ export async function processToolChat(
           type: "text",
           content: `Connect these integrations to proceed: ${missingRequired.join(", ")}.`,
         },
-        spec,
+        spec: {
+          ...spec,
+          clarifications: missingRequired.map((id) => `Connect ${id} to proceed.`),
+          lifecycle_state: machine.state,
+        },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -327,7 +357,7 @@ export async function processToolChat(
       .filter((id) => !input.connectedIntegrationIds.includes(id));
     if (missingIntegrations.length > 0) {
       markStep(steps, "readiness", "error", `Missing integrations: ${missingIntegrations.join(", ")}`);
-      machine.transition("DEGRADED", "Missing integrations", "warn");
+      await transition("DEGRADED", "Missing integrations", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -340,7 +370,11 @@ export async function processToolChat(
           type: "text",
           content: `Connect these integrations to proceed: ${missingIntegrations.join(", ")}.`,
         },
-        spec,
+        spec: {
+          ...spec,
+          clarifications: missingIntegrations.map((id) => `Connect ${id} to fetch data.`),
+          lifecycle_state: machine.state,
+        },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -357,13 +391,13 @@ export async function processToolChat(
     const readinessDuration = Date.now() - readinessStart;
     if (readinessDuration > TIME_BUDGETS.readinessMs) {
       appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
-      machine.transition("DEGRADED", "Readiness budget exceeded", "warn");
+      await transition("DEGRADED", "Readiness budget exceeded", "warn");
     }
     readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
     const readinessQuestions = limitClarifications(readiness.clarifications);
     if (readinessQuestions.length > 0) {
       markStep(steps, "readiness", "error", "Missing required filters");
-      machine.transition("AWAITING_CLARIFICATION", "Missing required filters", "warn");
+      await transition("AWAITING_CLARIFICATION", "Missing required filters", "warn");
       await saveMemory({
         scope: builderScope,
         namespace: builderNamespace,
@@ -373,7 +407,7 @@ export async function processToolChat(
       return {
         explanation: "Clarifications needed for data",
         message: { type: "text", content: formatClarificationPrompt(readinessQuestions) },
-        spec,
+        spec: { ...spec, clarifications: readinessQuestions, lifecycle_state: machine.state },
         metadata: {
           persist: true,
           build_steps: steps,
@@ -387,7 +421,7 @@ export async function processToolChat(
 
     markStep(steps, "runtime", "pending", "Awaiting activation");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
-    machine.transition("READY", "Tool compiled");
+    await transition("READY", "Tool compiled");
     await saveMemory({
       scope: builderScope,
       namespace: builderNamespace,
@@ -411,7 +445,7 @@ export async function processToolChat(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
-    machine.transition("DEGRADED", message, "error");
+    await transition("DEGRADED", message, "error");
     if (err instanceof BudgetExceededError) {
       return {
         explanation: "Budget limit reached",
@@ -442,7 +476,7 @@ export async function processToolChat(
   return {
     explanation: spec.purpose,
     message: { type: "text", content: spec.purpose },
-    spec,
+    spec: { ...spec, clarifications: [], lifecycle_state: machine.state },
     metadata: {
       persist: true,
       build_steps: steps,
