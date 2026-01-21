@@ -7,7 +7,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 import { loadToolState } from "@/lib/toolos/state-store";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
   req: Request,
@@ -99,11 +99,6 @@ export async function POST(
 
     return jsonResponse({ state, evidence: evidence ?? null });
   } catch (e) {
-    console.error("Execute failed", e);
-    return errorResponse(
-      "Execution failed",
-      500,
-      e instanceof Error ? e.message : String(e)
-    );
+    return handleApiError(e);
   }
 }

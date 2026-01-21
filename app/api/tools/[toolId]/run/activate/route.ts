@@ -6,7 +6,7 @@ import { validateMRT } from "@/lib/toolos/mrt";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
   _req: Request,
@@ -99,11 +99,6 @@ export async function POST(
 
     return jsonResponse({ activated: true });
   } catch (e) {
-    console.error("Activation failed", e);
-    return errorResponse(
-      "Activation failed",
-      500,
-      e instanceof Error ? e.message : String(e)
-    );
+    return handleApiError(e);
   }
 }

@@ -562,19 +562,9 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       <div className="flex-1 overflow-auto px-6 py-6">
         {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
         {isLoading && <div className="mb-4 text-sm text-muted-foreground">Loading view…</div>}
-        {isActivated === false && (
-          <div className="mb-4 flex items-center justify-between rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-            <div>Tool compiled but not activated.</div>
-            <button
-              className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-60"
-              onClick={activateTool}
-              type="button"
-              disabled={activationLoading}
-            >
-              {activationLoading ? "Activating…" : "Activate Tool"}
-            </button>
-          </div>
-        )}
+        <div className="mb-4 rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          Built with smart defaults. You can adjust behavior in settings.
+        </div>
         {activeView ? (
           <div className="flex gap-6 h-full">
             <div className="flex-1 overflow-auto">

@@ -45,11 +45,9 @@ export class GitHubExecutor implements IntegrationExecutor {
         const owner = (plan.params?.owner as string) || "";
         const repo = (plan.params?.repo as string) || "";
         if (!owner || !repo) {
-          // Try to fallback to user repos?
-          // For now, strict contract
-           return {
+          return {
             viewId: plan.viewId,
-            status: "clarification_needed",
+            status: "error",
             rows: [],
             error: "Missing owner or repo",
             timestamp: new Date().toISOString(),

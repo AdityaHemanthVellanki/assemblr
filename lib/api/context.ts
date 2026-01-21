@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { User } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/client";
+import { getSession } from "@/lib/auth/session";
 
 export interface ExecutionContext {
   requestId: string;
@@ -27,21 +28,18 @@ export const getRequestContext = cache(async (): Promise<ExecutionContext> => {
 
   const supabase = await createSupabaseServerClient();
   
-  // 1. Resolve User (Handle 429 Gracefully)
-  let user: User | null = null;
-  try {
-    const { data, error } = await supabase.auth.getUser();
-    if (error) {
-      if (error.status === 429) {
-        console.warn("[Auth] Rate limited by Supabase. Treating as soft failure.");
-        throw new ApiError("Rate limit exceeded", 429);
-      } else if (error.status !== 401) {
-         console.error("[Auth] Unexpected error:", error);
-      }
+  // 1. Resolve User (Centralized Session Coordinator)
+  const { user, error } = await getSession();
+
+  if (error) {
+    // If it's a rate limit, bubble it up specifically
+    if (error.status === 429) {
+      console.warn("[Auth] Rate limited by Supabase. Treating as soft failure.");
+      throw new ApiError("Rate limit exceeded", 429);
     }
-    user = data?.user ?? null;
-  } catch (e) {
-    console.error("[Auth] Exception:", e);
+    // Otherwise, treat as unauthorized (logged out / refresh failed)
+    // We do NOT throw here if we want to allow partial context? 
+    // No, getRequestContext guarantees a user.
   }
 
   if (!user) {

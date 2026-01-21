@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash } from "crypto";
-import { ActionSpec, EntitySpec, IntegrationId, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
+import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { runUnderstandPurpose } from "@/lib/toolos/compiler/stages/understand-purpose";
@@ -25,7 +25,7 @@ export type ToolCompilerStage =
 
 export type ToolCompilerProgressEvent = {
   stage: ToolCompilerStage;
-  status: "started" | "completed" | "waiting_for_user";
+  status: "started" | "completed";
   message: string;
 };
 
@@ -71,7 +71,7 @@ export type ToolCompilerInput = {
 export type ToolCompilerResult = {
   spec: ToolSystemSpec;
   clarifications: string[];
-  status: "completed" | "awaiting_clarification" | "degraded";
+  status: "completed" | "degraded";
   progress: ToolCompilerProgressEvent[];
 };
 
@@ -122,6 +122,7 @@ export class ToolCompiler {
       timedOut?: boolean;
     }> = [];
 
+    let degraded = false;
     const runStage = async (
       stage: ToolCompilerStage,
       budgetMs: number,
@@ -132,38 +133,27 @@ export class ToolCompiler {
         return { status: "completed" as const };
       }
       if (budgetMs <= 0) {
-        const clarification = defaultClarification(stage);
-        emitProgress({
-          stage,
-          status: "waiting_for_user",
-          message: `${stageLabel(stage)} needs clarification`,
-        });
-        return { status: "awaiting_clarification" as const, clarifications: [clarification] };
+        degraded = true;
+        emitProgress({ stage, status: "completed", message: `${stageLabel(stage)} skipped` });
+        return { status: "completed" as const };
       }
       emitProgress({ stage, status: "started", message: stageLabel(stage) });
       const { result, timedOut } = await runWithBudget(budgetMs, () =>
         runner({ ...stageContextBase, spec }),
       );
       if (timedOut) {
-        const clarification = defaultClarification(stage);
-        emitProgress({
-          stage,
-          status: "waiting_for_user",
-          message: `${stageLabel(stage)} needs clarification`,
-        });
+        degraded = true;
+        emitProgress({ stage, status: "completed", message: `${stageLabel(stage)} timed out` });
         stageResults.push({ stage, timedOut: true });
-        return { status: "awaiting_clarification" as const, clarifications: [clarification] };
+        return { status: "completed" as const };
       }
       if (result && "error" in result) {
         const errorMessage =
           result.error instanceof Error ? result.error.message : String(result.error ?? "Stage failed");
-        emitProgress({
-          stage,
-          status: "waiting_for_user",
-          message: `${stageLabel(stage)} needs clarification`,
-        });
+        degraded = true;
+        emitProgress({ stage, status: "completed", message: errorMessage });
         await persistPartialSpec(spec, sessionScope, toolScope);
-        return { status: "awaiting_clarification" as const, clarifications: [errorMessage] };
+        return { status: "completed" as const };
       }
       if (result?.specPatch) {
         spec = mergeSpec(spec, result.specPatch);
@@ -172,18 +162,15 @@ export class ToolCompiler {
       stageResults.push({ stage, result });
       const clarifications = result?.clarifications ?? [];
       if (clarifications.length > 0) {
-        emitProgress({
-          stage,
-          status: "waiting_for_user",
-          message: `${stageLabel(stage)} needs clarification`,
-        });
-        return { status: "awaiting_clarification" as const, clarifications };
+        degraded = true;
+        emitProgress({ stage, status: "completed", message: `${stageLabel(stage)} defaulted` });
+        return { status: "completed" as const };
       }
       emitProgress({ stage, status: "completed", message: `${stageLabel(stage)} done` });
       return { status: "completed" as const };
     };
 
-    const stages: Array<() => Promise<{ status: "completed" | "awaiting_clarification"; clarifications?: string[] }>> = [
+    const stages: Array<() => Promise<{ status: "completed"; clarifications?: string[] }>> = [
       () => runStage("understand-purpose", budgets.understandPurposeMs, runUnderstandPurpose),
       () => runStage("extract-entities", budgets.extractEntitiesMs, runExtractEntities),
       () => runStage("resolve-integrations", budgets.resolveIntegrationsMs, runResolveIntegrations),
@@ -195,33 +182,18 @@ export class ToolCompiler {
     ];
 
     for (const stage of stages) {
-      const result = await stage();
-      if (result.status === "awaiting_clarification") {
-        return {
-          spec: ensureMinimumSpec(spec, input.prompt),
-          clarifications: result.clarifications ?? [],
-          status: "awaiting_clarification",
-          progress,
-        };
-      }
+      await stage();
     }
 
-    spec = ensureMinimumSpec(spec, input.prompt);
+    spec = ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? []);
     const validation = ToolSystemSpecSchema.safeParse(spec);
     if (!validation.success) {
-      const clarifications = validation.error.issues.slice(0, 3).map((issue) => {
-        const path = issue.path.join(".");
-        return path.length > 0 ? `Provide ${path}` : "Provide missing tool details";
-      });
-      emitProgress({
-        stage: "validate-spec",
-        status: "waiting_for_user",
-        message: "Validation needs clarification",
-      });
+      degraded = true;
+      emitProgress({ stage: "validate-spec", status: "completed", message: "Validation defaulted" });
       return {
-        spec,
-        clarifications,
-        status: "awaiting_clarification",
+        spec: ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? []),
+        clarifications: [],
+        status: "degraded",
         progress,
       };
     }
@@ -229,7 +201,7 @@ export class ToolCompiler {
     return {
       spec,
       clarifications: [],
-      status: "completed",
+      status: degraded ? "degraded" : "completed",
       progress,
     };
   }
@@ -274,16 +246,6 @@ function shouldSkipStage(stage: ToolCompilerStage, spec: ToolSystemSpec) {
   if (stage === "build-workflows") return spec.workflows.length > 0;
   if (stage === "design-views") return spec.views.length > 0;
   return false;
-}
-
-function defaultClarification(stage: ToolCompilerStage) {
-  if (stage === "understand-purpose") return "What is the main goal of this tool?";
-  if (stage === "extract-entities") return "Which key entities should this tool manage?";
-  if (stage === "resolve-integrations") return "Which integrations should this tool use?";
-  if (stage === "define-actions") return "Which actions should this tool support?";
-  if (stage === "build-workflows") return "What workflows should this tool run?";
-  if (stage === "design-views") return "What views should be shown to users?";
-  return "What additional details are needed to finalize the tool?";
 }
 
 function mergeSpec(base: ToolSystemSpec, patch: Partial<ToolSystemSpec>): ToolSystemSpec {
@@ -374,13 +336,23 @@ async function persistPartialSpec(
   ]);
 }
 
-function ensureMinimumSpec(spec: ToolSystemSpec, prompt: string): ToolSystemSpec {
+function ensureMinimumSpec(
+  spec: ToolSystemSpec,
+  prompt: string,
+  connectedIntegrationIds: string[],
+): ToolSystemSpec {
   const detectedIntegrations = detectIntegrations(prompt);
+  const connectedIntegrations = connectedIntegrationIds
+    .map((id) => IntegrationIdSchema.safeParse(id))
+    .filter((result) => result.success)
+    .map((result) => result.data);
   const integrationIds: IntegrationId[] =
     spec.integrations.length > 0
       ? spec.integrations.map((i) => i.id)
       : detectedIntegrations.length > 0
         ? detectedIntegrations
+        : connectedIntegrations.length > 0
+          ? connectedIntegrations
         : ["google"];
 
   const integrations =
@@ -393,16 +365,20 @@ function ensureMinimumSpec(spec: ToolSystemSpec, prompt: string): ToolSystemSpec
 
   let actions = spec.actions;
   if (actions.length === 0) {
-    actions = integrationIds.map((integration) => buildFallbackAction(integration));
+    actions = integrationIds.flatMap((integration) => buildFallbackActionsForIntegration(integration));
   }
 
   let reducers = spec.state.reducers;
   if (reducers.length === 0) {
-    reducers = actions.map((action) => ({
-      id: `reduce.${action.id}`,
-      type: "set",
-      target: `${action.integrationId}.data`,
-    }));
+    reducers = actions.map((action) => {
+      const cap = getCapability(action.capabilityId);
+      const resource = cap?.resource ?? "data";
+      return {
+        id: `reduce.${action.id}`,
+        type: "set",
+        target: `${action.integrationId}.${resource}`,
+      };
+    });
     actions = actions.map((action, index) => ({
       ...action,
       reducerId: reducers[index]?.id,
@@ -411,13 +387,13 @@ function ensureMinimumSpec(spec: ToolSystemSpec, prompt: string): ToolSystemSpec
 
   let entities = spec.entities;
   if (entities.length === 0) {
-    entities = integrationIds.map((integration) => buildFallbackEntity(integration));
+    entities = integrationIds.flatMap((integration) => buildFallbackEntitiesForIntegration(integration));
   }
 
   let views = spec.views;
   if (views.length === 0) {
-    views = integrationIds.map((integration, index) =>
-      buildFallbackView(integration, entities[index], actions[index]),
+    views = entities.map((entity, index) =>
+      buildFallbackViewForEntity(entity, actions, index),
     );
   }
 
@@ -465,10 +441,12 @@ function buildFallbackAction(integration: IntegrationId): ActionSpec {
       id: "google.listEmails",
       name: "List emails",
       description: "List recent Gmail emails",
+      type: "READ",
       integrationId: "google",
       capabilityId: "google_gmail_list",
       inputSchema: {},
       outputSchema: {},
+      writesToState: false,
     };
   }
   if (integration === "github") {
@@ -476,10 +454,12 @@ function buildFallbackAction(integration: IntegrationId): ActionSpec {
       id: "github.listRepos",
       name: "List repositories",
       description: "List GitHub repositories",
+      type: "READ",
       integrationId: "github",
       capabilityId: "github_repos_list",
       inputSchema: {},
       outputSchema: {},
+      writesToState: false,
     };
   }
   if (integration === "linear") {
@@ -487,10 +467,12 @@ function buildFallbackAction(integration: IntegrationId): ActionSpec {
       id: "linear.listIssues",
       name: "List issues",
       description: "List Linear issues",
+      type: "READ",
       integrationId: "linear",
       capabilityId: "linear_issues_list",
       inputSchema: {},
       outputSchema: {},
+      writesToState: false,
     };
   }
   if (integration === "slack") {
@@ -498,21 +480,118 @@ function buildFallbackAction(integration: IntegrationId): ActionSpec {
       id: "slack.listMessages",
       name: "List messages",
       description: "List Slack messages",
+      type: "READ",
       integrationId: "slack",
       capabilityId: "slack_messages_list",
       inputSchema: {},
       outputSchema: {},
+      writesToState: false,
     };
   }
   return {
     id: "notion.listPages",
     name: "List pages",
     description: "List Notion pages",
+    type: "READ",
     integrationId: "notion",
     capabilityId: "notion_pages_search",
     inputSchema: {},
     outputSchema: {},
+    writesToState: false,
   };
+}
+
+function buildFallbackActionsForIntegration(integration: IntegrationId): ActionSpec[] {
+  if (integration === "github") {
+    return [
+      {
+        id: "github.listRepos",
+        name: "List repositories",
+        description: "List GitHub repositories",
+        type: "READ",
+        integrationId: "github",
+        capabilityId: "github_repos_list",
+        inputSchema: buildDefaultInputForCapability("github_repos_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "github.listIssues",
+        name: "List issues",
+        description: "List GitHub issues",
+        type: "READ",
+        integrationId: "github",
+        capabilityId: "github_issues_list",
+        inputSchema: buildDefaultInputForCapability("github_issues_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "slack") {
+    return [
+      {
+        id: "slack.listMessages",
+        name: "List messages",
+        description: "List Slack messages",
+        type: "READ",
+        integrationId: "slack",
+        capabilityId: "slack_messages_list",
+        inputSchema: buildDefaultInputForCapability("slack_messages_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "google") {
+    return [
+      {
+        id: "google.listEmails",
+        name: "List emails",
+        description: "List recent Gmail emails",
+        type: "READ",
+        integrationId: "google",
+        capabilityId: "google_gmail_list",
+        inputSchema: buildDefaultInputForCapability("google_gmail_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "linear") {
+    return [
+      {
+        id: "linear.listIssues",
+        name: "List issues",
+        description: "List Linear issues",
+        type: "READ",
+        integrationId: "linear",
+        capabilityId: "linear_issues_list",
+        inputSchema: buildDefaultInputForCapability("linear_issues_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  return [
+    {
+      id: "notion.listPages",
+      name: "List pages",
+      description: "List Notion pages",
+      type: "READ",
+      integrationId: "notion",
+      capabilityId: "notion_pages_search",
+      inputSchema: buildDefaultInputForCapability("notion_pages_search"),
+      outputSchema: {},
+      writesToState: false,
+      confidenceLevel: "medium",
+    },
+  ];
 }
 
 function buildFallbackEntity(integration: IntegrationId): EntitySpec {
@@ -590,6 +669,148 @@ function buildFallbackEntity(integration: IntegrationId): EntitySpec {
   };
 }
 
+function buildFallbackEntitiesForIntegration(integration: IntegrationId): EntitySpec[] {
+  if (integration === "github") {
+    return [
+      {
+        name: "Issue",
+        sourceIntegration: "github",
+        relations: [],
+        identifiers: ["id", "number"],
+        supportedActions: ["github.issues.list"],
+        behaviors: [
+          "Blocked = status == blocked OR label contains \"blocked\"",
+          "High severity = priority <= 2 OR label contains \"sev-1\"",
+        ],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "title", type: "string" },
+          { name: "status", type: "string" },
+          { name: "assignee", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "PullRequest",
+        sourceIntegration: "github",
+        relations: [],
+        identifiers: ["id", "number"],
+        supportedActions: ["github.issues.list"],
+        behaviors: [
+          "Blocked = status == blocked OR label contains \"blocked\"",
+          "High severity = priority <= 2 OR label contains \"sev-1\"",
+        ],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "title", type: "string" },
+          { name: "status", type: "string" },
+          { name: "assignee", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Repository",
+        sourceIntegration: "github",
+        relations: [],
+        identifiers: ["id", "fullName"],
+        supportedActions: ["github.repos.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "owner", type: "string" },
+          { name: "stars", type: "number" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "slack") {
+    return [
+      {
+        name: "Message",
+        sourceIntegration: "slack",
+        relations: [],
+        identifiers: ["id", "timestamp"],
+        supportedActions: ["slack.messages.list", "slack.messages.post"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "channel", type: "string" },
+          { name: "text", type: "string" },
+          { name: "timestamp", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Channel",
+        sourceIntegration: "slack",
+        relations: [],
+        identifiers: ["id", "name"],
+        supportedActions: ["slack.channels.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "linear") {
+    return [
+      {
+        name: "Issue",
+        sourceIntegration: "linear",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["linear.issues.list"],
+        behaviors: [
+          "Blocked = status == blocked OR label contains \"blocked\"",
+          "High severity = priority <= 2 OR label contains \"sev-1\"",
+        ],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "title", type: "string" },
+          { name: "status", type: "string" },
+          { name: "assignee", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "notion") {
+    return [
+      {
+        name: "Page",
+        sourceIntegration: "notion",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["notion.pages.search", "notion.databases.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "title", type: "string" },
+          { name: "lastEdited", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  return [
+    {
+      name: "Email",
+      sourceIntegration: "google",
+      relations: [],
+      identifiers: ["id", "threadId"],
+      supportedActions: ["google.gmail.list", "google.gmail.reply"],
+      fields: [
+        { name: "id", type: "string", required: true },
+        { name: "subject", type: "string" },
+        { name: "from", type: "string" },
+        { name: "date", type: "string" },
+      ],
+      confidenceLevel: "medium",
+    },
+  ];
+}
+
 function buildFallbackView(
   integration: IntegrationId,
   entity: ToolSystemSpec["entities"][number] | undefined,
@@ -643,4 +864,50 @@ function buildFallbackView(
     fields: ["title", "lastEdited"],
     actions: action ? [action.id] : [],
   };
+}
+
+function buildFallbackViewForEntity(
+  entity: ToolSystemSpec["entities"][number],
+  actions: ToolSystemSpec["actions"][number][],
+  index: number,
+): ViewSpec {
+  const action = actions.find((a) => a.integrationId === entity.sourceIntegration);
+  const viewId = `view.${entity.sourceIntegration}.${entity.name.toLowerCase()}.${index + 1}`;
+  const type = entity.name === "Issue" ? "kanban" : "table";
+  const entityKey = (() => {
+    const lower = entity.name.toLowerCase();
+    if (lower === "repository") return "repos";
+    if (lower === "pullrequest") return "pullRequests";
+    if (lower === "channel") return "channels";
+    if (lower === "message") return "messages";
+    if (lower === "email") return "emails";
+    if (lower === "issue") return "issues";
+    if (lower === "page") return "pages";
+    return `${lower}s`;
+  })();
+  const statePath = `${entity.sourceIntegration}.${entityKey}`;
+  const fields = entity.fields.slice(0, 4).map((f) => f.name);
+  return {
+    id: viewId,
+    name: entity.name,
+    type,
+    source: { entity: entity.name, statePath },
+    fields,
+    actions: action ? [action.id] : [],
+  };
+}
+
+function buildDefaultInputForCapability(capabilityId: string) {
+  const cap = getCapability(capabilityId);
+  if (!cap) return {};
+  const input: Record<string, any> = {};
+  if (cap.supportedFields.includes("maxResults")) input.maxResults = 5;
+  if (cap.supportedFields.includes("pageSize")) input.pageSize = 5;
+  if (cap.supportedFields.includes("first")) input.first = 5;
+  if (cap.supportedFields.includes("limit")) input.limit = 5;
+  if (cap.supportedFields.includes("channel")) input.channel = "general";
+  if (cap.supportedFields.includes("repo")) input.repo = "all";
+  if (cap.supportedFields.includes("owner")) input.owner = "self";
+  if (cap.supportedFields.includes("database_id")) input.database_id = "default";
+  return input;
 }

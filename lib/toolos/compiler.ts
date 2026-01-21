@@ -85,7 +85,7 @@ export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
 
   let entitiesResolved = spec.entities.length > 0;
   if (!entitiesResolved) {
-    errors.push("Which entities should this tool manage?");
+    errors.push("Entities missing from spec.");
   } else {
     for (const entity of spec.entities) {
       if (!entity.name || entity.name.trim().length === 0) {
@@ -106,13 +106,13 @@ export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
 
   let integrationsResolved = spec.integrations.length > 0;
   if (!integrationsResolved) {
-    errors.push("Which integrations should this tool use?");
+    errors.push("Integrations missing from spec.");
   }
   const integrationIds = new Set(spec.integrations.map((integration) => integration.id));
 
   let actionsBound = spec.actions.length > 0;
   if (!actionsBound) {
-    errors.push("Which actions should this tool support?");
+    errors.push("Actions missing from spec.");
   }
   const actionIds = new Set<string>();
   for (const action of spec.actions) {
@@ -166,7 +166,7 @@ export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
 
   let viewsBound = spec.views.length > 0;
   if (!viewsBound) {
-    errors.push("What views should be shown?");
+    errors.push("Views missing from spec.");
   }
   const entityNames = new Set(spec.entities.map((entity) => entity.name));
   for (const view of spec.views) {

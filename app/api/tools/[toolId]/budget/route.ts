@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
 import { getToolBudget, getToolBudgetUsage, updateToolBudget } from "@/lib/security/tool-budget";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const patchSchema = z.object({
   monthlyLimit: z.number().optional(),
@@ -15,37 +15,45 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ toolId: string }> },
 ) {
-  const { toolId } = await params;
-  const { ctx } = await requireOrgMember();
-  await requireProjectOrgAccess(ctx, toolId);
-  const budget = await getToolBudget(ctx.orgId, toolId);
-  const usage = await getToolBudgetUsage(ctx.orgId, toolId);
-  const costEstimate = (usage.tokensUsed / 1000) * COST_PER_1K_TOKENS;
-  const projected = estimateProjectedTokens(usage.tokensUsed);
-  const projectedCost = (projected / 1000) * COST_PER_1K_TOKENS;
-  return jsonResponse({
-    budget,
-    usage,
-    costEstimate,
-    projectedMonthlyTokens: projected,
-    projectedMonthlyCost: projectedCost,
-  });
+  try {
+    const { toolId } = await params;
+    const { ctx } = await requireOrgMember();
+    await requireProjectOrgAccess(ctx, toolId);
+    const budget = await getToolBudget(ctx.orgId, toolId);
+    const usage = await getToolBudgetUsage(ctx.orgId, toolId);
+    const costEstimate = (usage.tokensUsed / 1000) * COST_PER_1K_TOKENS;
+    const projected = estimateProjectedTokens(usage.tokensUsed);
+    const projectedCost = (projected / 1000) * COST_PER_1K_TOKENS;
+    return jsonResponse({
+      budget,
+      usage,
+      costEstimate,
+      projectedMonthlyTokens: projected,
+      projectedMonthlyCost: projectedCost,
+    });
+  } catch (e) {
+    return handleApiError(e);
+  }
 }
 
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ toolId: string }> },
 ) {
-  const { toolId } = await params;
-  const { ctx } = await requireRole("editor");
-  await requireProjectOrgAccess(ctx, toolId);
-  const json = await req.json().catch(() => ({}));
-  const parsed = patchSchema.safeParse(json);
-  if (!parsed.success) {
-    return errorResponse("Invalid body", 400);
+  try {
+    const { toolId } = await params;
+    const { ctx } = await requireRole("editor");
+    await requireProjectOrgAccess(ctx, toolId);
+    const json = await req.json().catch(() => ({}));
+    const parsed = patchSchema.safeParse(json);
+    if (!parsed.success) {
+      return errorResponse("Invalid body", 400);
+    }
+    const budget = await updateToolBudget(ctx.orgId, toolId, parsed.data);
+    return jsonResponse({ budget });
+  } catch (e) {
+    return handleApiError(e);
   }
-  const budget = await updateToolBudget(ctx.orgId, toolId, parsed.data);
-  return jsonResponse({ budget });
 }
 
 function estimateProjectedTokens(tokensUsed: number) {

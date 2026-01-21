@@ -5,7 +5,7 @@ import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permission
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/server-utils";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const chatSchema = z.object({
   message: z.string(),
@@ -110,11 +110,6 @@ export async function POST(
 
     return jsonResponse(result);
   } catch (e) {
-    console.error("Chat failed", e);
-    return errorResponse(
-      "Chat failed",
-      500,
-      e instanceof Error ? e.message : String(e)
-    );
+    return handleApiError(e);
   }
 }

@@ -10,7 +10,7 @@ export type ExecutionPlan = {
 
 export type ExecutionResult = {
   viewId: string;
-  status: "success" | "error" | "clarification_needed";
+  status: "success" | "error";
   rows: unknown[]; // Strict contract: Always an array
   columns?: unknown[];
   error?: string;

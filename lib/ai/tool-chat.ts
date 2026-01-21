@@ -7,11 +7,12 @@ import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isTo
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { buildCompiledToolArtifact, validateToolSystem } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
-import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
+import { saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
 import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -39,12 +40,6 @@ type BuildStep = {
   status: "pending" | "running" | "success" | "error";
   logs: string[];
 };
-
-type IntentAnalysis = {
-  clarifications: string[];
-  assumptions: string[];
-};
-
 
 const capabilityCatalog = ["google", "slack", "github", "linear", "notion"]
   .map((provider) => {
@@ -132,19 +127,7 @@ export async function processToolChat(
     machine.transition(next, message, level);
     await persistLifecycle();
   };
-  const pendingQuestions = await loadMemory({
-    scope: builderScope,
-    namespace: builderNamespace,
-    key: "pending_questions",
-  });
-  const basePrompt = await loadMemory({
-    scope: builderScope,
-    namespace: builderNamespace,
-    key: "base_prompt",
-  });
-  const prompt = pendingQuestions
-    ? `${basePrompt ?? ""}\nClarifications:\n${String(pendingQuestions)}\nUser answers: ${input.userMessage}`
-    : input.userMessage;
+  const prompt = input.userMessage;
 
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
@@ -219,36 +202,6 @@ export async function processToolChat(
 
     spec = canonicalizeToolSpec(compilerResult.spec);
     transition("INTENT_PARSED", "ToolSpec generated");
-    if (compilerResult.status === "awaiting_clarification" && compilerResult.clarifications.length > 0) {
-      const clarifications = limitClarifications(compilerResult.clarifications);
-      markStep(steps, "intent", "error", "Clarifications required");
-      transition("NEEDS_CLARIFICATION", "Clarifications required", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: clarifications,
-      });
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "base_prompt",
-        value: input.userMessage,
-      });
-      return {
-        explanation: "Clarifications needed",
-        message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        spec: { ...spec, clarifications, lifecycle_state: machine.state },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          clarifications,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
-    }
-
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
     const toolSystemValidation = validateToolSystem(spec);
     if (
@@ -258,33 +211,7 @@ export async function processToolChat(
       !toolSystemValidation.workflowsBound ||
       !toolSystemValidation.viewsBound
     ) {
-      const clarifications = limitClarifications(toolSystemValidation.errors);
-      markStep(steps, "compile", "error", "Tool system incomplete");
-      transition("NEEDS_CLARIFICATION", "Tool system incomplete", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: clarifications,
-      });
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "base_prompt",
-        value: input.userMessage,
-      });
-      return {
-        explanation: "Clarifications needed",
-        message: { type: "text", content: formatClarificationPrompt(clarifications) },
-        spec: { ...spec, clarifications, lifecycle_state: machine.state },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          clarifications,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
+      toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
     }
     compiledTool = buildCompiledToolArtifact(spec);
     markStep(steps, "compile", "success", "Runtime compiled");
@@ -309,100 +236,26 @@ export async function processToolChat(
       });
     }
 
-    const confidenceQuestions = limitClarifications([
-      ...collectLowConfidenceQuestions(spec),
-      ...collectIntegrationAmbiguityQuestions(spec, input.connectedIntegrationIds),
-      ...collectCorrelationQuestions(spec),
-      ...collectDestructiveActionQuestions(spec),
-    ]);
-    if (confidenceQuestions.length > 0) {
-      markStep(steps, "intent", "error", "Low confidence detected");
-      transition("NEEDS_CLARIFICATION", "Low confidence detected", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: confidenceQuestions,
-      });
-      return {
-        explanation: "Clarifications needed",
-        message: { type: "text", content: formatClarificationPrompt(confidenceQuestions) },
-        spec: { ...spec, clarifications: confidenceQuestions, lifecycle_state: machine.state },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          clarifications: confidenceQuestions,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
-    }
-
-    await transition("VALIDATING_INTEGRATIONS", "Validating integrations");
+    const connectedIntegrationIds = input.connectedIntegrationIds ?? [];
+    await transition("RUNTIME_READY", "Validating integrations");
     const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
     const missingRequired = requiredIntegrations.filter(
-      (id) => !input.connectedIntegrationIds.includes(id),
+      (id) => !connectedIntegrationIds.includes(id),
     );
     if (missingRequired.length > 0) {
-      markStep(steps, "readiness", "error", `Missing integrations: ${missingRequired.join(", ")}`);
-      await transition("AWAITING_CLARIFICATION", "Missing integrations", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: missingRequired.map((id) => `Connect ${id} to proceed.`),
-      });
-      return {
-        explanation: "Missing integrations",
-        message: {
-          type: "text",
-          content: `Connect these integrations to proceed: ${missingRequired.join(", ")}.`,
-        },
-        spec: {
-          ...spec,
-          clarifications: missingRequired.map((id) => `Connect ${id} to proceed.`),
-          lifecycle_state: machine.state,
-        },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          missing_integrations: missingRequired,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
+      appendStep(
+        stepsById.get("readiness"),
+        `Missing integrations: ${missingRequired.join(", ")}.`,
+      );
     }
     const missingIntegrations = spec.integrations
       .map((i) => i.id)
-      .filter((id) => !input.connectedIntegrationIds.includes(id));
+      .filter((id) => !connectedIntegrationIds.includes(id));
     if (missingIntegrations.length > 0) {
-      markStep(steps, "readiness", "error", `Missing integrations: ${missingIntegrations.join(", ")}`);
-      await transition("DEGRADED", "Missing integrations", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: missingIntegrations.map((id) => `Connect ${id} to fetch data.`),
-      });
-      return {
-        explanation: "Missing integrations",
-        message: {
-          type: "text",
-          content: `Connect these integrations to proceed: ${missingIntegrations.join(", ")}.`,
-        },
-        spec: {
-          ...spec,
-          clarifications: missingIntegrations.map((id) => `Connect ${id} to fetch data.`),
-          lifecycle_state: machine.state,
-        },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          missing_integrations: missingIntegrations,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
+      appendStep(
+        stepsById.get("readiness"),
+        `Integrations not connected: ${missingIntegrations.join(", ")}.`,
+      );
     }
 
     markStep(steps, "readiness", "running", "Validating data readiness");
@@ -414,40 +267,11 @@ export async function processToolChat(
       await transition("DEGRADED", "Readiness budget exceeded", "warn");
     }
     readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
-    const readinessQuestions = limitClarifications(readiness.clarifications);
-    if (readinessQuestions.length > 0) {
-      markStep(steps, "readiness", "error", "Missing required filters");
-      await transition("AWAITING_CLARIFICATION", "Missing required filters", "warn");
-      await saveMemory({
-        scope: builderScope,
-        namespace: builderNamespace,
-        key: "pending_questions",
-        value: readinessQuestions,
-      });
-      return {
-        explanation: "Clarifications needed for data",
-        message: { type: "text", content: formatClarificationPrompt(readinessQuestions) },
-        spec: { ...spec, clarifications: readinessQuestions, lifecycle_state: machine.state },
-        metadata: {
-          persist: true,
-          build_steps: steps,
-          clarifications: readinessQuestions,
-          state: machine.state,
-          build_logs: machine.logs,
-        },
-      };
-    }
     markStep(steps, "readiness", "success", "Data readiness checks complete");
 
-    markStep(steps, "runtime", "pending", "Awaiting activation");
+    markStep(steps, "runtime", "pending", "Activating tool");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
     await transition("ACTIVE", "Tool compiled");
-    await saveMemory({
-      scope: builderScope,
-      namespace: builderNamespace,
-      key: "pending_questions",
-      value: null,
-    });
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
     if (!compiledTool) {
       throw new Error("Compiled tool artifact missing");
@@ -461,6 +285,11 @@ export async function processToolChat(
       baseSpec,
     });
     await promoteToolVersion({ toolId: input.toolId, versionId: version.id });
+    const supabase = createSupabaseAdminClient();
+    await (supabase.from("projects") as any)
+      .update({ is_activated: true })
+      .eq("id", input.toolId)
+      .eq("org_id", input.orgId);
     activeVersionId = version.id;
 
     return {
@@ -471,7 +300,6 @@ export async function processToolChat(
         tokens: runTokens,
         status: compilerResult.status,
         versionId: activeVersionId,
-        clarifications: compilerResult.clarifications,
         progress: compilerResult.progress,
       },
     };
@@ -666,111 +494,7 @@ function appendStep(step: BuildStep | undefined, log: string) {
   step.logs.push(log);
 }
 
-async function runIntentAgent(
-  prompt: string,
-  onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
-): Promise<IntentAnalysis> {
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
-    messages: [
-      {
-        role: "system",
-        content: `Return JSON: {"clarifications": string[], "assumptions": string[]}. Ask for missing limits, filters, channels, or correlation logic.`,
-      },
-      { role: "user", content: prompt },
-    ],
-    temperature: 0,
-    max_tokens: 300,
-    response_format: { type: "json_object" },
-  });
-  await onUsage?.(response.usage);
-  const content = response.choices[0]?.message?.content;
-  if (!content) return { clarifications: [], assumptions: [] };
-  try {
-    const json = JSON.parse(content);
-    const clarifications = Array.isArray(json.clarifications) ? json.clarifications.filter((q: any) => typeof q === "string") : [];
-    const assumptions = Array.isArray(json.assumptions) ? json.assumptions.filter((q: any) => typeof q === "string") : [];
-    return { clarifications, assumptions };
-  } catch {
-    return { clarifications: [], assumptions: [] };
-  }
-}
-
-function mergeClarifications(clarifications: string[], prompt: string) {
-  const lower = prompt.toLowerCase();
-  const merged = new Set(clarifications);
-  const hasNumber = /\b\d+\b/.test(prompt);
-  if (lower.includes("latest") && !hasNumber) {
-    merged.add("How many items should load by default?");
-  }
-  if (lower.includes("support") && (lower.includes("email") || lower.includes("gmail"))) {
-    merged.add("Which sender, label, or keyword defines a support email?");
-  }
-  if (lower.includes("slack") && !lower.includes("#")) {
-    merged.add("Which Slack channel should updates be posted to?");
-  }
-  if (lower.includes("related issues") || lower.includes("correlate")) {
-    merged.add("How should emails be matched to issues (subject, sender, keyword)?");
-  }
-  return Array.from(merged);
-}
-
-function limitClarifications(questions: string[]) {
-  return questions.slice(0, 3);
-}
-
-function collectLowConfidenceQuestions(spec: ToolSystemSpec) {
-  const questions: string[] = [];
-  for (const entity of spec.entities) {
-    if ((entity.confidence ?? 1) < 0.7) {
-      questions.push(`Confirm the fields for ${entity.name}.`);
-    }
-  }
-  for (const action of spec.actions) {
-    if ((action.confidence ?? 1) < 0.7) {
-      questions.push(`Confirm what "${action.name}" should do.`);
-    }
-  }
-  return questions;
-}
-
-function collectIntegrationAmbiguityQuestions(
-  spec: ToolSystemSpec,
-  connectedIntegrationIds: string[],
-) {
-  if (connectedIntegrationIds.length <= 1) return [];
-  const used = new Set<string>(spec.integrations.map((i) => i.id));
-  const overlaps = connectedIntegrationIds.filter((id) => used.has(id));
-  if (overlaps.length <= 1) return [];
-  return [
-    `Confirm which integrations should be used for this tool: ${overlaps.join(", ")}.`,
-  ];
-}
-
-function collectCorrelationQuestions(spec: ToolSystemSpec) {
-  const questions: string[] = [];
-  for (const entity of spec.entities) {
-    if (!entity.identifiers || entity.identifiers.length === 0) {
-      questions.push(`Provide identifiers for ${entity.name} to correlate records.`);
-    }
-  }
-  return questions;
-}
-
-function collectDestructiveActionQuestions(spec: ToolSystemSpec) {
-  const questions: string[] = [];
-  for (const action of spec.actions) {
-    const cap = getCapability(action.capabilityId);
-    const isWrite = !(cap?.allowedOperations.includes("read") ?? true);
-    if (isWrite) {
-      questions.push(`Confirm "${action.name}" should perform write actions.`);
-    }
-  }
-  return questions;
-}
-
 async function runDataReadiness(spec: ToolSystemSpec) {
-  const clarifications: string[] = [];
   const logs: string[] = [];
   const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
@@ -786,15 +510,13 @@ async function runDataReadiness(spec: ToolSystemSpec) {
     const required = cap.constraints?.requiredFilters ?? [];
     const missing = required.filter((field) => !(action.inputSchema && field in action.inputSchema));
     if (missing.length > 0) {
-      clarifications.push(
-        `Provide ${missing.join(", ")} for ${action.name} (${action.integrationId}).`,
-      );
+      logs.push(`Missing inputs ${missing.join(", ")} for ${action.name} (${action.integrationId}).`);
       continue;
     }
     logs.push(`Validated inputs for ${action.name} (${action.integrationId}).`);
   }
 
-  return { clarifications, logs };
+  return { logs };
 }
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
@@ -1019,10 +741,6 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
   };
 }
 
-function formatClarificationPrompt(questions: string[]) {
-  return `I need a few details to finish this tool:\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`;
-}
-
 function buildFallbackToolSpec(
   prompt: string,
   integrations: Array<ToolSystemSpec["integrations"][number]["id"]>,
@@ -1036,11 +754,13 @@ function buildFallbackToolSpec(
         id: "google.listEmails",
         name: "List emails",
         description: "List recent Gmail emails",
+        type: "READ",
         integrationId: "google",
         capabilityId: "google_gmail_list",
         inputSchema: {},
         outputSchema: {},
         reducerId: "set_emails",
+        writesToState: false,
       };
     }
     if (integration === "github") {
@@ -1048,11 +768,13 @@ function buildFallbackToolSpec(
         id: "github.listRepos",
         name: "List repositories",
         description: "List GitHub repositories",
+        type: "READ",
         integrationId: "github",
         capabilityId: "github_repos_list",
         inputSchema: {},
         outputSchema: {},
         reducerId: "set_repos",
+        writesToState: false,
       };
     }
     if (integration === "linear") {
@@ -1060,11 +782,13 @@ function buildFallbackToolSpec(
         id: "linear.listIssues",
         name: "List issues",
         description: "List Linear issues",
+        type: "READ",
         integrationId: "linear",
         capabilityId: "linear_issues_list",
         inputSchema: {},
         outputSchema: {},
         reducerId: "set_issues",
+        writesToState: false,
       };
     }
     if (integration === "slack") {
@@ -1072,22 +796,26 @@ function buildFallbackToolSpec(
         id: "slack.listMessages",
         name: "List messages",
         description: "List Slack messages",
+        type: "READ",
         integrationId: "slack",
         capabilityId: "slack_messages_list",
         inputSchema: {},
         outputSchema: {},
         reducerId: "set_messages",
+        writesToState: false,
       };
     }
     return {
       id: "notion.listPages",
       name: "List pages",
       description: "List Notion pages",
+      type: "READ",
       integrationId: "notion",
       capabilityId: "notion_pages_search",
       inputSchema: {},
       outputSchema: {},
       reducerId: "set_pages",
+      writesToState: false,
     };
   });
 

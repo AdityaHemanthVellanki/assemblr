@@ -28,6 +28,7 @@ export const EntitySpecSchema = z.object({
   relations: z.array(EntityRelationSchema).optional(),
   behaviors: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  confidenceLevel: z.enum(["low", "medium", "high"]).optional(),
 });
 export type EntitySpec = z.infer<typeof EntitySpecSchema>;
 
@@ -69,6 +70,7 @@ export const ActionSpecSchema = z.object({
   requiresApproval: z.boolean().optional(),
   permissions: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  confidenceLevel: z.enum(["low", "medium", "high"]).optional(),
 });
 export type ActionSpec = z.infer<typeof ActionSpecSchema>;
 

@@ -51,14 +51,18 @@ Only use capabilities from:\n${capabilityCatalog}`,
             action.inputSchema && typeof action.inputSchema === "object" ? action.inputSchema : {};
           const outputSchema =
             action.outputSchema && typeof action.outputSchema === "object" ? action.outputSchema : {};
+          const allowedOperations = cap.allowedOperations ?? [];
+          const isRead = allowedOperations.includes("read");
           const safeAction: ActionSpec = {
             id,
             name,
             description,
+            type: isRead ? "READ" : "WRITE",
             integrationId: integrationId.data,
             capabilityId: action.capabilityId,
             inputSchema,
             outputSchema,
+            writesToState: !isRead,
           };
           return [safeAction];
         })
@@ -79,10 +83,12 @@ function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
         id: "google.listEmails",
         name: "List emails",
         description: "List recent Gmail emails",
+        type: "READ",
         integrationId: "google",
         capabilityId: "google_gmail_list",
         inputSchema: {},
         outputSchema: {},
+        writesToState: false,
       };
     }
     if (integration === "github") {
@@ -90,10 +96,12 @@ function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
         id: "github.listRepos",
         name: "List repositories",
         description: "List GitHub repositories",
+        type: "READ",
         integrationId: "github",
         capabilityId: "github_repos_list",
         inputSchema: {},
         outputSchema: {},
+        writesToState: false,
       };
     }
     if (integration === "linear") {
@@ -101,10 +109,12 @@ function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
         id: "linear.listIssues",
         name: "List issues",
         description: "List Linear issues",
+        type: "READ",
         integrationId: "linear",
         capabilityId: "linear_issues_list",
         inputSchema: {},
         outputSchema: {},
+        writesToState: false,
       };
     }
     if (integration === "slack") {
@@ -112,20 +122,24 @@ function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
         id: "slack.listMessages",
         name: "List messages",
         description: "List Slack messages",
+        type: "READ",
         integrationId: "slack",
         capabilityId: "slack_messages_list",
         inputSchema: {},
         outputSchema: {},
+        writesToState: false,
       };
     }
     return {
       id: "notion.listPages",
       name: "List pages",
       description: "List Notion pages",
+      type: "READ",
       integrationId: "notion",
       capabilityId: "notion_pages_search",
       inputSchema: {},
       outputSchema: {},
+      writesToState: false,
     };
   });
 }

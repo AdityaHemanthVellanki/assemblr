@@ -4,6 +4,7 @@ import Script from "next/script";
 import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getRequestContext, PermissionError, requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
+import { ApiError } from "@/lib/api/client";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,11 @@ export default async function DashboardLayout({
     const { ctx } = await requireOrgMember();
     role = ctx.org.role as OrgRole;
   } catch (err) {
+    // 1. Auth Failures (401) -> Redirect to login
+    if (err instanceof ApiError && err.status === 401) redirect("/login");
     if (err instanceof PermissionError && err.status === 401) redirect("/login");
+
+    // 2. Workspace Provisioning (503) -> Auto-refresh
     if (err instanceof PermissionError) {
       if (err.status === 503 && err.message === "Workspace provisioning") {
         return (

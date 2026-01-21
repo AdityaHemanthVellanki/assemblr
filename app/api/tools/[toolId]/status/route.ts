@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
@@ -52,7 +52,6 @@ export async function GET(
       isActivated: project.is_activated,
     });
   } catch (e) {
-    console.error("Status fetch failed", e);
-    return errorResponse("Status fetch failed", 500);
+    return handleApiError(e);
   }
 }

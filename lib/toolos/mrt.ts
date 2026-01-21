@@ -47,12 +47,6 @@ export function validateMRT(
   if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {
     errors.push("Tool build is degraded or failed.");
   }
-  
-  // Note: NEEDS_CLARIFICATION stops activation, but doesn't necessarily mean the artifact is invalid
-  // if we are just checking for runnability. However, the user request says "No partial activation allowed".
-  if (lifecycleState === "NEEDS_CLARIFICATION" || lifecycleState === "AWAITING_CLARIFICATION") {
-    errors.push("Tool build is incomplete (needs clarification).");
-  }
 
   return {
     runnable: errors.length === 0,

@@ -301,11 +301,9 @@ export function ProjectWorkspace({
                 <ToolRenderer toolId={toolId} spec={currentSpec} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
-                  {lifecycleState === "AWAITING_CLARIFICATION"
-                    ? "Answer the questions in chat to continue building this tool."
-                    : lifecycleState && lifecycleState !== "ACTIVE"
-                      ? "Tool is still building. Check build progress for updates."
-                      : "Describe the tool you want to build to see a live preview."}
+                  {lifecycleState && lifecycleState !== "ACTIVE"
+                    ? "Tool is still building. Check build progress for updates."
+                    : "Describe the tool you want to build to see a live preview."}
                 </div>
               )}
             </div>
@@ -547,10 +545,6 @@ function resolveLifecycleStep(
   if (lifecycleState === "WORKFLOWS_COMPILED") return { stepId: "compile", status: "running" };
   if (lifecycleState === "RUNTIME_READY") return { stepId: "readiness", status: "running" };
   if (lifecycleState === "DATA_FETCHED") return { stepId: "views", status: "running" };
-  
-  if (lifecycleState === "AWAITING_CLARIFICATION" || lifecycleState === "NEEDS_CLARIFICATION") {
-    return { stepId: "intent", status: "error" };
-  }
   
   if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {
     return { stepId: "compile", status: "error" };

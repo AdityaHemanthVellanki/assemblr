@@ -6,7 +6,7 @@ import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const patchSchema = z.object({
   triggerId: z.string().min(1),
@@ -100,8 +100,7 @@ export async function GET(
 
     return jsonResponse({ triggers, paused });
   } catch (e) {
-    console.error("Triggers fetch failed", e);
-    return errorResponse("Triggers fetch failed", 500);
+    return handleApiError(e);
   }
 }
 
@@ -154,7 +153,6 @@ export async function PATCH(
 
     return jsonResponse({ status: "ok" });
   } catch (e) {
-    console.error("Triggers update failed", e);
-    return errorResponse("Triggers update failed", 500);
+    return handleApiError(e);
   }
 }

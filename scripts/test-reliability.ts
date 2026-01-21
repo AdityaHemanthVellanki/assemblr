@@ -201,8 +201,8 @@ async function runTests() {
         understandPurposeMs: 0,
       },
     });
-    assert(result.status === "awaiting_clarification", "ToolCompiler returns awaiting clarification on timeout");
-    assert(result.clarifications.length > 0, "ToolCompiler returns clarification prompt on timeout");
+    assert(result.status === "degraded", "ToolCompiler returns degraded on timeout");
+    assert(result.clarifications.length === 0, "ToolCompiler does not return clarification prompts");
     const integrations = new Set(result.spec.integrations.map((i) => i.id));
     assert(integrations.has("google"), "ToolCompiler detects google integration from prompt");
     assert(integrations.has("github"), "ToolCompiler detects github integration from prompt");
@@ -210,8 +210,8 @@ async function runTests() {
     assert(integrations.has("slack"), "ToolCompiler detects slack integration from prompt");
     assert(integrations.has("notion"), "ToolCompiler detects notion integration from prompt");
     assert(
-      result.progress.some((event) => event.status === "waiting_for_user"),
-      "ToolCompiler emits waiting_for_user progress on timeout",
+      result.progress.some((event) => event.message.toLowerCase().includes("skipped") || event.message.toLowerCase().includes("timed out")),
+      "ToolCompiler reports defaulted stages on timeout",
     );
   } finally {
     setMemoryAdapterFactory(null);

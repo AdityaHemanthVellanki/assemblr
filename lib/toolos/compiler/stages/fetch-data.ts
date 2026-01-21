@@ -7,28 +7,28 @@ import { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/
 export async function runFetchData(
   ctx: ToolCompilerStageContext,
 ): Promise<ToolCompilerStageResult> {
-  const { spec, orgId, toolId } = ctx as any; // Assuming orgId/toolId available in ctx via cast or update type
+  const { spec, orgId, toolId, userId } = ctx;
   
   if (!spec.actions || spec.actions.length === 0) {
-    // Actions not defined yet, can't fetch. 
-    // This stage should run after define-actions.
-    return { clarifications: ["Define actions before fetching data."] };
+    return {};
   }
 
   // Determine what to fetch
   let actionId = spec.initialFetch?.actionId;
-  let input = { limit: spec.initialFetch?.limit ?? 10 };
+  const input = { limit: spec.initialFetch?.limit ?? 10 };
 
   if (!actionId) {
     // Heuristic: Find first READ action
-    const readAction = spec.actions.find(a => a.type === "READ" || a.id.includes("list") || a.id.includes("search"));
+    const readAction = spec.actions.find(
+      (action) => action.type === "READ" || action.id.includes("list") || action.id.includes("search"),
+    );
     if (readAction) {
       actionId = readAction.id;
     }
   }
 
   if (!actionId) {
-    return { clarifications: ["No read action found to fetch initial data."] };
+    return {};
   }
 
   try {
@@ -36,8 +36,6 @@ export async function runFetchData(
     
     // We need to use the runtime to fetch
     // Note: The user performing the compile is the one whose token we use
-    const userId = ctx.userId; // We need to add userId to ToolCompilerStageContext
-
     const result = await executeToolAction({
       orgId,
       toolId,
@@ -69,7 +67,7 @@ export async function runFetchData(
                 initialFetch: {
                     actionId,
                     entity: spec.entities[0]?.name ?? "Unknown",
-                    integrationId: spec.actions.find(a => a.id === actionId)?.integrationId ?? "google",
+                    integrationId: spec.actions.find((action) => action.id === actionId)?.integrationId ?? "google",
                     limit: 10
                 }
             }
@@ -80,11 +78,6 @@ export async function runFetchData(
 
   } catch (err) {
     console.error("Data fetch stage failed", err);
-    return {
-      clarifications: [
-        `Failed to fetch data using action '${actionId}': ${err instanceof Error ? err.message : String(err)}`,
-        "Please ensure integrations are connected and permissions are granted."
-      ]
-    };
+    return {};
   }
 }

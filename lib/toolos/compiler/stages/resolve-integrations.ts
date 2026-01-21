@@ -18,11 +18,15 @@ export async function runResolveIntegrations(
       detected.add(parsed.data);
     }
   }
-  const ids = Array.from(detected);
+  let ids = Array.from(detected);
   if (ids.length === 0) {
-    return {
-      clarifications: ["Which integrations should this tool use? (google, github, slack, linear, notion)"],
-    };
+    ids = ctx.connectedIntegrationIds
+      .map((id) => IntegrationIdSchema.safeParse(id))
+      .filter((result) => result.success)
+      .map((result) => result.data);
+  }
+  if (ids.length === 0) {
+    ids = ["google", "github", "slack", "linear", "notion"];
   }
   const integrations = ids.map((id) => ({
     id,
