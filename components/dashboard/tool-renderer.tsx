@@ -393,12 +393,22 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
     if (isActivated !== true) return;
-    
-    void fetchRuns();
-    void fetchAutomation();
-    void fetchTriggers();
-    void fetchBudget();
-    void fetchTimeline();
+    let cancelled = false;
+    const run = async () => {
+      await fetchRuns();
+      if (cancelled) return;
+      await fetchAutomation();
+      if (cancelled) return;
+      await fetchTriggers();
+      if (cancelled) return;
+      await fetchBudget();
+      if (cancelled) return;
+      await fetchTimeline();
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
   }, [spec, isActivated, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchTimeline]);
 
   React.useEffect(() => {

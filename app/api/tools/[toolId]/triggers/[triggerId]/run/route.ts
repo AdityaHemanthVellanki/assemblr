@@ -4,16 +4,17 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ toolId: string; triggerId: string }> },
 ) {
-  const { toolId, triggerId } = await params;
-  const { ctx } = await requireOrgMember();
-  await requireProjectOrgAccess(ctx, toolId);
-  const supabase = await createSupabaseServerClient();
+  try {
+    const { toolId, triggerId } = await params;
+    const { ctx } = await requireOrgMember();
+    await requireProjectOrgAccess(ctx, toolId);
+    const supabase = await createSupabaseServerClient();
 
   const { data: project } = await (supabase.from("projects") as any)
     .select("spec, active_version_id, is_activated")
@@ -91,5 +92,8 @@ export async function POST(
     return jsonResponse({ status: "started" });
   }
 
-  return errorResponse("Trigger has no action or workflow", 400);
+    return errorResponse("Trigger has no action or workflow", 400);
+  } catch (e) {
+    return handleApiError(e);
+  }
 }

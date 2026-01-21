@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 type VersionSummary = {
   id: string;
@@ -73,7 +73,6 @@ export async function GET(
 
     return jsonResponse({ versions });
   } catch (e) {
-    console.error("Versions fetch failed", e);
-    return errorResponse("Versions fetch failed", 500);
+    return handleApiError(e);
   }
 }

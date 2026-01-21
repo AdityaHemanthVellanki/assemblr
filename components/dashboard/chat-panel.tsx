@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
-import { safeFetch } from "@/lib/api/client";
+import { safeFetch, ApiError } from "@/lib/api/client";
 
 type IntegrationCTA = {
   id: string;
@@ -92,6 +92,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   });
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
+  const [authExpired, setAuthExpired] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const pathname = usePathname();
 
@@ -224,6 +225,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     setInput(""); // This will trigger the useEffect to clear sessionStorage
     setMessages((prev) => [...prev, { role: "user", type: "text", content: userMessage }]);
     setIsLoading(true);
+    setAuthExpired(false);
 
     try {
       const data = await safeFetch<{
@@ -247,20 +249,24 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         }),
       });
 
-      if (data?.message?.type === "integration_action" && Array.isArray(data.message.integrations)) {
+      const message = data?.message;
+      if (message?.type === "integration_action" && Array.isArray(message.integrations)) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", type: "integration_action", integrations: data.message.integrations },
+          { role: "assistant", type: "integration_action", integrations: message.integrations as IntegrationCTA[] },
         ]);
-      } else if (data?.message?.type === "data" && data.message.result) {
+      } else if (message?.type === "data" && message.result) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", type: "data", result: data.message.result },
+          { role: "assistant", type: "data", result: message.result },
         ]);
       } else {
-        const content = data?.message?.type === "text" && typeof data.message.content === "string"
-          ? data.message.content
-          : (typeof data.explanation === "string" ? data.explanation : "");
+        const content =
+          message?.type === "text" && typeof message.content === "string"
+            ? message.content
+            : typeof data?.explanation === "string"
+              ? data.explanation
+              : "";
         setMessages((prev) => [...prev, { role: "assistant", type: "text", content }]);
       }
       
@@ -268,11 +274,19 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         onSpecUpdate(data.spec);
       }
     } catch (error) {
-      console.error(error);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", type: "text", content: "Sorry, something went wrong. Please try again." },
-      ]);
+      if (error instanceof ApiError && error.status === 401) {
+        setAuthExpired(true);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", type: "text", content: "Session expired — reauth required." },
+        ]);
+      } else {
+        console.error(error);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", type: "text", content: "Sorry, something went wrong. Please try again." },
+        ]);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -400,6 +414,11 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
           )}
         </div>
       </div>
+      {authExpired && (
+        <div className="border-b border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-700">
+          Session expired — reauth required.
+        </div>
+      )}
 
       <ScrollArea className="flex-1 p-4" ref={scrollRef}>
         <div className="space-y-4">

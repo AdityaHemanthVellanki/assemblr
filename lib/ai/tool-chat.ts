@@ -13,6 +13,7 @@ import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { withToolBuildLock } from "@/lib/toolos/build-lock";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -94,6 +95,7 @@ export async function processToolChat(
     throw new Error("Only create mode is supported in compiler pipeline");
   }
 
+  return await withToolBuildLock(input.toolId, async () => {
   const steps = createBuildSteps();
   const builderNamespace = "tool_builder";
   const machine = new ToolBuildStateMachine();
@@ -104,28 +106,30 @@ export async function processToolChat(
   };
   const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: input.orgId };
   const persistLifecycle = async () => {
-    await Promise.all([
-      saveMemory({
-        scope: toolScope,
-        namespace: builderNamespace,
-        key: "lifecycle_state",
-        value: machine.state,
-      }),
-      saveMemory({
-        scope: toolScope,
-        namespace: builderNamespace,
-        key: "build_logs",
-        value: machine.logs,
-      }),
-    ]);
+    await saveMemory({
+      scope: toolScope,
+      namespace: builderNamespace,
+      key: "lifecycle_state",
+      value: machine.state,
+    });
+    await saveMemory({
+      scope: toolScope,
+      namespace: builderNamespace,
+      key: "build_logs",
+      value: machine.logs,
+    });
   };
+  let lifecycleChain = Promise.resolve();
   const transition = async (
     next: Parameters<ToolBuildStateMachine["transition"]>[0],
     message: string,
     level?: Parameters<ToolBuildStateMachine["transition"]>[2],
   ) => {
-    machine.transition(next, message, level);
-    await persistLifecycle();
+    lifecycleChain = lifecycleChain.then(async () => {
+      machine.transition(next, message, level);
+      await persistLifecycle();
+    });
+    await lifecycleChain;
   };
   const prompt = input.userMessage;
 
@@ -177,11 +181,11 @@ export async function processToolChat(
           
           // Map stages to state machine transitions
           if (event.status === "completed") {
-            if (event.stage === "extract-entities") transition("ENTITIES_EXTRACTED", "Entities identified");
-            if (event.stage === "resolve-integrations") transition("INTEGRATIONS_RESOLVED", "Integrations selected");
-            if (event.stage === "define-actions") transition("ACTIONS_DEFINED", "Actions defined");
-            if (event.stage === "build-workflows") transition("WORKFLOWS_COMPILED", "Workflows built");
-            if (event.stage === "validate-spec") transition("RUNTIME_READY", "Runtime compiled");
+            if (event.stage === "extract-entities") void transition("ENTITIES_EXTRACTED", "Entities identified");
+            if (event.stage === "resolve-integrations") void transition("INTEGRATIONS_RESOLVED", "Integrations selected");
+            if (event.stage === "define-actions") void transition("ACTIONS_DEFINED", "Actions defined");
+            if (event.stage === "build-workflows") void transition("WORKFLOWS_COMPILED", "Workflows built");
+            if (event.stage === "validate-spec") void transition("RUNTIME_READY", "Runtime compiled");
           }
 
           if (event.status === "started") {
@@ -349,6 +353,7 @@ export async function processToolChat(
       active_version_id: activeVersionId,
     },
   };
+  });
 }
 
 export async function applyClarificationAnswer(

@@ -6,7 +6,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
   _req: Request,
@@ -101,11 +101,6 @@ export async function POST(
 
     return errorResponse("No action or workflow to retry", 400);
   } catch (e) {
-    console.error("Retry failed", e);
-    return errorResponse(
-      "Retry failed",
-      500,
-      e instanceof Error ? e.message : String(e)
-    );
+    return handleApiError(e);
   }
 }

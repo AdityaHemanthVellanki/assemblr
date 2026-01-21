@@ -12,7 +12,14 @@ import {
   getMissingMemoryTableError,
 } from "./memory-adapter";
 
-const MEMORY_TABLES = ["session_memory", "tool_memory", "user_memory", "org_memory"];
+const MEMORY_TABLES = [
+  "session_memory",
+  "tool_memory",
+  "user_memory",
+  "org_memory",
+  "tool_lifecycle_state",
+  "tool_build_logs",
+];
 
 function toAdapterError(err: unknown, tables: string[], fallback: string) {
   const missing = getMissingMemoryTableError(err, tables);

@@ -4,7 +4,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getRequestContext, RequestContext } from "@/lib/api/context";
+import { getRequestContext, getOptionalRequestContext, RequestContext } from "@/lib/api/context";
 import {
   ORG_ROLES,
   type OrgRole,
@@ -42,7 +42,11 @@ export const getSessionContext = cache(async (): Promise<SessionContext> => {
 
 export async function requireOrgMember() {
   const ctx = await getRequestContext();
-  return { ctx };
+  return { ctx, role: ctx.org.role as OrgRole };
+}
+
+export async function requireOrgMemberOptional() {
+  return await getOptionalRequestContext();
 }
 
 export async function requireRole(minRole: OrgRole) {
@@ -101,3 +105,4 @@ export {
 };
 
 export type { OrgRole };
+export { getRequestContext };

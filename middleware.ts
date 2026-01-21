@@ -1,10 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
-
-const refreshLocks = new Map<string, Promise<{
-  data: { user: unknown | null };
-  error: any;
-}>>();
+import { withRefreshLock } from "@/lib/auth/refresh-coordinator";
 
 function getRefreshKey(request: NextRequest) {
   const cookies = request.cookies.getAll();
@@ -38,43 +34,29 @@ export async function middleware(request: NextRequest) {
   });
 
   const refreshKey = getRefreshKey(request);
+  const isAuthFresh = request.cookies.get("auth-fresh")?.value === "true";
 
-  let inFlight = refreshLocks.get(refreshKey);
-  if (!inFlight) {
-    console.log("[auth] refresh start", {
-      path: request.nextUrl.pathname,
-    });
-    inFlight = supabase.auth.getUser();
-    refreshLocks.set(refreshKey, inFlight);
-    inFlight
-      .then((result) => {
-        if (result.error) {
-          console.error("[auth] refresh error", {
-            path: request.nextUrl.pathname,
-            code: (result.error as any).code,
-            message: (result.error as any).message,
-          });
-        } else {
-          console.log("[auth] refresh complete", {
-            path: request.nextUrl.pathname,
-          });
-        }
-      })
-      .finally(() => {
-        if (refreshLocks.get(refreshKey) === inFlight) {
-          refreshLocks.delete(refreshKey);
-        }
-      });
-  } else {
-    console.log("[auth] refresh join", {
-      path: request.nextUrl.pathname,
-    });
+  if (isAuthFresh) {
+    // If we just logged in, trust the session and skip the expensive refresh check
+    // This breaks the redirect loop where the session hasn't fully propagated or is being refreshed aggressively
+    return response;
   }
 
-  const {
-    data: { user },
-    error,
-  } = await inFlight;
+  const { data: { session }, error } = await withRefreshLock(refreshKey, async () => {
+    console.log("[auth] refresh start", { path: request.nextUrl.pathname });
+    // RULE 1: This is the ONLY place in the app allowed to call getSession() and trigger a refresh.
+    const result = await supabase.auth.getSession();
+    if (result.error) {
+      console.error("[auth] refresh error", {
+        path: request.nextUrl.pathname,
+        code: (result.error as any).code,
+        message: (result.error as any).message,
+      });
+    } else {
+      console.log("[auth] refresh complete", { path: request.nextUrl.pathname });
+    }
+    return result;
+  });
 
   if (error && (error as any).code === "refresh_token_already_used") {
     console.error("[auth] refresh_token_already_used", {
@@ -98,6 +80,8 @@ export async function middleware(request: NextRequest) {
 
     return redirect;
   }
+
+  const user = session?.user;
 
   if (!user) {
     const loginUrl = request.nextUrl.clone();

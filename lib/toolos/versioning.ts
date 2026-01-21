@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
+import { createHash } from "crypto";
 
 type ToolVersionRow = {
   id: string;
@@ -11,6 +12,7 @@ type ToolVersionRow = {
   purpose: string;
   tool_spec: ToolSystemSpec;
   compiled_tool: Record<string, any>;
+  build_hash?: string;
   diff?: Record<string, any> | null;
 };
 
@@ -24,8 +26,12 @@ export async function createToolVersion(params: {
 }) {
   const supabase = createSupabaseAdminClient();
   const diff = params.baseSpec ? diffSpecs(params.baseSpec, params.spec) : null;
+  const buildHash =
+    typeof (params.compiledTool as any)?.specHash === "string"
+      ? (params.compiledTool as any).specHash
+      : createHash("sha256").update(JSON.stringify(params.spec)).digest("hex");
   const { data, error } = await (supabase.from("tool_versions") as any)
-    .insert({
+    .upsert({
       tool_id: params.toolId,
       org_id: params.orgId,
       created_by: params.userId ?? null,
@@ -35,7 +41,8 @@ export async function createToolVersion(params: {
       tool_spec: params.spec,
       compiled_tool: params.compiledTool,
       diff,
-    })
+      build_hash: buildHash,
+    }, { onConflict: "tool_id,build_hash" })
     .select("*")
     .single();
   if (error || !data) {

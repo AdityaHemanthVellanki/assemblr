@@ -1,11 +1,11 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { errorResponse, handleApiError, jsonResponse } from "@/lib/api/response";
 
 const bodySchema = z.object({
   message: z.string().min(1).max(5000),
@@ -30,11 +30,18 @@ export async function POST(
   const { id: toolId } = await params;
 
   try {
-    // 1. Auth & Access Check
-    const { ctx, role } = await requireOrgMember();
+    const auth = await requireOrgMemberOptional();
+    if (auth.requiresAuth) {
+      return errorResponse("Session expired — reauth required", 401, { requiresAuth: true });
+    }
+    const { ctx, error } = auth;
+    if (!ctx) {
+      return errorResponse(error?.message ?? "Unauthorized", error?.status ?? 401);
+    }
+    const role = ctx.org.role as any;
     // Only owners/editors can chat (modify tool)
     if (role === "viewer") {
-      return NextResponse.json({ error: "Viewers cannot modify tools" }, { status: 403 });
+      return errorResponse("Viewers cannot modify tools", 403);
     }
 
     await requireProjectOrgAccess(ctx, toolId);
@@ -42,11 +49,11 @@ export async function POST(
     const json = await req.json().catch(() => null);
     const parsed = bodySchema.safeParse(json);
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+      return errorResponse("Invalid body", 400);
     }
     const { message: userMessage, mode, integrationMode, selectedIntegrations } = parsed.data;
     if (mode !== "create") {
-      return NextResponse.json({ error: "Only create mode is supported" }, { status: 400 });
+      return errorResponse("Only create mode is supported", 400);
     }
     const selectedIntegrationIds = selectedIntegrations?.map((i) => i.id);
 
@@ -61,7 +68,7 @@ export async function POST(
     });
     if (insertError) {
       console.error("Failed to save user message", insertError);
-      return NextResponse.json({ error: "Failed to save message" }, { status: 500 });
+      return errorResponse("Failed to save message", 500);
     }
 
     const [projectRes, historyRes, connections] = await Promise.all([
@@ -80,7 +87,7 @@ export async function POST(
     }
     if (historyRes.error) {
       console.error("Failed to load chat history", historyRes.error);
-      return NextResponse.json({ error: "Failed to load chat history" }, { status: 500 });
+      return errorResponse("Failed to load chat history", 500);
     }
 
     const currentSpec = projectRes.data.spec ?? {};
@@ -116,12 +123,10 @@ export async function POST(
         .eq("id", toolId);
  
       if (updateError) {
-        console.error("Failed to update project spec", updateError);
-        return NextResponse.json({ error: "Failed to save tool updates" }, { status: 500 });
+        return errorResponse("Failed to save tool updates", 500);
       }
     }
 
-    // 6. Insert Assistant Message
     const { error: insertAiError } = await supabase.from("chat_messages").insert({
       tool_id: toolId,
       org_id: ctx.orgId,
@@ -130,21 +135,17 @@ export async function POST(
       metadata: result.metadata ?? null,
     });
     if (insertAiError) {
-      console.error("Failed to save AI message", insertAiError);
-      // Non-fatal, return success anyway
     }
 
-    return NextResponse.json(result);
+    return jsonResponse(result);
   } catch (err) {
     if (err instanceof PermissionError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return errorResponse(err.message, err.status);
     }
     const message = err instanceof Error ? err.message : String(err);
     if (message === "AI returned non-JSON response" || message === "AI returned invalid JSON") {
-         console.error("Chat API Error: AI Violation", err);
-         return NextResponse.json({ error: "AI response violated JSON contract" }, { status: 500 });
+         return errorResponse("AI response violated JSON contract", 500);
     }
-    console.error("Chat API Error", err);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return handleApiError(err);
   }
 }

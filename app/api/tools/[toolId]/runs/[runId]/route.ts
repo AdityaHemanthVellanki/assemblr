@@ -1,27 +1,31 @@
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ toolId: string; runId: string }> },
 ) {
-  const { toolId, runId } = await params;
-  const { ctx } = await requireOrgMember();
-  await requireProjectOrgAccess(ctx, toolId);
-  const supabase = await createSupabaseServerClient();
+  try {
+    const { toolId, runId } = await params;
+    const { ctx } = await requireOrgMember();
+    await requireProjectOrgAccess(ctx, toolId);
+    const supabase = await createSupabaseServerClient();
 
-  const { data, error } = await supabase
-    .from("execution_runs")
-    .select("*")
-    .eq("id", runId)
-    .eq("tool_id", toolId)
-    .eq("org_id", ctx.orgId)
-    .single();
+    const { data, error } = await supabase
+      .from("execution_runs")
+      .select("*")
+      .eq("id", runId)
+      .eq("tool_id", toolId)
+      .eq("org_id", ctx.orgId)
+      .single();
 
-  if (error || !data) {
-    return errorResponse("Run not found", 404);
+    if (error || !data) {
+      return errorResponse("Run not found", 404);
+    }
+
+    return jsonResponse({ run: data });
+  } catch (e) {
+    return handleApiError(e);
   }
-
-  return jsonResponse({ run: data });
 }

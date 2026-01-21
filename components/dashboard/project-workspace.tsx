@@ -51,6 +51,7 @@ export function ProjectWorkspace({
   const [showBuildSteps, setShowBuildSteps] = React.useState(true);
   const [showChat, setShowChat] = React.useState(true);
   const [showVersions, setShowVersions] = React.useState(false);
+  const [authExpired, setAuthExpired] = React.useState(false);
   const [versionsLoading, setVersionsLoading] = React.useState(false);
   const [versionsError, setVersionsError] = React.useState<string | null>(null);
   const [versions, setVersions] = React.useState<VersionSummary[]>([]);
@@ -128,7 +129,7 @@ export function ProjectWorkspace({
   );
 
   const handleSubmit = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || isExecuting) return;
 
     const userMsg = { role: "user", content: inputValue };
     const newHistory = [...messages, userMsg];
@@ -136,6 +137,7 @@ export function ProjectWorkspace({
     setInputValue("");
     setIsExecuting(true);
     setBuildSteps(markFirstRunning(defaultBuildSteps()));
+    setAuthExpired(false);
 
     try {
         const response = await sendChatMessage(
@@ -144,13 +146,28 @@ export function ProjectWorkspace({
             newHistory.map(m => ({ role: m.role, content: m.content })), 
             currentSpec
         );
+        if ("requiresAuth" in response && response.requiresAuth) {
+            setAuthExpired(true);
+            setMessages(prev => [...prev, { role: "assistant", content: "Session expired — reauth required." }]);
+            setBuildSteps(markError(defaultBuildSteps(), "Session expired — reauth required."));
+            return;
+        }
+        if ("error" in response && response.error) {
+            throw new Error(response.error);
+        }
+        const data = response as {
+            toolId?: string;
+            message: { content: string };
+            spec?: ToolSpec;
+            metadata?: Record<string, any>;
+        };
 
         // Update ID if created
-        if (response.toolId && !toolId) {
-            setToolId(response.toolId);
+        if (data.toolId && !toolId) {
+            setToolId(data.toolId);
         }
 
-        const pipelineSteps = response.metadata?.build_steps as BuildStep[] | undefined;
+        const pipelineSteps = data.metadata?.build_steps as BuildStep[] | undefined;
         if (pipelineSteps && pipelineSteps.length > 0) {
             setBuildSteps(pipelineSteps);
         } else {
@@ -158,16 +175,16 @@ export function ProjectWorkspace({
         }
 
         // Update Spec
-        if (response.spec) {
-            setCurrentSpec(response.spec as ToolSpec);
+        if (data.spec) {
+            setCurrentSpec(data.spec as ToolSpec);
         }
 
         // Add Assistant Message
         const assistantMsg = { 
             role: "assistant", 
-            content: response.message.content 
+            content: data.message.content 
         };
-        const refinements = response.metadata?.refinements as string[] | undefined;
+        const refinements = data.metadata?.refinements as string[] | undefined;
         if (refinements && refinements.length > 0) {
             const refinementMsg = {
                 role: "assistant",
@@ -196,6 +213,11 @@ export function ProjectWorkspace({
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
+      {authExpired && (
+        <div className="border-b border-red-500/40 bg-red-500/10 px-6 py-2 text-xs text-red-700">
+          Session expired — reauth required.
+        </div>
+      )}
       {/* Header */}
       {!isZeroState && (
         <header className="flex h-14 shrink-0 items-center justify-between px-6 border-b border-border/50 bg-background/50 backdrop-blur-sm z-10">

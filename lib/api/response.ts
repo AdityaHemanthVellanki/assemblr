@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { ApiError } from "@/lib/api/client";
+import { PermissionError } from "@/lib/auth/permissions.client";
 
 export type ApiResponse<T> = 
   | { ok: true; data: T }
@@ -16,7 +17,12 @@ export function errorResponse(message: string, status: number = 500, details?: a
 
 export function handleApiError(e: unknown): NextResponse {
   console.error("[API] Error:", e);
-  const status = e instanceof ApiError ? e.status : 500;
+  const status =
+    e instanceof ApiError
+      ? e.status
+      : e instanceof PermissionError
+        ? e.status
+        : 500;
   const message = e instanceof Error ? e.message : "Internal Server Error";
   return errorResponse(message, status);
 }

@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { processToolChat } from "@/lib/ai/tool-chat";
-import { loadIntegrationConnections } from "@/lib/integrations/server-utils";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const chatSchema = z.object({
@@ -20,7 +20,13 @@ export async function POST(
 ) {
   try {
     const { toolId } = await params;
-    const { ctx } = await requireOrgMember();
+    const { ctx, requiresAuth, error } = await requireOrgMemberOptional();
+    if (requiresAuth) {
+      return errorResponse("Session expired — reauth required", 401, { requiresAuth: true });
+    }
+    if (!ctx) {
+      return errorResponse(error?.message ?? "Unauthorized", error?.status ?? 401);
+    }
     await requireProjectOrgAccess(ctx, toolId);
 
     const json = await req.json().catch(() => ({}));
@@ -71,9 +77,12 @@ export async function POST(
 
     const history = historyRes.data
       .reverse()
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+      .map((m: { role: string; content: string }) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
 
-    const connectedIntegrationIds = connections.map((c) => c.integration_id);
+    const connectedIntegrationIds = connections.map((c: { integration_id: string }) => c.integration_id);
 
     const result = await processToolChat({
       orgId: ctx.orgId,

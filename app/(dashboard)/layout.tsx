@@ -3,8 +3,9 @@ import Script from "next/script";
 
 import { DashboardShell } from "@/components/dashboard/shell";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getRequestContext, PermissionError, requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
 import { ApiError } from "@/lib/api/client";
+import { LoadingAuthState } from "@/components/auth/loading-auth-state";
 
 export const dynamic = "force-dynamic";
 
@@ -18,9 +19,10 @@ export default async function DashboardLayout({
     const { ctx } = await requireOrgMember();
     role = ctx.org.role as OrgRole;
   } catch (err) {
-    // 1. Auth Failures (401) -> Redirect to login
-    if (err instanceof ApiError && err.status === 401) redirect("/login");
-    if (err instanceof PermissionError && err.status === 401) redirect("/login");
+    // 1. Auth Failures (401) -> Show Loading State (Client checks session)
+    // NEVER redirect synchronously in layout to avoid loops if middleware just refreshed
+    if (err instanceof ApiError && err.status === 401) return <LoadingAuthState />;
+    if (err instanceof PermissionError && err.status === 401) return <LoadingAuthState />;
 
     // 2. Workspace Provisioning (503) -> Auto-refresh
     if (err instanceof PermissionError) {

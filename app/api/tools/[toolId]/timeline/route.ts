@@ -3,7 +3,7 @@ import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permission
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { aggregateTimeline } from "@/lib/toolos/timeline-engine";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { jsonResponse, errorResponse } from "@/lib/api/response";
+import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function GET(
   _req: Request,
@@ -41,7 +41,6 @@ export async function GET(
     const timeline = await aggregateTimeline(ctx.orgId, toolId, spec);
     return jsonResponse({ timeline });
   } catch (e) {
-    console.error("Timeline fetch failed", e);
-    return errorResponse("Timeline fetch failed", 500);
+    return handleApiError(e);
   }
 }

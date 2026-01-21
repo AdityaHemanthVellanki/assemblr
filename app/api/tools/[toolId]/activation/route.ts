@@ -80,10 +80,10 @@ export async function PATCH(
       .eq("org_id", ctx.orgId);
 
     if (error) {
-      return NextResponse.json({ error: "Failed to update activation state" }, { status: 500 });
+      return errorResponse("Failed to update activation state", 500);
     }
 
-    return NextResponse.json({ activated: parsed.data.activated });
+    return jsonResponse({ activated: parsed.data.activated });
   } catch (e) {
     return handleApiError(e);
   }

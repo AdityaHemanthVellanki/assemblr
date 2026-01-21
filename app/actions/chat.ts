@@ -4,6 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -11,22 +12,21 @@ export async function sendChatMessage(
   history: Array<{ role: "user" | "assistant"; content: string }>,
   currentSpec: unknown | null
 ) {
-  const supabase = await createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) throw new Error("Unauthorized");
+  const { ctx, requiresAuth, error } = await requireOrgMemberOptional();
+  if (requiresAuth) {
+    return { requiresAuth: true };
+  }
+  if (!ctx) {
+    return { error: error?.message ?? "Unauthorized" };
+  }
 
   let effectiveToolId = toolId;
   let effectiveSpec = currentSpec;
-  let orgId = "";
+  let orgId = ctx.orgId;
 
   // 1. Resolve Tool & Org
   if (!effectiveToolId) {
-    // Create new project
-    const { data: org } = await supabase.from("memberships").select("org_id").eq("user_id", user.id).limit(1).single();
-    if (!org) throw new Error("No organization found");
-    orgId = org.org_id;
-
+    const supabase = await createSupabaseServerClient();
     const { data: newProject, error } = await supabase.from("projects").insert({
         org_id: orgId,
         name: "New Tool",
@@ -36,20 +36,21 @@ export async function sendChatMessage(
     if (error || !newProject) throw new Error("Failed to create project");
     effectiveToolId = newProject.id;
   } else {
+    const supabase = await createSupabaseServerClient();
     const { data: project } = await supabase.from("projects").select("org_id, spec").eq("id", effectiveToolId).single();
     if (!project) throw new Error("Project not found");
     orgId = project.org_id;
     if (!effectiveSpec) effectiveSpec = project.spec as any;
   }
 
+  const supabase = await createSupabaseServerClient();
   const connections = await loadIntegrationConnections({ supabase, orgId });
   const connectedIntegrationIds = connections.map((c) => c.integration_id);
 
-  // 3. Process Chat
   const response = await processToolChat({
     orgId,
     toolId: effectiveToolId,
-    userId: user.id,
+    userId: ctx.userId,
     currentSpec: effectiveSpec as any,
     messages: history,
     userMessage: message,
@@ -67,6 +68,6 @@ export async function sendChatMessage(
 
   return {
     ...response,
-    toolId: effectiveToolId // Return ID in case it was created
+    toolId: effectiveToolId
   };
 }
