@@ -13,7 +13,8 @@ export class ToolBuildStateMachine {
   state: ToolBuildState = "INIT";
   logs: ToolBuildLog[] = [];
 
-  transition(next: ToolBuildState, message: string, level: ToolBuildLog["level"] = "info") {
+  transition(next: ToolBuildState, payload?: unknown, level: ToolBuildLog["level"] = "info") {
+    const message = typeof payload === "string" ? payload : payload ? JSON.stringify(payload) : "";
     this.state = next;
     this.logs.push({
       state: next,
@@ -21,5 +22,9 @@ export class ToolBuildStateMachine {
       timestamp: new Date().toISOString(),
       level,
     });
+  }
+
+  transitionTo(next: ToolBuildState, payload?: unknown, level: ToolBuildLog["level"] = "info") {
+    this.transition(next, payload, level);
   }
 }

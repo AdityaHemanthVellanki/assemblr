@@ -1,11 +1,11 @@
 import "server-only";
 
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
-import { buildCompiledToolArtifact, validateToolSystem } from "@/lib/toolos/compiler";
+import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { ToolBuildStateMachine } from "@/lib/toolos/build-state-machine";
@@ -13,6 +13,7 @@ import type { DataEvidence } from "@/lib/toolos/data-evidence";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budget";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { withToolBuildLock } from "@/lib/toolos/build-lock";
 
 export interface ToolChatRequest {
@@ -98,35 +99,72 @@ export async function processToolChat(
   return await withToolBuildLock(input.toolId, async () => {
   const steps = createBuildSteps();
   const builderNamespace = "tool_builder";
+  
+  // 0. Resolve Context Securely
+  const supabase = await createSupabaseServerClient();
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  
+  // Strict Auth Check (Rule 1)
+  if (userError || !user) {
+    throw new Error("Unauthorized: Invalid session");
+  }
+  
+  // Resolve User ID: Explicit input OR session user
+  // Prioritize session user for security unless running as system
+  const userId = user.id;
+
   const machine = new ToolBuildStateMachine();
+  const buildId = randomUUID();
   const builderSessionId = `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`;
   const builderScope: MemoryScope = {
     type: "session",
     sessionId: builderSessionId,
   };
   const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: input.orgId };
+  let lifecyclePersistenceFailed = false;
+  let buildLogsPersistenceFailed = false;
   const persistLifecycle = async () => {
-    await saveMemory({
-      scope: toolScope,
-      namespace: builderNamespace,
-      key: "lifecycle_state",
-      value: machine.state,
-    });
-    await saveMemory({
-      scope: toolScope,
-      namespace: builderNamespace,
-      key: "build_logs",
-      value: machine.logs,
-    });
+    if (!lifecyclePersistenceFailed) {
+      try {
+        await saveMemory({
+          scope: toolScope,
+          namespace: builderNamespace,
+          key: "lifecycle_state",
+          value: { state: machine.state, buildId },
+        });
+      } catch (err) {
+        lifecyclePersistenceFailed = true;
+        console.error("[LifecyclePersistenceFailed]", err);
+        if (machine && typeof machine.transitionTo === "function") {
+          machine.transitionTo("DEGRADED", "Lifecycle persistence failed", "error");
+        }
+      }
+    }
+    if (!buildLogsPersistenceFailed) {
+      try {
+        await saveMemory({
+          scope: toolScope,
+          namespace: builderNamespace,
+          key: "build_logs",
+          value: { buildId, logs: machine.logs },
+        });
+      } catch (err) {
+        buildLogsPersistenceFailed = true;
+        console.error("[BuildLogsPersistenceFailed]", err);
+      }
+    }
   };
   let lifecycleChain = Promise.resolve();
   const transition = async (
     next: Parameters<ToolBuildStateMachine["transition"]>[0],
-    message: string,
+    payload: Parameters<ToolBuildStateMachine["transition"]>[1],
     level?: Parameters<ToolBuildStateMachine["transition"]>[2],
   ) => {
     lifecycleChain = lifecycleChain.then(async () => {
-      machine.transition(next, message, level);
+      if (!machine || typeof machine.transitionTo !== "function") {
+        throw new Error("Invalid lifecycle machine instance");
+      }
+      machine.transitionTo(next, payload, level);
       await persistLifecycle();
     });
     await lifecycleChain;
@@ -141,22 +179,19 @@ export async function processToolChat(
   const consumeTokens = async (usage?: { total_tokens?: number }) => {
     if (!usage?.total_tokens) return;
     runTokens += usage.total_tokens;
-    try {
-      await consumeToolBudget({
-        orgId: input.orgId,
-        toolId: input.toolId,
-        tokens: usage.total_tokens,
-        runTokens,
-      });
-    } catch (err) {
-      console.error("[Budget] Update failed (non-fatal):", err);
-      // We don't throw here to avoid failing the build due to stats/billing glitches
-    }
+    await consumeToolBudget({
+      orgId: input.orgId,
+      toolId: input.toolId,
+      tokens: usage.total_tokens,
+      runTokens,
+    });
   };
 
   try {
     await persistLifecycle();
-    let compiledTool = null as ReturnType<typeof buildCompiledToolArtifact> | null;
+    // NOTE: compiledTool must be declared exactly once.
+    // Do not redeclare inside try/catch or branches.
+    let compiledTool: CompiledToolArtifact | null = null;
     const stageToStep: Record<string, string> = {
       "understand-purpose": "intent",
       "extract-entities": "entities",
@@ -276,25 +311,37 @@ export async function processToolChat(
     markStep(steps, "runtime", "pending", "Activating tool");
     markStep(steps, "views", "success", `Views: ${spec.views.length}`);
     await transition("ACTIVE", "Tool compiled");
-    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    if (!compiledTool) {
-      throw new Error("Compiled tool artifact missing");
+
+    try {
+      await saveMemory({
+        scope: { type: "tool_org", toolId: input.toolId, orgId: input.orgId },
+        namespace: builderNamespace,
+        key: "lifecycle_state",
+        value: { state: machine.state, buildId },
+      });
+    } catch (err) {
+      console.error("[LifecyclePersistenceFailed]", err);
     }
+
+    let versionId: string | null = null;
+    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
     const version = await createToolVersion({
       orgId: input.orgId,
       toolId: input.toolId,
-      userId: input.userId ?? null,
+      userId: userId,
       spec,
       compiledTool,
       baseSpec,
     });
-    await promoteToolVersion({ toolId: input.toolId, versionId: version.id });
+    versionId = version.id;
+
+    await promoteToolVersion({ toolId: input.toolId, versionId: versionId });
     const supabase = createSupabaseAdminClient();
     await (supabase.from("projects") as any)
       .update({ is_activated: true })
       .eq("id", input.toolId)
       .eq("org_id", input.orgId);
-    activeVersionId = version.id;
+    activeVersionId = versionId;
 
     return {
       explanation: spec.purpose,
@@ -305,12 +352,25 @@ export async function processToolChat(
         status: compilerResult.status,
         versionId: activeVersionId,
         progress: compilerResult.progress,
+        steps,
+        build_logs: machine.logs,
       },
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
-    await transition("DEGRADED", message, "error");
+    
+    // Check for fatal infrastructure errors (retry exhaustion, timeouts, network failures)
+    const isInfraError = 
+      message.includes("Timeout") || 
+      message.includes("fetch failed") || 
+      message.includes("ECONNREFUSED") ||
+      message.includes("500") ||
+      message.includes("network");
+      
+    const failureState = isInfraError ? "INFRA_ERROR" : "DEGRADED";
+    await transition(failureState, message, "error");
+    
     if (err instanceof BudgetExceededError) {
       return {
         explanation: "Budget limit reached",

@@ -1,15 +1,35 @@
--- Ensure core memory tables exist and are correct
-create table if not exists public.tool_memory (
+create table if not exists public.tool_versions (
+  id uuid primary key default gen_random_uuid(),
   tool_id uuid not null references public.projects(id) on delete cascade,
-  org_id uuid references public.organizations(id) on delete cascade,
-  user_id uuid references auth.users(id) on delete cascade,
-  owner_id uuid references auth.users(id) on delete cascade,
-  namespace text not null,
-  key text not null,
-  value jsonb,
-  updated_at timestamptz default now(),
-  primary key (tool_id, namespace, key)
+  org_id uuid not null references public.organizations(id) on delete cascade,
+  created_by uuid references auth.users(id),
+  status text not null check (status in ('draft', 'active', 'archived')),
+  name text not null,
+  purpose text not null,
+  tool_spec jsonb not null default '{}'::jsonb,
+  compiled_tool jsonb not null default '{}'::jsonb,
+  intent_schema jsonb,
+  diff jsonb,
+  build_hash text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
+
+alter table public.tool_versions add column if not exists created_by uuid references auth.users(id);
+alter table public.tool_versions add column if not exists name text;
+alter table public.tool_versions add column if not exists purpose text;
+alter table public.tool_versions add column if not exists status text;
+alter table public.tool_versions add column if not exists compiled_tool jsonb;
+alter table public.tool_versions add column if not exists intent_schema jsonb;
+alter table public.tool_versions add column if not exists tool_spec jsonb;
+alter table public.tool_versions add column if not exists diff jsonb;
+alter table public.tool_versions add column if not exists build_hash text;
+alter table public.tool_versions add column if not exists created_at timestamptz default now();
+alter table public.tool_versions add column if not exists updated_at timestamptz default now();
+update public.tool_versions set compiled_tool = '{}'::jsonb where compiled_tool is null;
+update public.tool_versions set tool_spec = '{}'::jsonb where tool_spec is null;
+update public.tool_versions set build_hash = md5(tool_spec::text || id::text) where build_hash is null;
+create unique index if not exists tool_versions_tool_id_build_hash_key on public.tool_versions(tool_id, build_hash);
 
 alter table public.tool_memory add column if not exists owner_id uuid references auth.users(id) on delete cascade;
 alter table public.tool_memory alter column user_id drop not null;
@@ -24,42 +44,6 @@ begin
     and m.role = 'owner';
 end $$;
 
-create table if not exists public.session_memory (
-  session_id text not null,
-  namespace text not null,
-  key text not null,
-  value jsonb,
-  updated_at timestamptz default now(),
-  primary key (session_id, namespace, key)
-);
-
-create table if not exists public.user_memory (
-  user_id uuid not null references auth.users(id) on delete cascade,
-  namespace text not null,
-  key text not null,
-  value jsonb,
-  updated_at timestamptz default now(),
-  primary key (user_id, namespace, key)
-);
-
-create table if not exists public.org_memory (
-  org_id uuid not null references public.organizations(id) on delete cascade,
-  namespace text not null,
-  key text not null,
-  value jsonb,
-  updated_at timestamptz default now(),
-  primary key (org_id, namespace, key)
-);
-
--- Specialized tables for high-volume/critical data (User Requirement 1)
-create table if not exists public.tool_build_logs (
-  id uuid primary key default gen_random_uuid(),
-  tool_id uuid not null references public.projects(id) on delete cascade,
-  build_id text not null,
-  logs jsonb not null,
-  created_at timestamptz default now()
-);
-
 create table if not exists public.tool_lifecycle_state (
   id uuid primary key default gen_random_uuid(),
   tool_id uuid not null references public.projects(id) on delete cascade,
@@ -70,21 +54,6 @@ create table if not exists public.tool_lifecycle_state (
   updated_at timestamptz default now()
 );
 
-alter table public.tool_build_logs add column if not exists id uuid default gen_random_uuid();
-alter table public.tool_build_logs add column if not exists build_id text;
-alter table public.tool_build_logs add column if not exists logs jsonb;
-alter table public.tool_build_logs add column if not exists created_at timestamptz default now();
-do $$
-begin
-  update public.tool_build_logs set build_id = coalesce(build_id, gen_random_uuid()::text);
-  if exists (select 1 from information_schema.columns where table_name = 'tool_build_logs' and column_name = 'updated_at') then
-    update public.tool_build_logs set logs = coalesce(logs, '[]'::jsonb), created_at = coalesce(created_at, updated_at, now());
-  else
-    update public.tool_build_logs set logs = coalesce(logs, '[]'::jsonb), created_at = coalesce(created_at, now());
-  end if;
-end $$;
-alter table public.tool_build_logs alter column build_id set not null;
-
 alter table public.tool_lifecycle_state add column if not exists id uuid default gen_random_uuid();
 alter table public.tool_lifecycle_state add column if not exists key text;
 alter table public.tool_lifecycle_state add column if not exists state text;
@@ -92,6 +61,22 @@ alter table public.tool_lifecycle_state add column if not exists data jsonb;
 alter table public.tool_lifecycle_state add column if not exists created_at timestamptz default now();
 alter table public.tool_lifecycle_state add column if not exists updated_at timestamptz default now();
 alter table public.tool_lifecycle_state alter column key set default 'lifecycle';
+do $$
+declare
+  pk_name text;
+begin
+  select conname into pk_name
+  from pg_constraint
+  where conrelid = 'public.tool_lifecycle_state'::regclass
+    and contype = 'p';
+  if pk_name is not null then
+    execute format('alter table public.tool_lifecycle_state drop constraint %I', pk_name);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name = 'tool_lifecycle_state' and column_name = 'id') then
+    alter table public.tool_lifecycle_state add column id uuid default gen_random_uuid();
+  end if;
+  alter table public.tool_lifecycle_state add primary key (id);
+end $$;
 do $$
 begin
   if exists (select 1 from information_schema.columns where table_name = 'tool_lifecycle_state' and column_name = 'state') then
@@ -102,45 +87,54 @@ begin
 end $$;
 alter table public.tool_lifecycle_state alter column key set not null;
 alter table public.tool_lifecycle_state alter column state set not null;
+create unique index if not exists tool_lifecycle_state_tool_id_key on public.tool_lifecycle_state(tool_id);
+create unique index if not exists tool_lifecycle_unique on public.tool_lifecycle_state(tool_id);
 
-create table if not exists public.tool_token_usage (
+create table if not exists public.tool_build_logs (
+  id uuid primary key default gen_random_uuid(),
   tool_id uuid not null references public.projects(id) on delete cascade,
-  org_id uuid not null references public.organizations(id) on delete cascade,
-  period_start timestamptz not null,
-  tokens_used bigint not null default 0,
-  updated_at timestamptz default now(),
-  primary key (tool_id, period_start)
+  build_id text not null,
+  logs jsonb not null,
+  created_at timestamptz default now()
 );
 
--- Indexes for performance
-create index if not exists idx_tool_memory_lookup on public.tool_memory(tool_id, namespace, key);
-create index if not exists idx_session_memory_lookup on public.session_memory(session_id, namespace, key);
-drop index if exists idx_tool_build_logs_tool;
+alter table public.tool_build_logs add column if not exists id uuid default gen_random_uuid();
+alter table public.tool_build_logs add column if not exists build_id text;
+alter table public.tool_build_logs add column if not exists logs jsonb;
+alter table public.tool_build_logs add column if not exists created_at timestamptz default now();
+do $$
+declare
+  pk_name text;
+begin
+  select conname into pk_name
+  from pg_constraint
+  where conrelid = 'public.tool_build_logs'::regclass
+    and contype = 'p';
+  if pk_name is not null then
+    execute format('alter table public.tool_build_logs drop constraint %I', pk_name);
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name = 'tool_build_logs' and column_name = 'id') then
+    alter table public.tool_build_logs add column id uuid default gen_random_uuid();
+  end if;
+  alter table public.tool_build_logs add primary key (id);
+end $$;
+do $$
+begin
+  update public.tool_build_logs set build_id = coalesce(build_id, gen_random_uuid()::text);
+  if exists (select 1 from information_schema.columns where table_name = 'tool_build_logs' and column_name = 'updated_at') then
+    update public.tool_build_logs set logs = coalesce(logs, '[]'::jsonb), created_at = coalesce(created_at, updated_at, now());
+  else
+    update public.tool_build_logs set logs = coalesce(logs, '[]'::jsonb), created_at = coalesce(created_at, now());
+  end if;
+end $$;
+alter table public.tool_build_logs alter column build_id set not null;
 drop index if exists tool_build_logs_tool_id_key;
+drop index if exists idx_tool_build_logs_tool;
 create unique index if not exists tool_build_logs_tool_build_idx on public.tool_build_logs(tool_id, build_id);
 create index if not exists tool_build_logs_build_idx on public.tool_build_logs(build_id);
-create unique index if not exists idx_tool_lifecycle_state_key on public.tool_lifecycle_state(tool_id);
-create unique index if not exists tool_lifecycle_unique on public.tool_lifecycle_state(tool_id);
-create unique index if not exists tool_memory_unique on public.tool_memory(tool_id, namespace, key);
 
--- Enable RLS
-alter table public.tool_memory enable row level security;
-alter table public.session_memory enable row level security;
-alter table public.user_memory enable row level security;
-alter table public.org_memory enable row level security;
-alter table public.tool_build_logs enable row level security;
 alter table public.tool_lifecycle_state enable row level security;
-alter table public.tool_token_usage enable row level security;
-
--- Policies (Permissive for now, relying on service role for critical ops, but good to have)
-drop policy if exists "Enable read access for all users" on public.tool_memory;
-create policy "Enable read access for all users" on public.tool_memory for select using (true);
-
-drop policy if exists "Enable insert for authenticated users only" on public.tool_memory;
-create policy "Enable insert for authenticated users only" on public.tool_memory for insert with check (auth.role() = 'authenticated');
-
-drop policy if exists "Enable update for authenticated users only" on public.tool_memory;
-create policy "Enable update for authenticated users only" on public.tool_memory for update using (auth.role() = 'authenticated');
+alter table public.tool_build_logs enable row level security;
 
 drop policy if exists "Tool lifecycle read" on public.tool_lifecycle_state;
 create policy "Tool lifecycle read" on public.tool_lifecycle_state for select to authenticated using (

@@ -3,11 +3,11 @@ import { createServerClient } from "@supabase/ssr";
 import { withRefreshLock } from "@/lib/auth/refresh-coordinator";
 import { getServerEnv } from "@/lib/env";
 
-function getRefreshKey(request: NextRequest) {
+function getLockKey(request: NextRequest) {
   const cookies = request.cookies.getAll();
-  const refreshCookie = cookies.find((c) => c.name.includes("refresh-token"));
-  if (refreshCookie?.value) return refreshCookie.value;
-  return "no-refresh-token";
+  const accessCookie = cookies.find((c) => c.name.includes("access-token"));
+  if (accessCookie?.value) return accessCookie.value;
+  return "no-access-token";
 }
 
 export async function middleware(request: NextRequest) {
@@ -17,7 +17,7 @@ export async function middleware(request: NextRequest) {
   const supabaseKey = env.SUPABASE_PUBLISHABLE_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
-    return NextResponse.next();
+    throw new Error("Supabase env missing in middleware");
   }
 
   let response = NextResponse.next({ request });
@@ -40,7 +40,6 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  const refreshKey = getRefreshKey(request);
   const isAuthFresh = request.cookies.get("auth-fresh")?.value === "true";
 
   if (isAuthFresh) {
@@ -49,46 +48,11 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  const { data: { session }, error } = await withRefreshLock(refreshKey, async () => {
-    console.log("[auth] refresh start", { path: request.nextUrl.pathname });
-    // RULE 1: This is the ONLY place in the app allowed to call getSession() and trigger a refresh.
-    const result = await supabase.auth.getSession();
-    if (result.error) {
-      console.error("[auth] refresh error", {
-        path: request.nextUrl.pathname,
-        code: (result.error as any).code,
-        message: (result.error as any).message,
-      });
-    } else {
-      console.log("[auth] refresh complete", { path: request.nextUrl.pathname });
-    }
-    return result;
-  });
-
-  if (error && (error as any).code === "refresh_token_already_used") {
-    console.error("[auth] refresh_token_already_used", {
-      path: request.nextUrl.pathname,
-    });
-
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
-
-    const redirect = NextResponse.redirect(loginUrl);
-
-    for (const cookie of request.cookies.getAll()) {
-      if (cookie.name.includes("sb-") || cookie.name.includes("supabase")) {
-        redirect.cookies.set(cookie.name, "", {
-          path: "/",
-          maxAge: 0,
-        });
-      }
-    }
-
-    return redirect;
+  const lockKey = getLockKey(request);
+  const { data: { user }, error } = await withRefreshLock(lockKey, () => supabase.auth.getUser());
+  if (error) {
+    throw new Error(error.message);
   }
-
-  const user = session?.user;
 
   if (!user) {
     const loginUrl = request.nextUrl.clone();

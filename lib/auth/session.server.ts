@@ -9,16 +9,7 @@ export const getSessionOnce = cache(async () => {
 
   const supabase = createServerClient(
     env.SUPABASE_URL,
-    env.SUPABASE_SECRET_KEY, // Use SECRET key on server for robustness, or PUBLISHABLE? 
-    // User example used process.env.NEXT_PUBLIC_... which are publishable usually.
-    // But createServerClient on server usually can use secret or anon. 
-    // User example: process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    // I will stick to user example keys but via getServerEnv() which has them.
-    // Actually, getServerEnv has SUPABASE_URL and SUPABASE_SECRET_KEY / PUBLISHABLE_KEY.
-    // For session validation, ANON key is safer/standard unless admin is needed.
-    // I'll use SUPABASE_PUBLISHABLE_KEY to match user's intent of "standard client".
-    // Wait, user code snippet used: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    // So I will use env.SUPABASE_PUBLISHABLE_KEY (which corresponds to that).
+    env.SUPABASE_PUBLISHABLE_KEY, // Use PUBLISHABLE key for client-side auth context
     {
       cookies: {
         getAll() {
@@ -33,12 +24,25 @@ export const getSessionOnce = cache(async () => {
     }
   );
 
-  const { data, error } = await supabase.auth.getSession();
+  // Validate the user with the auth service (more secure than getSession)
+  const { data: { user }, error } = await supabase.auth.getUser();
 
   if (error) {
-      console.warn("[getSessionOnce] Session error:", error.message);
+      // console.warn("[getSessionOnce] Auth error:", error.message);
       return null;
   }
   
-  return data.session;
+  if (!user) {
+      return null;
+  }
+  
+  // Return a session-like object for compatibility
+  return {
+      user,
+      access_token: null, // Not available via getUser, but usually not needed for server checks
+      refresh_token: null,
+      expires_in: 0,
+      token_type: 'bearer',
+      user_id: user.id
+  } as any;
 });

@@ -14,12 +14,16 @@ CREATE TABLE IF NOT EXISTS tool_memory (
   tool_id uuid NOT NULL,
   org_id uuid,
   user_id uuid,
+  owner_id uuid,
   namespace text NOT NULL,
   key text NOT NULL,
   value jsonb,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tool_id, namespace, key, org_id, user_id)
 );
+
+ALTER TABLE tool_memory ADD COLUMN IF NOT EXISTS owner_id uuid;
+ALTER TABLE tool_memory ALTER COLUMN user_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_memory (
   session_id text NOT NULL,

@@ -12,9 +12,21 @@ type ToolVersionRow = {
   purpose: string;
   tool_spec: ToolSystemSpec;
   compiled_tool: Record<string, any>;
+  intent_schema?: Record<string, any> | null;
   build_hash?: string;
   diff?: Record<string, any> | null;
 };
+
+async function validateToolVersionsSchema(supabase: ReturnType<typeof createSupabaseAdminClient>) {
+  const { error } = await (supabase.from("tool_versions") as any)
+    .select("id, tool_id, org_id, status, name, purpose, tool_spec, compiled_tool, intent_schema, build_hash, diff, created_by")
+    .limit(1);
+  if (error) {
+    throw new Error(
+      `tool_versions schema invalid: ${error.message}. Run migration 20260122130000_fix_tool_versions_schema.sql and reload schema cache.`
+    );
+  }
+}
 
 export async function createToolVersion(params: {
   orgId: string;
@@ -30,23 +42,30 @@ export async function createToolVersion(params: {
     typeof (params.compiledTool as any)?.specHash === "string"
       ? (params.compiledTool as any).specHash
       : createHash("sha256").update(JSON.stringify(params.spec)).digest("hex");
+
+  const payload: any = {
+    tool_id: params.toolId,
+    org_id: params.orgId,
+    status: "draft",
+    name: params.spec.name,
+    purpose: params.spec.purpose,
+    tool_spec: params.spec,
+    build_hash: buildHash,
+    diff,
+    created_by: params.userId ?? null,
+    compiled_tool: params.compiledTool,
+    intent_schema: (params.compiledTool as any)?.intentSchema ?? null,
+  };
+
+  await validateToolVersionsSchema(supabase);
+
   const { data, error } = await (supabase.from("tool_versions") as any)
-    .upsert({
-      tool_id: params.toolId,
-      org_id: params.orgId,
-      created_by: params.userId ?? null,
-      status: "draft",
-      name: params.spec.name,
-      purpose: params.spec.purpose,
-      tool_spec: params.spec,
-      compiled_tool: params.compiledTool,
-      diff,
-      build_hash: buildHash,
-    }, { onConflict: "tool_id,build_hash" })
+    .upsert(payload, { onConflict: "tool_id,build_hash" })
     .select("*")
     .single();
-  if (error || !data) {
-    throw new Error(`Failed to create tool version: ${error?.message ?? "unknown"}`);
+
+  if (error) {
+    throw error;
   }
   return data as ToolVersionRow;
 }

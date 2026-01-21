@@ -320,18 +320,26 @@ async function persistPartialSpec(
   sessionScope: MemoryScope,
   toolScope: MemoryScope,
 ) {
-  await saveMemory({
-    scope: sessionScope,
-    namespace: BUILDER_NAMESPACE,
-    key: "partial_spec",
-    value: spec,
-  });
-  await saveMemory({
-    scope: toolScope,
-    namespace: BUILDER_NAMESPACE,
-    key: "partial_spec",
-    value: spec,
-  });
+  try {
+    await saveMemory({
+      scope: sessionScope,
+      namespace: BUILDER_NAMESPACE,
+      key: "partial_spec",
+      value: spec,
+    });
+  } catch (err) {
+    console.warn("[PartialSpecPersistenceFailed]", err);
+  }
+  try {
+    await saveMemory({
+      scope: toolScope,
+      namespace: BUILDER_NAMESPACE,
+      key: "partial_spec",
+      value: spec,
+    });
+  } catch (err) {
+    console.warn("[PartialSpecPersistenceFailed]", err);
+  }
 }
 
 function ensureMinimumSpec(

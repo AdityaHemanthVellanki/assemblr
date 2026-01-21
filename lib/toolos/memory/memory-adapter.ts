@@ -66,35 +66,3 @@ export function getMissingMemoryTableError(err: unknown, tableNames: string[]) {
   }
   return null;
 }
-
-export function createFallbackMemoryAdapter(params: {
-  primary: MemoryAdapter;
-  fallback: MemoryAdapter;
-  initialPrimaryAvailable?: boolean;
-}) {
-  const { primary, fallback } = params;
-  let primaryAvailable = params.initialPrimaryAvailable ?? true;
-
-  const handle =
-    (op: "get" | "set" | "delete") =>
-    async (payload: any) => {
-      if (!primaryAvailable) {
-        return fallback[op](payload);
-      }
-      try {
-        return await primary[op](payload);
-      } catch (err) {
-        if (err instanceof MemoryAdapterError && err.kind === "missing_table") {
-          primaryAvailable = false;
-          return fallback[op](payload);
-        }
-        throw err;
-      }
-    };
-
-  return {
-    get: handle("get"),
-    set: handle("set"),
-    delete: handle("delete"),
-  };
-}

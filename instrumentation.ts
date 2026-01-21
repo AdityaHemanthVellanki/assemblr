@@ -4,5 +4,8 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { validateAzureDeployment } = await import("@/lib/ai/azureOpenAI");
     await validateAzureDeployment();
+
+    const { ensureSupabaseMemoryTables } = await import("@/lib/toolos/memory/supabase-memory");
+    await ensureSupabaseMemoryTables();
   }
 }

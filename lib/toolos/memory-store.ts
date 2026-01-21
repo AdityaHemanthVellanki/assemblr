@@ -4,14 +4,11 @@ import { createHash } from "crypto";
 import { normalizeUUID } from "@/lib/utils";
 import {
   MemoryAdapter,
-  MemoryAdapterError,
   MemoryDeleteParams,
   MemoryReadParams,
   MemoryScope,
   MemoryWriteParams,
-  createFallbackMemoryAdapter,
 } from "@/lib/toolos/memory/memory-adapter";
-import { createEphemeralMemoryAdapter } from "@/lib/toolos/memory/ephemeral-memory";
 import { createSupabaseMemoryAdapter, ensureSupabaseMemoryTables } from "@/lib/toolos/memory/supabase-memory";
 
 export type { MemoryScope } from "@/lib/toolos/memory/memory-adapter";
@@ -76,42 +73,19 @@ let bootstrapPromise: Promise<void> | null = null;
 function startMemoryBootstrapCheck() {
   if (bootstrapPromise) return bootstrapPromise;
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
-    bootstrapPromise = Promise.resolve();
-    return bootstrapPromise;
+    throw new Error("Supabase env missing for memory persistence");
   }
   bootstrapPromise = (async () => {
-    try {
-      const { missingTables } = await ensureSupabaseMemoryTables();
-      if (missingTables.length > 0) {
-        console.warn(`[MemoryBootstrap] Missing memory tables: ${missingTables.join(", ")}`);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[MemoryBootstrap] Failed to check memory tables: ${message}`);
-    }
+    await ensureSupabaseMemoryTables();
   })();
   return bootstrapPromise;
 }
 
 void startMemoryBootstrapCheck();
 
-async function createDefaultAdapter() {
-  const primary = createSupabaseMemoryAdapter();
-  const fallback = createEphemeralMemoryAdapter();
-  let initialPrimaryAvailable = true;
-  try {
-    const { missingTables } = await ensureSupabaseMemoryTables();
-    if (missingTables.length > 0) {
-      initialPrimaryAvailable = false;
-    }
-  } catch (err) {
-    if (err instanceof MemoryAdapterError && err.kind === "missing_table") {
-      initialPrimaryAvailable = false;
-    } else {
-      initialPrimaryAvailable = false;
-    }
-  }
-  return createFallbackMemoryAdapter({ primary, fallback, initialPrimaryAvailable });
+async function createDefaultAdapter(): Promise<MemoryAdapter> {
+  await startMemoryBootstrapCheck();
+  return createSupabaseMemoryAdapter();
 }
 
 async function getAdapter() {
@@ -127,32 +101,19 @@ export function setMemoryAdapterFactory(factory: (() => Promise<MemoryAdapter>) 
 }
 
 export async function loadMemory(params: MemoryReadParams) {
-  try {
-    const { scope, namespace, key } = params;
-    const adapter = await getAdapter();
-    return await adapter.get({ scope: normalizeScope(scope), namespace, key });
-  } catch (err) {
-    console.warn(`[MemoryStore] Load failed for ${params.key}:`, err);
-    return null;
-  }
+  const { scope, namespace, key } = params;
+  const adapter = await getAdapter();
+  return await adapter.get({ scope: normalizeScope(scope), namespace, key });
 }
 
 export async function saveMemory(params: MemoryWriteParams) {
-  try {
-    const { scope, namespace, key, value } = params;
-    const adapter = await getAdapter();
-    await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
-  } catch (err) {
-    console.warn(`[MemoryStore] Save failed for ${params.key}:`, err);
-  }
+  const { scope, namespace, key, value } = params;
+  const adapter = await getAdapter();
+  await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
 }
 
 export async function deleteMemory(params: MemoryDeleteParams) {
-  try {
-    const { scope, namespace, key } = params;
-    const adapter = await getAdapter();
-    await adapter.delete({ scope: normalizeScope(scope), namespace, key });
-  } catch (err) {
-    console.warn(`[MemoryStore] Delete failed for ${params.key}:`, err);
-  }
+  const { scope, namespace, key } = params;
+  const adapter = await getAdapter();
+  await adapter.delete({ scope: normalizeScope(scope), namespace, key });
 }

@@ -9,17 +9,20 @@ export function LoadingAuthState() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let supabase;
+    let supabase: ReturnType<typeof getBrowserSupabase> | null = null;
     try {
       supabase = getBrowserSupabase();
     } catch (e) {
       console.error("Supabase initialization failed:", e);
-      setError("Configuration error: Supabase environment variables missing.");
+      setTimeout(() => setError("Configuration error: Supabase environment variables missing."), 0);
       return;
     }
 
     async function check() {
       try {
+        if (!supabase) {
+          return;
+        }
         const { data, error } = await supabase.auth.getUser();
         if (error || !data.user) {
           // Confirmed invalid -> redirect

@@ -49,16 +49,20 @@ export async function runFetchData(
 
     // Persist evidence
     const scope: MemoryScope = { type: "tool_org", toolId, orgId };
-    await saveMemory({
-      scope,
-      namespace: "tool_builder",
-      key: "data_evidence",
-      value: {
-        actionId,
-        timestamp: new Date().toISOString(),
-        sample: result.output,
-      },
-    });
+    try {
+      await saveMemory({
+        scope,
+        namespace: "tool_builder",
+        key: "data_evidence",
+        value: {
+          actionId,
+          timestamp: new Date().toISOString(),
+          sample: result.output,
+        },
+      });
+    } catch (err) {
+      console.error("[DataEvidencePersistenceFailed]", err);
+    }
 
     // If successful, we might want to update the spec to lock this as the initialFetch
     if (!spec.initialFetch) {

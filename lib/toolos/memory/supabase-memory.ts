@@ -19,12 +19,16 @@ const MEMORY_TABLES = [
   "org_memory",
   "tool_lifecycle_state",
   "tool_build_logs",
+  "tool_versions",
 ];
 
 function toAdapterError(err: unknown, tables: string[], fallback: string) {
   const missing = getMissingMemoryTableError(err, tables);
   if (missing) return missing;
   const message = err instanceof Error ? err.message : fallback;
+  if (err) {
+    console.error("[MemoryWriteFailed]", { tables, error: err });
+  }
   return new MemoryAdapterError("unknown", message);
 }
 
@@ -36,6 +40,10 @@ async function queryWithServerFallback<T>(
     const supabase = await createSupabaseServerClient();
     return await run(supabase);
   } catch (err) {
+    const code = typeof (err as any)?.code === "string" ? (err as any).code : undefined;
+    if (code === "23502" || code === "42P10") {
+      throw err;
+    }
     const supabase = createSupabaseAdminClient();
     return await onAdmin(supabase, err as Error);
   }
@@ -66,17 +74,69 @@ async function loadToolMemory(
   return data?.value ?? null;
 }
 
+async function resolveOrgOwnerId(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  orgId: string,
+) {
+  const { data, error } = await (supabase.from("memberships") as any)
+    .select("user_id")
+    .eq("org_id", orgId)
+    .eq("role", "owner")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Failed to resolve org owner: ${error.message}`);
+  }
+  if (!data?.user_id) {
+    throw new Error("Missing org owner for tool memory write");
+  }
+  return data.user_id as string;
+}
+
+async function resolveToolOwnerId(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  toolId: string,
+) {
+  const { data, error } = await (supabase.from("projects") as any)
+    .select("org_id")
+    .eq("id", toolId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Failed to resolve tool org: ${error.message}`);
+  }
+  if (!data?.org_id) {
+    throw new Error("Missing org for tool memory write");
+  }
+  return await resolveOrgOwnerId(supabase, data.org_id as string);
+}
+
+async function resolveOwnerIdForScope(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  scope: Extract<MemoryScope, { type: "tool" | "tool_user" | "tool_org" }>,
+) {
+  if (scope.type === "tool_user") {
+    return scope.userId;
+  }
+  if (scope.type === "tool_org") {
+    return await resolveOrgOwnerId(supabase, scope.orgId);
+  }
+  return await resolveToolOwnerId(supabase, scope.toolId);
+}
+
 function buildToolPayload(
   scope: Extract<MemoryScope, { type: "tool" | "tool_user" | "tool_org" }>,
   namespace: string,
   key: string,
   value: any,
+  ownerId: string,
 ) {
   if (scope.type === "tool") {
     return {
       tool_id: scope.toolId,
       org_id: null,
       user_id: null,
+      owner_id: ownerId,
       namespace,
       key,
       value,
@@ -88,6 +148,7 @@ function buildToolPayload(
       tool_id: scope.toolId,
       org_id: null,
       user_id: scope.userId,
+      owner_id: ownerId,
       namespace,
       key,
       value,
@@ -98,6 +159,7 @@ function buildToolPayload(
     tool_id: scope.toolId,
     org_id: scope.orgId,
     user_id: null,
+    owner_id: ownerId,
     namespace,
     key,
     value,
@@ -106,13 +168,7 @@ function buildToolPayload(
 }
 
 function resolveToolConflictTarget(scope: Extract<MemoryScope, { type: "tool" | "tool_user" | "tool_org" }>) {
-  if (scope.type === "tool") {
-    return "tool_id,namespace,key";
-  }
-  if (scope.type === "tool_user") {
-    return "tool_id,user_id,namespace,key";
-  }
-  return "tool_id,org_id,namespace,key";
+  return "tool_id,namespace,key";
 }
 
 async function loadSimpleMemory(
@@ -178,7 +234,7 @@ async function deleteSimpleMemory(
 }
 
 export function createSupabaseMemoryAdapter(): MemoryAdapter {
-  return {
+  const adapter: MemoryAdapter = {
     async get(params: MemoryReadParams) {
       const { scope, namespace, key } = params;
       if (scope.type === "session") {
@@ -205,6 +261,56 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
           (supabase) => loadSimpleMemory(supabase, "org_memory", "org_id", scope.orgId, namespace, key),
           (supabase) => loadSimpleMemory(supabase, "org_memory", "org_id", scope.orgId, namespace, key),
         );
+      }
+      if (scope.type === "tool_org" && namespace === "tool_builder") {
+        if (key === "lifecycle_state") {
+          return await queryWithServerFallback(
+            async (supabase) => {
+              const { data, error } = await (supabase.from("tool_lifecycle_state") as any)
+                .select("state, data")
+                .eq("tool_id", scope.toolId)
+                .eq("key", "lifecycle")
+                .maybeSingle();
+              if (error) throw error;
+              const storedState = data?.data?.state ?? data?.state ?? data?.data ?? null;
+              return storedState;
+            },
+            async (supabase) => {
+              const { data, error } = await (supabase.from("tool_lifecycle_state") as any)
+                .select("state, data")
+                .eq("tool_id", scope.toolId)
+                .eq("key", "lifecycle")
+                .maybeSingle();
+              if (error) throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to load lifecycle state");
+              const storedState = data?.data?.state ?? data?.state ?? data?.data ?? null;
+              return storedState;
+            },
+          );
+        }
+        if (key === "build_logs") {
+          return await queryWithServerFallback(
+            async (supabase) => {
+              const { data, error } = await (supabase.from("tool_build_logs") as any)
+                .select("logs")
+                .eq("tool_id", scope.toolId)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (error) throw error;
+              return data?.logs ?? null;
+            },
+            async (supabase) => {
+              const { data, error } = await (supabase.from("tool_build_logs") as any)
+                .select("logs")
+                .eq("tool_id", scope.toolId)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (error) throw toAdapterError(error, ["tool_build_logs"], "Failed to load build logs");
+              return data?.logs ?? null;
+            },
+          );
+        }
       }
       return await queryWithServerFallback(
         (supabase) => loadToolMemory(supabase, scope, namespace, key),
@@ -248,63 +354,97 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
       // Specialized routing for tool builder artifacts
       if (scope.type === "tool_org" && namespace === "tool_builder") {
         if (key === "lifecycle_state") {
+          const payload = {
+            tool_id: scope.toolId,
+            key: "lifecycle",
+            state: typeof value === "string" ? value : value?.state ?? "ACTIVE",
+            data: value,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          if (!payload.key) {
+            throw new Error("Lifecycle memory write attempted without key");
+          }
+          if (!payload.state) {
+            throw new Error("Lifecycle memory write attempted without state");
+          }
           await queryWithServerFallback(
             async (supabase) => {
-              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert({
-                tool_id: scope.toolId,
-                state: typeof value === 'string' ? value : JSON.stringify(value),
-                details: typeof value === 'object' ? value : null,
-                updated_at: new Date().toISOString(),
-              }, { onConflict: "tool_id" });
-              if (error) throw error;
+              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert(
+                payload,
+                { onConflict: "tool_id" }
+              );
+              if (error) {
+                console.error("[MemoryWriteFailed]", { table: "tool_lifecycle_state", payload, error });
+                throw error;
+              }
             },
             async (supabase) => {
-              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert({
-                tool_id: scope.toolId,
-                state: typeof value === 'string' ? value : JSON.stringify(value),
-                details: typeof value === 'object' ? value : null,
-                updated_at: new Date().toISOString(),
-              }, { onConflict: "tool_id" });
-              if (error) throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to save lifecycle state");
+              const { error } = await (supabase.from("tool_lifecycle_state") as any).upsert(
+                payload,
+                { onConflict: "tool_id" }
+              );
+              if (error) {
+                console.error("[MemoryWriteFailed]", { table: "tool_lifecycle_state", payload, error });
+                throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to save lifecycle state");
+              }
             }
           );
           return;
         }
         if (key === "build_logs") {
+          const buildId = typeof value === "object" && value !== null ? (value as any).buildId : undefined;
+          if (!buildId) {
+            throw new Error("build_id missing for tool_build_logs");
+          }
+          const payload = {
+            tool_id: scope.toolId,
+            build_id: buildId,
+            logs: Array.isArray(value) ? value : Array.isArray(value?.logs) ? value.logs : [value?.logs ?? value],
+            created_at: new Date().toISOString(),
+          };
           await queryWithServerFallback(
             async (supabase) => {
-              const { error } = await (supabase.from("tool_build_logs") as any).upsert({
-                tool_id: scope.toolId,
-                build_id: "latest", // Singleton build log for now
-                logs: Array.isArray(value) ? value : [value],
-                updated_at: new Date().toISOString(),
-              }, { onConflict: "tool_id,build_id" });
-              if (error) throw error;
+              const { error } = await (supabase.from("tool_build_logs") as any).upsert(
+                payload,
+                { onConflict: "tool_id,build_id" }
+              );
+              if (error) {
+                console.error("[MemoryWriteFailed]", { table: "tool_build_logs", payload, error });
+                throw error;
+              }
             },
             async (supabase) => {
-              const { error } = await (supabase.from("tool_build_logs") as any).upsert({
-                tool_id: scope.toolId,
-                build_id: "latest",
-                logs: Array.isArray(value) ? value : [value],
-                updated_at: new Date().toISOString(),
-              }, { onConflict: "tool_id,build_id" });
-              if (error) throw toAdapterError(error, ["tool_build_logs"], "Failed to save build logs");
+              const { error } = await (supabase.from("tool_build_logs") as any).upsert(
+                payload,
+                { onConflict: "tool_id,build_id" }
+              );
+              if (error) {
+                console.error("[MemoryWriteFailed]", { table: "tool_build_logs", payload, error });
+                throw toAdapterError(error, ["tool_build_logs"], "Failed to save build logs");
+              }
             }
           );
           return;
         }
       }
 
-      const payload = buildToolPayload(scope, namespace, key, value);
+      const supabase = createSupabaseAdminClient();
+      const ownerId = await resolveOwnerIdForScope(supabase, scope);
+      const payload = buildToolPayload(scope, namespace, key, value, ownerId);
       const onConflict = resolveToolConflictTarget(scope);
       await queryWithServerFallback(
         async (supabase) => {
           const { error } = await (supabase.from("tool_memory") as any).upsert(payload, { onConflict });
-          if (error) throw error;
+          if (error) {
+            console.error("[MemoryWriteFailed]", { table: "tool_memory", payload, error });
+            throw error;
+          }
         },
         async (supabase) => {
           const { error } = await (supabase.from("tool_memory") as any).upsert(payload, { onConflict });
           if (error) {
+            console.error("[MemoryWriteFailed]", { table: "tool_memory", payload, error });
             throw toAdapterError(error, ["tool_memory"], "Failed to save tool memory");
           }
         },
@@ -312,6 +452,50 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
     },
     async delete(params: MemoryDeleteParams) {
       const { scope, namespace, key } = params;
+      if (scope.type === "tool_org" && namespace === "tool_builder") {
+        if (key === "lifecycle_state") {
+          await queryWithServerFallback(
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_lifecycle_state") as any)
+                .delete()
+                .eq("tool_id", scope.toolId)
+                .eq("key", "lifecycle")
+              ;
+              if (error) throw error;
+            },
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_lifecycle_state") as any)
+                .delete()
+                .eq("tool_id", scope.toolId)
+                .eq("key", "lifecycle")
+              ;
+              if (error) {
+                throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to delete lifecycle state");
+              }
+            },
+          );
+          return;
+        }
+        if (key === "build_logs") {
+          await queryWithServerFallback(
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_build_logs") as any)
+                .delete()
+                .eq("tool_id", scope.toolId);
+              if (error) throw error;
+            },
+            async (supabase) => {
+              const { error } = await (supabase.from("tool_build_logs") as any)
+                .delete()
+                .eq("tool_id", scope.toolId);
+              if (error) {
+                throw toAdapterError(error, ["tool_build_logs"], "Failed to delete build logs");
+              }
+            },
+          );
+          return;
+        }
+      }
       if (scope.type === "session") {
         const supabase = createSupabaseAdminClient();
         const { error } = await (supabase.from("session_memory") as any)
@@ -376,21 +560,48 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
       );
     },
   };
+  if (typeof adapter.get !== "function") {
+    throw new Error("Memory adapter misconfigured: get() missing");
+  }
+  if (typeof adapter.set !== "function") {
+    throw new Error("Memory adapter misconfigured: set() missing");
+  }
+  if (typeof adapter.delete !== "function") {
+    throw new Error("Memory adapter misconfigured: delete() missing");
+  }
+  return adapter;
 }
 
 export async function ensureSupabaseMemoryTables() {
   const supabase = createSupabaseAdminClient();
-  const missing: string[] = [];
+  const requiredSelects: Record<string, string> = {
+    session_memory: "session_id, namespace, key, value, updated_at",
+    tool_memory: "tool_id, namespace, key, value, owner_id, updated_at",
+    user_memory: "user_id, namespace, key, value, updated_at",
+    org_memory: "org_id, namespace, key, value, updated_at",
+    tool_lifecycle_state: "id, tool_id, key, state, data, created_at, updated_at",
+    tool_build_logs: "id, tool_id, build_id, logs, created_at",
+    tool_versions: "id, tool_id, org_id, status, name, purpose, tool_spec, compiled_tool, intent_schema, build_hash, diff, created_by",
+  };
+
+  const errors: string[] = [];
   for (const table of MEMORY_TABLES) {
-    const { error } = await (supabase.from(table as any) as any).select("id").limit(1);
+    const select = requiredSelects[table] ?? "id";
+    const { error } = await (supabase.from(table as any) as any).select(select).limit(1);
     if (error) {
       const missingError = getMissingMemoryTableError(error, [table]);
       if (missingError) {
-        missing.push(table);
+        errors.push(`${table} missing`);
         continue;
       }
-      throw toAdapterError(error, [table], "Failed to check memory tables");
+      console.error("[MemorySchemaCheckFailed]", { table, error });
+      errors.push(`${table} schema error: ${error.message}`);
     }
   }
-  return { missingTables: missing };
+
+  if (errors.length > 0) {
+    throw new Error(`Supabase schema validation failed: ${errors.join("; ")}`);
+  }
+
+  return { missingTables: [] as string[] };
 }

@@ -81,12 +81,16 @@ export async function consumeToolBudget(params: {
     throw new BudgetExceededError("monthly", "Monthly token budget exceeded");
   }
   const scope: MemoryScope = { type: "tool_org", toolId, orgId };
-  await saveMemory({
-    scope,
-    namespace: "tool_builder",
-    key: "token_usage",
-    value: nextUsage,
-  });
+  try {
+    await saveMemory({
+      scope,
+      namespace: "tool_builder",
+      key: "token_usage",
+      value: nextUsage,
+    });
+  } catch {
+    return { budget, usage: nextUsage };
+  }
   return { budget, usage: nextUsage };
 }
 

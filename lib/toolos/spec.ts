@@ -240,6 +240,7 @@ export const ToolLifecycleStateSchema = z.enum([
   "ACTIVE",
   "DEGRADED",
   "FAILED",
+  "INFRA_ERROR",
   "NEEDS_CLARIFICATION",
   "AWAITING_CLARIFICATION",
 ]);

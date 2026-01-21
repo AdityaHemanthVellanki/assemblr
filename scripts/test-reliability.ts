@@ -4,16 +4,9 @@ import { CompiledIntent } from "../lib/core/intent";
 async function loadToolModules() {
   try {
     const memoryStore = await import("../lib/toolos/memory-store");
-    const memoryAdapter = await import("../lib/toolos/memory/memory-adapter");
-    const ephemeral = await import("../lib/toolos/memory/ephemeral-memory");
     const compiler = await import("../lib/toolos/compiler/tool-compiler");
     return {
-      loadMemory: memoryStore.loadMemory,
-      saveMemory: memoryStore.saveMemory,
       setMemoryAdapterFactory: memoryStore.setMemoryAdapterFactory,
-      MemoryAdapterError: memoryAdapter.MemoryAdapterError,
-      createFallbackMemoryAdapter: memoryAdapter.createFallbackMemoryAdapter,
-      createEphemeralMemoryAdapter: ephemeral.createEphemeralMemoryAdapter,
       ToolCompiler: compiler.ToolCompiler,
     };
   } catch (err) {
@@ -136,56 +129,11 @@ async function runTests() {
   );
 
   const {
-    loadMemory,
-    saveMemory,
     setMemoryAdapterFactory,
-    MemoryAdapterError,
-    createFallbackMemoryAdapter,
-    createEphemeralMemoryAdapter,
     ToolCompiler,
   } = await loadToolModules();
 
-  console.log("\n--- Test 5: Memory Fallback on Missing Session Table ---");
-  setMemoryAdapterFactory(async () => {
-    const fallback = createEphemeralMemoryAdapter();
-    const primary = {
-      async get() {
-        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
-      },
-      async set() {
-        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
-      },
-      async delete() {
-        throw new MemoryAdapterError("missing_table", "missing session_memory", { table: "session_memory" });
-      },
-    };
-    return createFallbackMemoryAdapter({ primary, fallback, initialPrimaryAvailable: true });
-  });
-
-  try {
-    const scope = { type: "session" as const, sessionId: "reliability-session" };
-    await assertDoesNotReject(
-      () =>
-        saveMemory({
-          scope,
-          namespace: "reliability",
-          key: "fallback",
-          value: "ok",
-        }),
-      "Memory save falls back when session_memory missing",
-    );
-    const value = await loadMemory({
-      scope,
-      namespace: "reliability",
-      key: "fallback",
-    });
-    assert(value === "ok", "Fallback memory persists when session_memory missing");
-  } finally {
-    setMemoryAdapterFactory(null);
-  }
-
   console.log("\n--- Test 6: Tool Compiler Long Prompt Timeout ---");
-  setMemoryAdapterFactory(async () => createEphemeralMemoryAdapter());
   try {
     const longPrompt =
       "Create a dashboard with Gmail, GitHub, Linear, Slack, and Notion data. " +
@@ -218,7 +166,6 @@ async function runTests() {
   }
 
   console.log("\n--- Test 7: Tool Compiler Multi-Integration Progress ---");
-  setMemoryAdapterFactory(async () => createEphemeralMemoryAdapter());
   try {
     const multiPrompt =
       "Build an internal operations console that pulls Gmail, GitHub issues, Linear tasks, Slack alerts, and Notion pages." +
