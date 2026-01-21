@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { User } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/client";
-import { validateSession } from "@/lib/auth/session";
+import { getSessionOnce } from "@/lib/auth/session.server";
 
 export interface ExecutionContext {
   requestId: string;
@@ -27,14 +27,8 @@ export const getRequestContext = cache(async (): Promise<ExecutionContext> => {
 
   const supabase = await createSupabaseServerClient();
   
-  const { user, error } = await validateSession();
-
-  if (error) {
-    if (error.status === 429) {
-      console.warn("[Auth] Rate limited by Supabase. Treating as soft failure.");
-      throw new ApiError("Rate limit exceeded", 429);
-    }
-  }
+  const session = await getSessionOnce();
+  const user = session?.user ?? null;
 
   if (!user) {
       throw new ApiError("Unauthorized: No session found", 401);
@@ -90,10 +84,9 @@ export const getOptionalRequestContext = cache(async (): Promise<{
   const startTime = Date.now();
   const supabase = await createSupabaseServerClient();
 
-  const { user, error } = await validateSession();
-  if (error && error.status === 429) {
-    return { ctx: null, requiresAuth: false, error: new ApiError("Rate limit exceeded", 429) };
-  }
+  const session = await getSessionOnce();
+  const user = session?.user ?? null;
+
   if (!user) {
     return { ctx: null, requiresAuth: true };
   }

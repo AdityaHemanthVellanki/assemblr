@@ -1,31 +1,52 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
+import { getBrowserSupabase } from "@/lib/supabase/browser";
 
 export function LoadingAuthState() {
   const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    let supabase;
+    try {
+      supabase = getBrowserSupabase();
+    } catch (e) {
+      console.error("Supabase initialization failed:", e);
+      setError("Configuration error: Supabase environment variables missing.");
+      return;
+    }
 
     async function check() {
-      const { data, error } = await supabase.auth.getUser();
-      if (error || !data.user) {
-        // Confirmed invalid -> redirect
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error || !data.user) {
+          // Confirmed invalid -> redirect
+          router.push("/login");
+        } else {
+          // Valid session (likely refreshed by middleware) -> reload to hydrate server state
+          router.refresh();
+        }
+      } catch (err) {
+        console.error("Session check failed:", err);
         router.push("/login");
-      } else {
-        // Valid session (likely refreshed by middleware) -> reload to hydrate server state
-        router.refresh();
       }
     }
 
     check();
   }, [router]);
+
+  if (error) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center">
+        <div className="flex flex-col items-center gap-4 text-destructive">
+          <p className="font-bold">System Error</p>
+          <p className="text-sm">{error}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full items-center justify-center">

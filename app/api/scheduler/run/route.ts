@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { scheduleMetricExecution } from "@/lib/execution/scheduler";
+import { getServerEnv } from "@/lib/env";
 
 export async function POST(req: Request) {
   // Validate Authorization (e.g., cron secret)
   const authHeader = req.headers.get("Authorization");
-  const CRON_SECRET = process.env.CRON_SECRET || "local_dev_secret";
+  const { CRON_SECRET } = getServerEnv();
   
   if (authHeader !== `Bearer ${CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

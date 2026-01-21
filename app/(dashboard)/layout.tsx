@@ -1,11 +1,7 @@
+import { getSessionOnce } from "@/lib/auth/session.server";
 import { redirect } from "next/navigation";
-import Script from "next/script";
-
 import { DashboardShell } from "@/components/dashboard/shell";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { PermissionError, requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
-import { ApiError } from "@/lib/api/client";
-import { LoadingAuthState } from "@/components/auth/loading-auth-state";
+import { requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
 
 export const dynamic = "force-dynamic";
 
@@ -14,45 +10,25 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // 1. Check Session (Read-Only, Once)
+  const session = await getSessionOnce();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  // 2. Check Org Membership (Uses cached session/context if optimized, or fetches)
+  // We keep the existing logic but ensure it doesn't trigger refresh loops.
+  // requireOrgMember should ideally use the session we just got, but changing signature is hard.
+  // We rely on getSessionOnce being cached.
   let role: OrgRole;
   try {
     const { ctx } = await requireOrgMember();
     role = ctx.org.role as OrgRole;
   } catch (err) {
-    // 1. Auth Failures (401) -> Show Loading State (Client checks session)
-    // NEVER redirect synchronously in layout to avoid loops if middleware just refreshed
-    if (err instanceof ApiError && err.status === 401) return <LoadingAuthState />;
-    if (err instanceof PermissionError && err.status === 401) return <LoadingAuthState />;
-
-    // 2. Workspace Provisioning (503) -> Auto-refresh
-    if (err instanceof PermissionError) {
-      if (err.status === 503 && err.message === "Workspace provisioning") {
-        return (
-          <div className="mx-auto w-full max-w-3xl p-6">
-            <Script id="workspace-provisioning-refresh">{`setTimeout(() => window.location.reload(), 1200);`}</Script>
-            <Card>
-              <CardHeader>
-                <CardTitle>Setting up your workspace…</CardTitle>
-                <CardDescription>
-                  This can take a moment on first login. Refreshing automatically.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          </div>
-        );
-      }
-      return (
-        <div className="mx-auto w-full max-w-3xl p-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Access denied</CardTitle>
-              <CardDescription>{err.message}</CardDescription>
-            </CardHeader>
-          </Card>
-        </div>
-      );
-    }
-    throw err;
+      // If requireOrgMember fails (e.g. no org), handle it.
+      // But we know session exists.
+      throw err;
   }
 
   return <DashboardShell role={role}>{children}</DashboardShell>;

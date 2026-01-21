@@ -1,5 +1,3 @@
-
-
 import { z } from "zod";
 
 function emptyToUndefined(value: unknown) {
@@ -78,6 +76,8 @@ const serverEnvSchema = z
     EMAIL_SERVER: optionalString(),
 
     DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
+    
+    CRON_SECRET: z.string().default("local_dev_secret"),
   })
   .superRefine((env, ctx) => {
     const isProd = env.NODE_ENV === "production";
@@ -103,4 +103,20 @@ export function getServerEnv() {
     ...raw,
   });
   return cachedEnv;
+}
+
+// --------------------------------------------------------------------------
+// CLIENT ENV CONTRACT
+// --------------------------------------------------------------------------
+export const env = {
+  SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+};
+
+export function assertClientEnv() {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    throw new Error(
+      "Supabase env missing. Check NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY"
+    );
+  }
 }

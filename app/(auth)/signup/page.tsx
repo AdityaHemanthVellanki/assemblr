@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getBrowserSupabase } from "@/lib/supabase/browser";
 import { safeFetch } from "@/lib/api/client";
 
 export default function SignupPage() {
@@ -64,7 +64,7 @@ export default function SignupPage() {
   async function onGithub() {
     setIsLoading(true);
     try {
-      const supabase = createSupabaseBrowserClient();
+      const supabase = getBrowserSupabase();
       const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
         "/dashboard",
       )}`;

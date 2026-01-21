@@ -40,6 +40,7 @@ export const getSessionContext = cache(async (): Promise<SessionContext> => {
   return await getRequestContext();
 });
 
+// Deprecated: Use getRequestContext() directly
 export async function requireOrgMember() {
   const ctx = await getRequestContext();
   return { ctx, role: ctx.org.role as OrgRole };
@@ -53,7 +54,7 @@ export async function requireRole(minRole: OrgRole) {
   const ctx = await getRequestContext();
   const userRole = ctx.org.role as OrgRole;
   
-  if (ORG_ROLE_ORDER[userRole] < ORG_ROLE_ORDER[minRole]) {
+  if ((ORG_ROLE_ORDER[userRole] ?? -1) < ORG_ROLE_ORDER[minRole]) {
     throw new PermissionError(`Requires ${roleLabel(minRole)} role`, 403);
   }
 
@@ -64,7 +65,7 @@ export async function requireProjectOrgAccess(
   ctx: SessionContext,
   projectId: string,
 ) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient(cookies());
   const project = await supabase
     .from("projects")
     .select("id, org_id")

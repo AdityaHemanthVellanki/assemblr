@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Github } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getBrowserSupabase } from "@/lib/supabase/browser";
 import { safeFetch } from "@/lib/api/client";
 
 export function LoginForm({ error }: { error?: string }) {
@@ -28,6 +28,7 @@ export function LoginForm({ error }: { error?: string }) {
   >({ kind: "idle" });
 
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   async function onEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -55,9 +56,9 @@ export function LoginForm({ error }: { error?: string }) {
   async function onGithub() {
     setIsLoading(true);
     try {
-      const supabase = createSupabaseBrowserClient();
+      const supabase = getBrowserSupabase();
       const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(
-        "/dashboard",
+        searchParams?.get("next") ?? "/dashboard",
       )}`;
       const res = await supabase.auth.signInWithOAuth({
         provider: "github",

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { withRefreshLock } from "@/lib/auth/refresh-coordinator";
+import { getServerEnv } from "@/lib/env";
 
 function getRefreshKey(request: NextRequest) {
   const cookies = request.cookies.getAll();
@@ -10,8 +11,10 @@ function getRefreshKey(request: NextRequest) {
 }
 
 export async function middleware(request: NextRequest) {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+  // Use centralized env validation
+  const env = getServerEnv();
+  const supabaseUrl = env.SUPABASE_URL;
+  const supabaseKey = env.SUPABASE_PUBLISHABLE_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
     return NextResponse.next();
@@ -25,8 +28,12 @@ export async function middleware(request: NextRequest) {
         return request.cookies.getAll();
       },
       setAll(cookiesToSet) {
+        // 1. Create response if not exists (preserves other headers)
         response = NextResponse.next({ request });
+        
+        // 2. Apply to BOTH request and response to ensure downstream visibility
         for (const c of cookiesToSet) {
+          request.cookies.set(c.name, c.value);
           response.cookies.set(c.name, c.value, c.options);
         }
       },
