@@ -36,6 +36,17 @@ export async function createToolVersion(params: {
   compiledTool: Record<string, any>;
   baseSpec?: ToolSystemSpec | null;
 }) {
+  if (!params.spec || Object.keys(params.spec).length === 0) {
+    throw new Error("Cannot create tool version: Spec is empty or null");
+  }
+  // Enforce "Fix 3: tool_versions write order" - Spec must be finalized
+  if (!params.spec.name || !params.spec.purpose) {
+     throw new Error("Cannot create tool version: Spec is incomplete (missing name/purpose)");
+  }
+  // Hard Assertions for Canonical Ownership
+  if (!params.orgId) throw new Error("Cannot create tool version: orgId is required");
+  if (!params.toolId) throw new Error("Cannot create tool version: toolId is required");
+
   const supabase = createSupabaseAdminClient();
   const diff = params.baseSpec ? diffSpecs(params.baseSpec, params.spec) : null;
   const buildHash =

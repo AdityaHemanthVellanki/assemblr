@@ -12,7 +12,8 @@
     "format:write": "prettier --write .",
     "lint:markdown": "tsx scripts/lint-no-markdown.ts",
     "ai:test": "tsx scripts/ai-spec-smoke-tests.ts && tsx scripts/planner-activity-smoke-test.ts && tsx scripts/effect-only-action-tests.ts",
-    "test:e2e:real": "tsx -r ./scripts/setup-env.cjs scripts/test-e2e-real.ts"
+    "test:e2e:real": "tsx -r ./scripts/setup-env.cjs scripts/test-e2e-real.ts",
+    "test:reliability": "tsx scripts/test-reliability.ts"
   },
   "dependencies": {
     "@hubspot/api-client": "^13.4.0",

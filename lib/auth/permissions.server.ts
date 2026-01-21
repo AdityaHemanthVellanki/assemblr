@@ -65,7 +65,8 @@ export async function requireProjectOrgAccess(
   ctx: SessionContext,
   projectId: string,
 ) {
-  const supabase = await createSupabaseServerClient(cookies());
+  const cookieStore = await cookies();
+  const supabase = await createSupabaseServerClient(cookieStore);
   const project = await supabase
     .from("projects")
     .select("id, org_id")

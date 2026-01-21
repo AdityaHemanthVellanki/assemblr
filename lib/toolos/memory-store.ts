@@ -107,13 +107,23 @@ export async function loadMemory(params: MemoryReadParams) {
 }
 
 export async function saveMemory(params: MemoryWriteParams) {
-  const { scope, namespace, key, value } = params;
   const adapter = await getAdapter();
-  await adapter.set({ scope: normalizeScope(scope), namespace, key, value });
+  try {
+    const normalizedScope = normalizeScope(params.scope);
+    await adapter.set({ ...params, scope: normalizedScope });
+  } catch (err) {
+    // FIX: Memory failures must never abort tool build
+    // We log the error but swallow it to ensure the build proceeds in-memory
+    console.error("[MemoryPersistenceFailed] (Non-fatal)", err);
+  }
 }
 
 export async function deleteMemory(params: MemoryDeleteParams) {
-  const { scope, namespace, key } = params;
   const adapter = await getAdapter();
-  await adapter.delete({ scope: normalizeScope(scope), namespace, key });
+  try {
+    const normalizedScope = normalizeScope(params.scope);
+    await adapter.delete({ ...params, scope: normalizedScope });
+  } catch (err) {
+    console.error("[MemoryDeleteFailed] (Non-fatal)", err);
+  }
 }

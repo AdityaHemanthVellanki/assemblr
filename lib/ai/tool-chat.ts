@@ -15,6 +15,7 @@ import { consumeToolBudget, BudgetExceededError } from "@/lib/security/tool-budg
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { withToolBuildLock } from "@/lib/toolos/build-lock";
+import { resolveBuildContext } from "@/lib/toolos/build-context";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -108,10 +109,14 @@ export async function processToolChat(
   if (userError || !user) {
     throw new Error("Unauthorized: Invalid session");
   }
+
+  // FIX 1: Canonical Ownership Bootstrap
+  // This guarantees user, org, and membership exist before we start any build
+  const buildContext = await resolveBuildContext(user.id, input.orgId);
   
   // Resolve User ID: Explicit input OR session user
   // Prioritize session user for security unless running as system
-  const userId = user.id;
+  const userId = buildContext.userId;
 
   const machine = new ToolBuildStateMachine();
   const buildId = randomUUID();
@@ -120,7 +125,8 @@ export async function processToolChat(
     type: "session",
     sessionId: builderSessionId,
   };
-  const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: input.orgId };
+  // Use the authoritative orgId from buildContext
+  const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId };
   let lifecyclePersistenceFailed = false;
   let buildLogsPersistenceFailed = false;
   const persistLifecycle = async () => {
@@ -205,8 +211,8 @@ export async function processToolChat(
       () => ToolCompiler.run({
         prompt,
         sessionId: builderSessionId,
-        userId: input.userId,
-        orgId: input.orgId,
+        userId: userId, // Use authoritative userId
+        orgId: buildContext.orgId, // Use authoritative orgId
         toolId: input.toolId,
         connectedIntegrationIds: input.connectedIntegrationIds,
         onUsage: consumeTokens,
@@ -314,7 +320,7 @@ export async function processToolChat(
 
     try {
       await saveMemory({
-        scope: { type: "tool_org", toolId: input.toolId, orgId: input.orgId },
+        scope: { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId },
         namespace: builderNamespace,
         key: "lifecycle_state",
         value: { state: machine.state, buildId },
@@ -325,23 +331,31 @@ export async function processToolChat(
 
     let versionId: string | null = null;
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    const version = await createToolVersion({
-      orgId: input.orgId,
-      toolId: input.toolId,
-      userId: userId,
-      spec,
-      compiledTool,
-      baseSpec,
-    });
-    versionId = version.id;
+    const specValidation = ToolSystemSpecSchema.safeParse(spec);
+    const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
+    if (shouldPersistVersion) {
+      try {
+        const version = await createToolVersion({
+          orgId: buildContext.orgId,
+          toolId: input.toolId,
+          userId: userId,
+          spec,
+          compiledTool,
+          baseSpec,
+        });
+        versionId = version.id;
 
-    await promoteToolVersion({ toolId: input.toolId, versionId: versionId });
-    const supabase = createSupabaseAdminClient();
-    await (supabase.from("projects") as any)
-      .update({ is_activated: true })
-      .eq("id", input.toolId)
-      .eq("org_id", input.orgId);
-    activeVersionId = versionId;
+        await promoteToolVersion({ toolId: input.toolId, versionId: versionId });
+        const supabase = createSupabaseAdminClient();
+        await (supabase.from("projects") as any)
+          .update({ is_activated: true })
+          .eq("id", input.toolId)
+          .eq("org_id", buildContext.orgId);
+        activeVersionId = versionId;
+      } catch (err) {
+        console.error("[VersionPersistenceFailed] (Non-fatal)", err);
+      }
+    }
 
     return {
       explanation: spec.purpose,

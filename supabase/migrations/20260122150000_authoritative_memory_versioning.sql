@@ -33,6 +33,10 @@ create unique index if not exists tool_versions_tool_id_build_hash_key on public
 
 alter table public.tool_memory add column if not exists owner_id uuid references auth.users(id) on delete cascade;
 alter table public.tool_memory alter column user_id drop not null;
+alter table public.tool_memory alter column org_id drop not null;
+alter table public.tool_memory drop constraint if exists tool_memory_org_or_owner_check;
+alter table public.tool_memory add constraint tool_memory_org_or_owner_check check (org_id is not null or owner_id is not null);
+
 do $$
 begin
   update public.tool_memory set owner_id = coalesce(owner_id, user_id);

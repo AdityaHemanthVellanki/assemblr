@@ -21,6 +21,7 @@ const MEMORY_TABLES = [
   "tool_build_logs",
   "tool_versions",
 ];
+const missingOrgWrites = new Set<string>();
 
 function toAdapterError(err: unknown, tables: string[], fallback: string) {
   const missing = getMissingMemoryTableError(err, tables);
@@ -30,6 +31,26 @@ function toAdapterError(err: unknown, tables: string[], fallback: string) {
     console.error("[MemoryWriteFailed]", { tables, error: err });
   }
   return new MemoryAdapterError("unknown", message);
+}
+
+function logMissingOrgOnce(orgId: string, context: string) {
+  if (missingOrgWrites.has(orgId)) return;
+  missingOrgWrites.add(orgId);
+  console.warn("[MemoryWriteSkipped] Missing org", { orgId, context });
+}
+
+async function checkOrgExists(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  orgId: string,
+) {
+  const { data, error } = await (supabase.from("organizations") as any)
+    .select("id")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Failed to verify org existence: ${error.message}`);
+  }
+  return Boolean(data?.id);
 }
 
 async function queryWithServerFallback<T>(
@@ -157,7 +178,7 @@ function buildToolPayload(
   }
   return {
     tool_id: scope.toolId,
-    org_id: scope.orgId,
+    org_id: scope.orgId || null,
     user_id: null,
     owner_id: ownerId,
     namespace,
@@ -430,6 +451,17 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
       }
 
       const supabase = createSupabaseAdminClient();
+      if (scope.type === "tool_org") {
+        if (!scope.orgId) {
+          logMissingOrgOnce("unknown-org", "tool_org scope without orgId");
+          return;
+        }
+        const orgExists = await checkOrgExists(supabase, scope.orgId);
+        if (!orgExists) {
+          logMissingOrgOnce(scope.orgId, "tool_org scope with missing org");
+          return;
+        }
+      }
       const ownerId = await resolveOwnerIdForScope(supabase, scope);
       const payload = buildToolPayload(scope, namespace, key, value, ownerId);
       const onConflict = resolveToolConflictTarget(scope);

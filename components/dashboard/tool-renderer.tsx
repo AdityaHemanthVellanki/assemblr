@@ -85,6 +85,8 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [activationLoading, setActivationLoading] = React.useState(false);
   const [timeline, setTimeline] = React.useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = React.useState(false);
+  const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
+  const [pollingInterval, setPollingInterval] = React.useState<NodeJS.Timeout | null>(null);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
@@ -257,19 +259,32 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   }, [toolId]);
 
   const fetchStatus = React.useCallback(async () => {
-    setActivationLoading(true);
+    // Don't show global loading for background polling
+    // setActivationLoading(true);
     try {
-      const payload = await safeFetch<{ isActivated: boolean; lifecycle: string; lastError?: string }>(
-        `/api/tools/${toolId}/status`,
-      );
+      const payload = await safeFetch<{
+        isActivated: boolean;
+        lifecycle: string;
+        lastError?: string;
+        status?: string;
+      }>(`/api/tools/${toolId}/status`);
+
+      if (payload.status === "unauthenticated") {
+        setAuthStatus("unauthenticated");
+        return;
+      } else {
+        setAuthStatus("authenticated");
+      }
+
       setIsActivated(payload?.isActivated === true);
       setLifecycle(payload?.lifecycle ?? "INIT");
       if (payload?.lastError) {
         setError(String(payload.lastError));
       }
     } catch (err) {
-      setIsActivated(false);
-      setLifecycle("DEGRADED");
+      if (err instanceof ApiError && err.status === 429) {
+        // Backoff handled by useEffect
+      }
       setError(err instanceof Error ? err.message : "Failed to load tool status");
     } finally {
       setActivationLoading(false);
@@ -387,8 +402,32 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
+    
+    // Stop polling on hard error
+    if (error) return;
+
+    if (authStatus === "unauthenticated") {
+      // Backoff mode: retry every 5s
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+        setPollingInterval(null);
+      }
+      const timer = setTimeout(() => {
+        void fetchStatus();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+
     void fetchStatus();
-  }, [spec, fetchStatus]);
+    
+    // Regular polling every 2s if authenticated
+    const interval = setInterval(() => {
+      void fetchStatus();
+    }, 2000);
+    setPollingInterval(interval);
+
+    return () => clearInterval(interval);
+  }, [spec, authStatus, fetchStatus, error]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
@@ -570,6 +609,12 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-6">
+        {authStatus === "unauthenticated" && (
+          <div className="mb-4 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800 flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-yellow-500 animate-pulse" />
+            Waiting for session...
+          </div>
+        )}
         {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
         {isLoading && <div className="mb-4 text-sm text-muted-foreground">Loading view…</div>}
         <div className="mb-4 rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">

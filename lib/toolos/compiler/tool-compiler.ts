@@ -90,6 +90,11 @@ const BUILDER_NAMESPACE = "tool_builder";
 
 export class ToolCompiler {
   static async run(input: ToolCompilerInput): Promise<ToolCompilerResult> {
+    // HARD ASSERTIONS for Canonical Context
+    if (!input.orgId) throw new Error("ToolCompiler: orgId is required (must be authoritative)");
+    if (!input.toolId) throw new Error("ToolCompiler: toolId is required");
+    // input.userId is optional (can be system/anonymous), but if provided should be valid.
+
     const budgets = { ...DEFAULT_BUDGETS, ...(input.stageBudgets ?? {}) };
     const progress: ToolCompilerProgressEvent[] = [];
     const emitProgress = (event: ToolCompilerProgressEvent) => {
