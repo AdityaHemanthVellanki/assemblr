@@ -54,27 +54,47 @@ export async function GET(
       }, { status: 200 });
     }
 
-    const { data: project, error } = await (supabase.from("projects") as any)
-      .select("is_activated, spec, active_version_id, org_id")
+    console.log(`[StatusRoute] Lookup toolId: ${toolId}`);
+
+    // FIX: Query "projects" table (as authoritative "tools" table)
+    // We select "status" to help derive lifecycle
+    // Use Service Role to avoid RLS issues on status checks
+    const adminSupabase = createSupabaseAdminClient();
+    const { data: project, error: projectError } = await (adminSupabase.from("projects") as any)
+      .select("status, is_activated, org_id")
       .eq("id", toolId)
       .single();
 
-    if (error || !project) {
+    if (projectError || !project) {
+      // If project row doesn't exist, it's truly 404
       return errorResponse("Tool not found", 404);
     }
+    
+    // Check membership
+     const { data: membership } = await adminSupabase
+         .from("memberships")
+         .select("role")
+         .eq("user_id", user.id)
+         .eq("org_id", project.org_id)
+         .single();
+         
+     if (!membership) {
+          return errorResponse("Unauthorized", 401);
+     }
 
-    // Verify access (read-only is fine, but must be org member)
-    const { data: membership } = await (supabase.from("organization_members") as any)
-      .select("role")
-      .eq("org_id", project.org_id)
-      .eq("user_id", user.id)
-      .single();
-
-    if (!membership) {
-      return errorResponse("Unauthorized", 403);
-    }
-
-    const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
+     // We already fetched project above with admin client
+     // We need spec and active_version_id though
+     const { data: fullProject } = await (adminSupabase.from("projects") as any)
+       .select("status, is_activated, spec, active_version_id")
+       .eq("id", toolId)
+       .single();
+ 
+     if (!fullProject) return errorResponse("Tool not found", 404);
+ 
+     const status = fullProject.status;
+     const isActivated = fullProject.is_activated;
+ 
+     const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
     const lifecycleState = await loadMemory({
       scope,
       namespace: "tool_builder",
@@ -89,7 +109,10 @@ export async function GET(
 
     // Determine effective lifecycle
     let lifecycle = lifecycleState || "INIT";
-    if (project.is_activated) {
+    
+    if (project.status === "error") {
+      lifecycle = "ERROR";
+    } else if (project.is_activated) {
       lifecycle = "RUNNING";
     } else if (lifecycle === "ACTIVE") {
       // If ready but not activated, it's waiting for activation

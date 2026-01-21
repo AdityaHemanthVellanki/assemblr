@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -52,7 +53,8 @@ export async function GET(
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for trigger/spec loading
+    const supabase = createSupabaseAdminClient();
     const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
 
     const { spec } = await loadActiveSpec({ supabase, toolId, orgId: ctx.orgId });
@@ -118,7 +120,8 @@ export async function PATCH(
       return errorResponse("Invalid body", 400);
     }
 
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for updates
+    const supabase = createSupabaseAdminClient();
     const { spec, baseSpec } = await loadActiveSpec({ supabase, toolId, orgId: ctx.orgId });
     if (!spec) {
       return errorResponse("Tool not found", 404);

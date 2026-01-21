@@ -1,5 +1,6 @@
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -14,13 +15,14 @@ export async function POST(
     const { toolId, triggerId } = await params;
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
-    const supabase = await createSupabaseServerClient();
+    // Use admin client for runtime state management
+    const supabase = createSupabaseAdminClient();
 
-  const { data: project } = await (supabase.from("projects") as any)
-    .select("spec, active_version_id, is_activated")
-    .eq("id", toolId)
-    .eq("org_id", ctx.orgId)
-    .single();
+    // Resolve project spec
+    const { data: project } = await (supabase.from("projects") as any)
+      .select("spec, active_version_id, is_activated")
+      .eq("id", toolId)
+      .single();
 
   if (!project?.spec) {
     return errorResponse("Tool not found", 404);

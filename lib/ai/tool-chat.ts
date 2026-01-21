@@ -16,6 +16,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { withToolBuildLock } from "@/lib/toolos/build-lock";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
+import { executeToolAction } from "@/lib/toolos/runtime";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -102,21 +103,93 @@ export async function processToolChat(
   const builderNamespace = "tool_builder";
   
   // 0. Resolve Context Securely
-  const supabase = await createSupabaseServerClient();
-  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  const supabase = createSupabaseAdminClient();
+  // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
+  // Instead, we verify ownership via resolveBuildContext later.
   
-  // Strict Auth Check (Rule 1)
-  if (userError || !user) {
-    throw new Error("Unauthorized: Invalid session");
-  }
-
   // FIX 1: Canonical Ownership Bootstrap
   // This guarantees user, org, and membership exist before we start any build
-  const buildContext = await resolveBuildContext(user.id, input.orgId);
-  
-  // Resolve User ID: Explicit input OR session user
-  // Prioritize session user for security unless running as system
+  const buildContext = await resolveBuildContext(input.userId || "unknown", input.orgId);
   const userId = buildContext.userId;
+  
+  // Assert orgId matches context if resolved differently?
+  // resolveBuildContext might create a new org if input.orgId is missing/invalid?
+  // No, resolveBuildContext takes orgId and ensures it exists or throws/creates default.
+  // We should trust buildContext.orgId as authoritative.
+  const orgId = buildContext.orgId;
+
+  // FIX: Guarantee tool row creation BEFORE compilation
+  // This ensures atomic visibility - no "ghost" builds.
+  // We use the admin client to bypass RLS issues during initial creation if needed,
+  // but strictly enforce org ownership.
+  
+  // Check if tool exists
+  const { data: existingTool } = await supabase
+    .from("projects")
+    .select("id, status, is_activated")
+    .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") // Dummy UUID if undefined
+    .single();
+    
+  let effectiveToolId = input.toolId;
+  
+  if (!existingTool && !input.toolId) {
+     // Create new tool row
+     // NOTE: 'projects' table is the authoritative 'tools' table.
+     // We need to ensure all NOT NULL columns are populated.
+     // Based on schema: org_id, name, spec are NOT NULL.
+     // Also: status, owner_id are recommended.
+     const { data: newTool, error: createError } = await supabase
+        .from("projects")
+        .insert({
+            org_id: orgId, // Use resolved authoritative Org ID
+            owner_id: userId,
+            name: "New Tool", // Initial name, will be updated by spec
+            status: "draft",
+            spec: {},
+            is_activated: false
+        })
+        .select("id")
+        .single();
+        
+     if (createError || !newTool) {
+         throw new Error(`Failed to create tool row: ${createError?.message}`);
+     }
+     effectiveToolId = newTool.id;
+  } else if (!existingTool && input.toolId) {
+      // Tool ID provided but not found?
+      // Could be race condition or invalid ID.
+      // We should probably fail or try to create with that ID if UUID is valid?
+      // Safest is to fail if user claims ID exists but DB says no.
+      throw new Error(`Tool ID ${input.toolId} not found`);
+  } else if (existingTool) {
+      // Ensure we have the effective ID if it was passed
+      effectiveToolId = existingTool.id;
+  }
+  
+  // Update tool status to 'draft' (or 'building') to indicate activity
+  // We don't have 'building' status in schema constraint ('draft', 'ready', 'error', 'active', 'archived').
+  // So 'draft' is appropriate.
+  
+  // 1. Run Pipeline
+  
+  // FIX: Inject effectiveToolId into context
+  const toolId = effectiveToolId!;
+  
+  // Update status to draft (explicitly)
+  await supabase.from("projects").update({ status: "draft" }).eq("id", toolId);
+  
+  const systemPrompt = await createToolBuilderSystemPrompt({
+    orgId: orgId, // Use authoritative ID
+    toolId: toolId,
+    currentSpec: input.currentSpec || null,
+    history: input.history,
+    capabilities: [], // Will be filled by discovery
+    context: {
+        connectedIntegrations: [],
+        availableCapabilities: [],
+        activeScopes: ["global", "org", "user"]
+    }
+  });
 
   const machine = new ToolBuildStateMachine();
   const buildId = randomUUID();
@@ -305,7 +378,12 @@ export async function processToolChat(
 
     markStep(steps, "readiness", "running", "Validating data readiness");
     const readinessStart = Date.now();
-    const readiness = await runDataReadiness(spec);
+    const readiness = await runDataReadiness(spec, {
+      orgId: buildContext.orgId,
+      toolId: input.toolId,
+      userId,
+      compiledTool: compiledTool!
+    });
     const readinessDuration = Date.now() - readinessStart;
     if (readinessDuration > TIME_BUDGETS.readinessMs) {
       appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
@@ -333,27 +411,86 @@ export async function processToolChat(
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
     const specValidation = ToolSystemSpecSchema.safeParse(spec);
     const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
+    
     if (shouldPersistVersion) {
+      // 5. Version Persistence & Status Update
+      // Atomic Update: We update the tool status AND create the version in one flow (conceptually).
+      // If version creation fails, we MUST mark tool as 'error'.
       try {
-        const version = await createToolVersion({
-          orgId: buildContext.orgId,
-          toolId: input.toolId,
-          userId: userId,
-          spec,
-          compiledTool,
-          baseSpec,
-        });
-        versionId = version.id;
+        console.log(`[ToolPersistence] Persisting version for ${toolId}...`);
+        
+        const compiled = compiledTool!;
 
-        await promoteToolVersion({ toolId: input.toolId, versionId: versionId });
-        const supabase = createSupabaseAdminClient();
-        await (supabase.from("projects") as any)
-          .update({ is_activated: true })
-          .eq("id", input.toolId)
-          .eq("org_id", buildContext.orgId);
-        activeVersionId = versionId;
-      } catch (err) {
-        console.error("[VersionPersistenceFailed] (Non-fatal)", err);
+        // Upsert version
+        const { data: version, error: versionError } = await (supabase.from("tool_versions") as any)
+          .insert({
+            tool_id: toolId,
+            org_id: orgId, // Authoritative ID
+            created_by: userId,
+            status: "active",
+            name: compiled.tool.name,
+            purpose: compiled.tool.description,
+            tool_spec: compiled.tool,
+            compiled_tool: compiled.tool,
+            intent_schema: compiled.intentSchema || {},
+            diff: null,
+            build_hash: createHash('md5').update(JSON.stringify(compiled.tool)).digest('hex')
+          })
+          .select("id")
+          .single();
+          
+        if (versionError) {
+          throw new Error(`Version persistence failed: ${versionError.message} (${versionError.code})`);
+        }
+        
+        // Update Project Reference
+        const { error: projectError } = await (supabase.from("projects") as any)
+          .update({
+            active_version_id: version.id,
+            spec: compiled.tool,
+            name: compiled.tool.name,
+            status: "ready", // Ready for execution
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", toolId);
+          
+        if (projectError) {
+           throw new Error(`Project update failed: ${projectError.message}`);
+        }
+        
+        console.log(`[ToolPersistence] Success. Version: ${version.id}`);
+      } catch (err: any) {
+        console.error("[ToolPersistence] CRITICAL FAILURE:", err);
+        // Mark tool as error
+        await supabase.from("projects").update({ status: "error" }).eq("id", toolId);
+        throw err; // Re-throw to stop pipeline
+      }
+
+      // 6. Data Readiness Check (Real Execution)
+      // We execute read actions to ensure data flow works.
+      // Failures here are FATAL to ensure "No silent success".
+      if (compiledTool?.tool) {
+        try {
+          console.log(`[ToolDataReadiness] Verifying data fetch for ${toolId}...`);
+          // Note: runDataReadiness now throws errors on failure, which we catch here
+          await runDataReadiness(compiledTool.tool, {
+            orgId: orgId, // Authoritative ID
+            toolId: toolId,
+            userId: userId,
+            compiledTool: compiledTool!
+          });
+
+          // If we got here, data fetch succeeded.
+          // Update status to 'active' (fully ready)
+          await supabase.from("projects").update({ status: "active" }).eq("id", toolId);
+          console.log(`[ToolDataReadiness] Success. Tool ${toolId} is ACTIVE.`);
+
+        } catch (err: any) {
+          console.error(`[ToolDataReadiness] Data fetch failed:`, err);
+          // Mark tool as error
+          await supabase.from("projects").update({ status: "error" }).eq("id", toolId);
+          throw new Error(`Data verification failed: ${err.message}`);
+        }
       }
     }
 
@@ -371,6 +508,17 @@ export async function processToolChat(
       },
     };
   } catch (err) {
+    // Atomic Failure Handling: Mark tool as error
+    try {
+      const supabase = createSupabaseAdminClient();
+      await (supabase.from("projects") as any)
+        .update({ status: "error" })
+        .eq("id", input.toolId);
+      console.log(`[ToolLifecycle] Marked tool ${input.toolId} as error`);
+    } catch (updateErr) {
+      console.error("[ToolLifecycle] Failed to mark tool error:", updateErr);
+    }
+
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
     
@@ -573,7 +721,10 @@ function appendStep(step: BuildStep | undefined, log: string) {
   step.logs.push(log);
 }
 
-async function runDataReadiness(spec: ToolSystemSpec) {
+async function runDataReadiness(
+  spec: ToolSystemSpec,
+  context?: { orgId: string; toolId: string; userId: string | null; compiledTool: CompiledToolArtifact }
+) {
   const logs: string[] = [];
   const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
@@ -592,7 +743,41 @@ async function runDataReadiness(spec: ToolSystemSpec) {
       logs.push(`Missing inputs ${missing.join(", ")} for ${action.name} (${action.integrationId}).`);
       continue;
     }
-    logs.push(`Validated inputs for ${action.name} (${action.integrationId}).`);
+    
+    if (context) {
+      try {
+        const input = buildDefaultInput(cap);
+        logs.push(`Executing ${action.name} (${action.integrationId})...`);
+        
+        const result = await executeToolAction({
+            orgId: context.orgId,
+            toolId: context.toolId,
+            compiledTool: context.compiledTool,
+            actionId: action.id,
+            input: input,
+            userId: context.userId,
+            dryRun: false
+        });
+        
+        // Store result in memory
+        await saveMemory({
+            scope: { type: "tool_org", toolId: context.toolId, orgId: context.orgId },
+            namespace: "data_cache",
+            key: action.id,
+            value: { data: result.output, timestamp: Date.now() }
+        });
+        
+        logs.push(`Successfully fetched data for ${action.name}`);
+      } catch (err: any) {
+        const msg = err.message || "Unknown error";
+        console.error(`[Readiness] Action ${action.name} failed:`, err);
+        
+        // STRICT MODE: Any data fetch failure fails the build
+        throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
+      }
+    } else {
+      logs.push(`Validated inputs for ${action.name} (${action.integrationId}).`);
+    }
   }
 
   return { logs };

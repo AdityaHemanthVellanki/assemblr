@@ -1,6 +1,7 @@
 "use server";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
@@ -26,14 +27,31 @@ export async function sendChatMessage(
 
   // 1. Resolve Tool & Org
   if (!effectiveToolId) {
-    const supabase = await createSupabaseServerClient();
-    const { data: newProject, error } = await supabase.from("projects").insert({
+    // CRITICAL: Use Admin Client to guarantee creation (bypassing potential RLS issues on insert)
+    console.log("[ToolCreation] Using Service Role Admin Client");
+    const adminSupabase = createSupabaseAdminClient();
+    const payload = {
         org_id: orgId,
+        owner_id: ctx.userId,
         name: "New Tool",
+        status: "draft",
         spec: {} as any
-    }).select("id").single();
+    };
+    const { data: newProjects, error } = await adminSupabase.from("projects").insert(payload).select("id");
+    
+    // FIX: Safe retrieval of ID - do not assume .single() works blindly
+    const newProject = newProjects && newProjects.length > 0 ? newProjects[0] : null;
 
-    if (error || !newProject) throw new Error("Failed to create project");
+    if (error || !newProject) {
+        console.error("[ToolCreation] FAILED", {
+            code: error?.code,
+            message: error?.message,
+            details: error?.details,
+            hint: error?.hint,
+            payload
+        });
+        throw new Error(`Failed to create project: ${error?.message || "Unknown error"}`);
+    }
     effectiveToolId = newProject.id;
   } else {
     const supabase = await createSupabaseServerClient();

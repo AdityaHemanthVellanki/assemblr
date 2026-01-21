@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
@@ -17,7 +18,8 @@ export async function GET(
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for activation state to ensure reliability
+    const supabase = createSupabaseAdminClient();
     const { data: project } = await (supabase.from("projects") as any)
       .select("is_activated")
       .eq("id", toolId)
@@ -47,7 +49,7 @@ export async function PATCH(
     if (!parsed.success) {
       return errorResponse("Invalid body", 400);
     }
-    const supabase = await createSupabaseServerClient();
+    const supabase = createSupabaseAdminClient();
     if (parsed.data.activated) {
       const { data: project } = await (supabase.from("projects") as any)
         .select("active_version_id")

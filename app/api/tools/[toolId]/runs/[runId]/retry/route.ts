@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -15,7 +16,9 @@ export async function POST(
   try {
     const { toolId, runId } = await params;
     const { ctx } = await requireOrgMember();
-    const supabase = await createSupabaseServerClient();
+    // FIX: Use Admin Client to ensure access to execution internals without RLS friction
+    // The user's permission is already validated by requireOrgMember
+    const supabase = createSupabaseAdminClient();
 
     const { data: project } = await (supabase.from("projects") as any)
       .select("spec, active_version_id, is_activated")

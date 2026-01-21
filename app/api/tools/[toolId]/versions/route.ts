@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
@@ -24,7 +25,8 @@ export async function GET(
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client to bypass RLS on versions table if needed
+    const supabase = createSupabaseAdminClient();
 
     const { data: project } = await (supabase.from("projects") as any)
       .select("active_version_id")

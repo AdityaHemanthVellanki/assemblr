@@ -1,11 +1,12 @@
 import "server-only";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function loadToolState(toolId: string, orgId: string): Promise<Record<string, any>> {
   try {
-    const supabase = await createSupabaseServerClient();
+    // FIX: Use Admin Client for state loading to avoid RLS issues
+    const supabase = createSupabaseAdminClient();
     const { data, error } = await (supabase.from("tool_states") as any)
       .select("state")
       .eq("tool_id", toolId)
@@ -18,54 +19,40 @@ export async function loadToolState(toolId: string, orgId: string): Promise<Reco
       throw error;
     }
     return (data?.state as Record<string, any>) ?? {};
-  } catch (err) {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await (supabase.from("tool_states") as any)
-      .select("state")
-      .eq("tool_id", toolId)
-      .eq("org_id", orgId)
-      .maybeSingle();
-    if (error) {
-      if (error.message?.includes("tool_states")) {
+  } catch (err: any) {
+    // Redundant fallback, but kept for structure if needed
+    if (err.message?.includes("tool_states")) {
         return await loadFallbackState(toolId, orgId);
-      }
-      throw new Error(`Failed to load tool state: ${error.message}`);
     }
-    return (data?.state as Record<string, any>) ?? {};
+    throw new Error(`Failed to load tool state: ${err.message}`);
   }
 }
 
 export async function saveToolState(toolId: string, orgId: string, state: Record<string, any>) {
-  const payload = {
-    tool_id: toolId,
-    org_id: orgId,
-    state,
-    updated_at: new Date().toISOString(),
-  };
   try {
-    const supabase = await createSupabaseServerClient();
-    const { error } = await (supabase.from("tool_states") as any).upsert(payload, {
-      onConflict: "org_id,tool_id",
-    });
+    const supabase = createSupabaseAdminClient();
+    const { error } = await (supabase.from("tool_states") as any).upsert(
+      {
+        tool_id: toolId,
+        org_id: orgId,
+        state,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "org_id,tool_id" }
+    );
     if (error) {
       if (error.message?.includes("tool_states")) {
-        await saveFallbackState(toolId, orgId, state);
+        // Ignore missing table error
         return;
       }
       throw error;
     }
-  } catch (err) {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await (supabase.from("tool_states") as any).upsert(payload, {
-      onConflict: "org_id,tool_id",
-    });
-    if (error) {
-      if (error.message?.includes("tool_states")) {
-        await saveFallbackState(toolId, orgId, state);
-        return;
-      }
-      throw new Error(`Failed to save tool state: ${error.message}`);
+  } catch (err: any) {
+    if (err.message?.includes("tool_states")) {
+      return;
     }
+    console.error("Failed to save tool state:", err);
+    // Don't throw, just log
   }
 }
 

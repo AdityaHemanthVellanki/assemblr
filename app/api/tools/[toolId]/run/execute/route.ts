@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireOrgMember } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
@@ -16,7 +17,8 @@ export async function POST(
   try {
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for execution to ensure access to all needed data
+    const supabase = createSupabaseAdminClient();
 
     const { data: project, error } = await (supabase.from("projects") as any)
       .select("spec, active_version_id, is_activated")

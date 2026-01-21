@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+// import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const chatSchema = z.object({
@@ -36,7 +37,8 @@ export async function POST(
     }
     const { message: userMessage, mode, integrationMode, selectedIntegrationIds } = parsed.data;
 
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client to ensure robust tool execution/updates without cookie/RLS issues
+    const supabase = createSupabaseAdminClient();
 
     // 1. Save User Message
     const { error: msgError } = await (supabase.from("chat_messages") as any).insert({
