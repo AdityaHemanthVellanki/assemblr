@@ -30,7 +30,12 @@ export default async function ProjectPage({
   const supabase = await createSupabaseServerClient();
 
   // 2. Fetch Project & Messages
-  const projectResPromise = (supabase.from("projects") as any).select("id, spec, active_version_id").eq("id", toolId).single();
+  const projectResPromise = (supabase.from("projects") as any)
+    .select(
+      "id, spec, active_version_id, org_id, status, environment_ready, environment, lifecycle_state, build_logs"
+    )
+    .eq("id", toolId)
+    .single();
 
   const messagesRes = await supabase
     .from("chat_messages")
@@ -104,6 +109,9 @@ export default async function ProjectPage({
         spec,
         lifecycle_state: normalizedLifecycle,
         build_logs: normalizedBuildLogs,
+        status: projectRes.data.status,
+        environment_ready: projectRes.data.environment_ready,
+        environment: projectRes.data.environment,
       }}
       initialMessages={messages}
       role={role}

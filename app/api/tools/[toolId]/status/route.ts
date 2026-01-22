@@ -63,12 +63,11 @@ export async function GET(
     // Use Service Role to avoid RLS issues on status checks
     const adminSupabase = createSupabaseAdminClient();
     const { data: project, error: projectError } = await (adminSupabase.from("projects") as any)
-      .select("org_id, status")
+      .select("org_id, status, environment_ready")
       .eq("id", toolId)
       .single();
 
     if (projectError || !project) {
-      // If project row doesn't exist, it's truly 404
       return errorResponse("Tool not found", 404);
     }
     
@@ -84,35 +83,16 @@ export async function GET(
           return errorResponse("Unauthorized", 401);
      }
 
-     // FIX: Check tool_results table for authoritative status
-     const latestResult = await getLatestToolResult(toolId, project.org_id);
+     // STRICT SCHEMA CONTRACT: No inference.
+     // If status is READY and environment_ready is true, it is ready.
+     const isReady = project.status === "READY" && project.environment_ready === true;
      
-     // If execution completed (implied by existence of project/spec) but no result -> FAILED
-     // But we need to distinguish "freshly created" vs "run and failed".
-     // For now, if no result, it's NOT materialized.
-     
-     const materialized = latestResult?.status === "MATERIALIZED";
-     const recordCount = latestResult?.record_count ?? 0;
-     const schemaPresent = !!latestResult?.schema_json;
-     const isReady = project.status === "ready" || project.status === "active" || materialized;
-     
-     let lifecycleState = "CREATED";
-     if (isReady) {
-         lifecycleState = "READY";
-     } else if (latestResult && !materialized) {
-         lifecycleState = "FAILED";
-     } else if (project.status === "active" || project.status === "ready") {
-         // Fallback if result missing but status says ready (shouldn't happen with strict invariant)
-         lifecycleState = "READY";
-     }
-
      return Response.json({
-       status: "authenticated",
+       auth_status: "authenticated", // Renamed to avoid collision
        toolId,
-       lifecycle: lifecycleState,
-       materialized,
-       record_count: recordCount,
-       schema_present: schemaPresent,
+       lifecycle: project.status, // Directly return DB status
+       status: project.status, // Return status as "status" property too for consistency
+       environment_ready: project.environment_ready ?? false,
        is_ready: isReady
      }, { status: 200 });
 

@@ -19,7 +19,8 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
-import { materializeToolOutput } from "@/lib/toolos/materialization";
+import { materializeToolOutput, finalizeToolEnvironment } from "@/lib/toolos/materialization";
+import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -156,11 +157,10 @@ export async function processToolChat(
         .from("projects")
         .insert({
             org_id: orgId, // Use resolved authoritative Org ID
-            // owner_id: userId, // REMOVED: Schema mismatch
-            name: "New Tool", // Initial name, will be updated by spec
-            // status: "draft", // REMOVED: Schema mismatch
-            spec: { status: "draft" },
-            // is_activated: false // REMOVED: Schema mismatch
+            name: "New Tool", 
+            status: "CREATED", // Canonical start state
+            environment_ready: false,
+            spec: {}
         })
         .select("id")
         .single();
@@ -180,17 +180,13 @@ export async function processToolChat(
       effectiveToolId = existingTool.id;
   }
   
-  // Update tool status to 'draft' (or 'building') to indicate activity
-  // We don't have 'building' status in schema constraint ('draft', 'ready', 'error', 'active', 'archived').
-  // So 'draft' is appropriate.
-  
   // 1. Run Pipeline
   
   // FIX: Inject effectiveToolId into context
   const toolId = effectiveToolId!;
-  
-  // Update status to draft (explicitly)
-  // await supabase.from("projects").update({ status: "draft" }).eq("id", toolId);
+
+  // Update tool status to 'RUNNING' to indicate activity
+  await (supabase.from("projects") as any).update({ status: "RUNNING" }).eq("id", toolId);
   
   const systemPrompt = await createToolBuilderSystemPrompt({
     orgId: orgId, // Use authoritative ID
@@ -459,7 +455,7 @@ export async function processToolChat(
             active_version_id: version.id,
             spec,
             name: spec.name,
-            // status: "ready", // REMOVED: Schema mismatch
+            status: "FINALIZING",
             updated_at: new Date().toISOString()
           })
           .eq("id", toolId);
@@ -476,42 +472,77 @@ export async function processToolChat(
         throw err; // Re-throw to stop pipeline
       }
 
-      // 6. Data Readiness Check (Real Execution)
-      // We reuse the result from the earlier execution to ensure consistency
-      // and avoid double-fetching data.
+      // 6. Runtime Execution & Materialization (Strict Order)
+      // Compiler has finished. Version is persisted. Now we execute.
+      // This is the "Runtime runs it" phase.
+      
+      let outputs: Array<{ action: any; output: any; error?: any }> = [];
+      
+      // Identify READ actions
+      const readActions = (spec.actions || []).filter(
+          (action) => action.type === "READ" || action.id.includes("list") || action.id.includes("search")
+      );
+      
+      // Initial Fetch Priority
+      if (spec.initialFetch?.actionId) {
+          const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
+          if (initial && !readActions.find(a => a.id === initial.id)) {
+              readActions.unshift(initial);
+          }
+      }
+      
+      if (readActions.length > 0) {
+          console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
+          markStep(steps, "runtime", "running", "Executing actions...");
+          
+          for (const action of readActions) {
+              try {
+                   const input = { limit: spec.initialFetch?.limit ?? 10 };
+                   const result = await executeToolAction({
+                        orgId: buildContext.orgId,
+                        toolId,
+                        compiledTool: compiledTool!,
+                        actionId: action.id,
+                        input,
+                        userId: userId, // Fix: use resolved userId
+                        triggerId: "initial_run",
+                        recordRun: true
+                   });
+                   outputs.push({ action, output: result.output });
+              } catch (err) {
+                  console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
+                  outputs.push({ action, output: null, error: err });
+              }
+          }
+      }
+      
+      // 7. Finalize Environment (REQUIRED)
+      // Even if no actions or all failed, we must finalize to READY or FAILED.
+      // This persists the unified environment object and sets status=READY.
       if (spec) {
         try {
-          const outputs = readiness.outputs ?? [];
-          if (outputs.length === 0) {
-            throw new Error("No committed snapshot");
-          }
-          const snapshotSpec: ToolSystemSpec = {
-            ...applySchemaToViews(spec),
-            status: "active",
-            blocked_integrations: [],
-          };
+          markStep(steps, "runtime", "running", "Finalizing environment...");
+          const matResult = await finalizeToolEnvironment(
+              toolId,
+              buildContext.orgId,
+              spec,
+              outputs,
+              null
+          );
           
-          // Materialize Tool Output (Atomic Commit)
-          await materializeToolOutput({
-             toolId,
-             orgId: buildContext.orgId,
-             actionOutputs: outputs,
-             spec: snapshotSpec,
-             previousRecords: null
-          });
-
-          spec = snapshotSpec;
-          markStep(steps, "runtime", "success", "Tool Materialized");
-          markStep(steps, "views", "success", `Views: ${spec.views.length}`);
-          await transition("ACTIVE", "Tool Materialized");
-          console.log(`[ToolDataReadiness] Materialized tool ${toolId}.`);
+          if (matResult.status === "FAILED") {
+              markStep(steps, "runtime", "error", "Environment Finalization Failed");
+              // await transition("FAILED", "Finalization Failed"); 
+          } else {
+              markStep(steps, "runtime", "success", "Environment READY");
+              // await transition("READY", "Tool Ready"); 
+          }
+          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: ${matResult.status}`);
+          
         } catch (err: any) {
-          console.error(`[ToolDataReadiness] Snapshot commit failed:`, err);
-          await supabase.from("projects").update({
-            status: "error",
-            spec: { ...spec, status: "error" }
-          }).eq("id", toolId);
-          throw new Error(`Snapshot commit failed: ${err.message}`);
+          console.error(`[ToolRuntime] Fatal Finalization Error:`, err);
+          await supabase.from("projects").update({ status: "FAILED" } as any).eq("id", toolId);
+          throw new Error(`Fatal Finalization Error: ${err.message}`);
         }
       }
     }
@@ -533,10 +564,12 @@ export async function processToolChat(
     // Atomic Failure Handling: Mark tool as error
     try {
       const supabase = createSupabaseAdminClient();
-      await (supabase.from("projects") as any)
-        .update({ status: "error" })
-        .eq("id", input.toolId);
-      console.log(`[ToolLifecycle] Marked tool ${input.toolId} as error`);
+      if (PROJECT_STATUSES.includes("FAILED")) {
+        await (supabase.from("projects") as any)
+            .update({ status: "FAILED" })
+            .eq("id", toolId);
+      }
+      console.log(`[ToolLifecycle] Marked tool ${toolId} as error`);
     } catch (updateErr) {
       console.error("[ToolLifecycle] Failed to mark tool error:", updateErr);
     }

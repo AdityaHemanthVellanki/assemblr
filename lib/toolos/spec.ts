@@ -282,7 +282,7 @@ export const ToolSystemSpecSchema = z.object({
   observability: ObservabilitySpecSchema.optional(),
   clarifications: z.array(ClarificationSchema).optional(),
   lifecycle_state: ToolLifecycleStateSchema.optional(),
-  status: z.enum(["draft", "ready", "active", "error", "needs_auth"]).optional(),
+  // status: z.enum(["draft", "ready", "active", "error", "needs_auth"]).optional(), // REMOVED: Schema mismatch
   blocked_integrations: z.array(z.string()).optional(),
 });
 export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;

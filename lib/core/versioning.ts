@@ -4,7 +4,7 @@ import { CompiledIntent } from "./intent";
 
 export type ToolRole = "owner" | "editor" | "viewer";
 
-export type VersionStatus = "draft" | "active" | "archived";
+export type VersionStatus = "CREATED" | "READY" | "ARCHIVED";
 
 export type ToolVersion = {
   id: string;

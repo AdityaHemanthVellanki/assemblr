@@ -8,6 +8,7 @@ import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationCo
 import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { getSessionOnce } from "@/lib/auth/session.server";
+import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -41,12 +42,16 @@ export async function sendChatMessage(
       
       const payload = {
           org_id: orgId,
-          // owner_id: userId, // REMOVED: Schema mismatch (column missing)
           name: "New Tool",
-          // status: "draft", // REMOVED: Schema mismatch (column missing)
-          spec: { status: "draft" } as any // Store status in spec instead
+          status: "CREATED", // Canonical status
+          spec: {} // Clean spec, no status inside
       };
       
+      // FAIL-FAST GUARD
+      if (!PROJECT_STATUSES.includes(payload.status as any)) {
+        throw new Error(`Invalid project status: ${payload.status}`);
+      }
+
       const { data: newProjects, error } = await adminSupabase
         .from("projects")
         .insert(payload)

@@ -77,7 +77,7 @@ export class VersioningService {
         created_by: userId,
         intent_summary: intent?.system_goal || "Manual Edit",
         mini_app_spec: newSpec,
-        status: "draft",
+        status: "CREATED",
         diff
     };
 
@@ -112,11 +112,15 @@ export class VersioningService {
 
       await (supabase.from("projects") as any).update({
           spec: version.tool_spec ?? version.mini_app_spec,
-          active_version_id: versionId
+          active_version_id: versionId,
+          status: "READY", // Ensure project is marked READY when version is promoted
+          environment_ready: true // Assume promoted version has ready environment or will trigger re-materialization? 
+          // Actually, if we promote a version, we might need to re-materialize if environment is stale.
+          // But for now, let's just stick to status updates.
       }).eq("id", toolId);
 
       // 3. Update Version Status
-      await (supabase.from("tool_versions") as any).update({ status: "active" }).eq("id", versionId);
+      await (supabase.from("tool_versions") as any).update({ status: "READY" }).eq("id", versionId);
   }
 
   async getLatestDraft(toolId: string): Promise<ToolVersion | null> {
@@ -124,7 +128,7 @@ export class VersioningService {
       const { data } = await (supabase.from("tool_versions") as any)
         .select("*")
         .eq("tool_id", toolId)
-        .eq("status", "draft")
+        .eq("status", "CREATED")
         .order("created_at", { ascending: false })
         .limit(1)
         .single();

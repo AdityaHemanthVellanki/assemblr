@@ -22,6 +22,9 @@ interface ProjectWorkspaceProps {
     spec: ToolSpec | null;
     lifecycle_state?: ToolLifecycleState | null;
     build_logs?: ToolBuildLog[] | null;
+    status?: string | null;
+    environment_ready?: boolean | null;
+    environment?: any | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -60,17 +63,25 @@ export function ProjectWorkspace({
   const [promotingVersionId, setPromotingVersionId] = React.useState<string | null>(null);
   const [initError, setInitError] = React.useState<string | null>(null);
 
+  // DB-Backed State (Single Source of Truth)
+  const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "CREATED");
+  const [environmentReady, setEnvironmentReady] = React.useState<boolean>(project?.environment_ready || false);
+  const [environment, setEnvironment] = React.useState<any>(project?.environment || null);
+
   // Derived state
   const isZeroState = messages.length === 0;
-  const lifecycleState = project?.lifecycle_state ?? (currentSpec as any)?.lifecycle_state ?? null;
+  // Use DB status for lifecycle state
+  const lifecycleState = projectStatus;
+  
   // FIX: Allow 'ready' status as well
-  const canRenderTool = Boolean(currentSpec && toolId && ((currentSpec as any)?.status === "active" || (currentSpec as any)?.status === "ready"));
+  // We strictly check DB status here. No inferred state.
+  const canRenderTool = Boolean(currentSpec && toolId && projectStatus === "READY");
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
     if (!toolId) return;
     
-    // If already ready/active, don't poll
+    // If already ready, don't poll
     if (canRenderTool) return;
 
     // Timeout check
@@ -85,17 +96,15 @@ export function ProjectWorkspace({
 
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
-            if (res.lifecycle === "READY" || res.is_ready) {
-                // Update spec status to trigger render
-                setCurrentSpec((prev) => {
-                    if (!prev) return null;
-                    return { 
-                        ...prev, 
-                        status: "ready",
-                        lifecycle_state: "READY"
-                    } as any;
-                });
-            } else if (res.lifecycle === "FAILED") {
+            // Update local state from DB response
+            if (res.status) setProjectStatus(res.status);
+            if (res.environment_ready !== undefined) setEnvironmentReady(res.environment_ready);
+            if (res.environment) setEnvironment(res.environment);
+
+            if (res.status === "READY") {
+                 // No need to inject status into spec anymore.
+                 // We rely on projectStatus state.
+            } else if (res.status === "FAILED") {
                  setInitError("Tool initialization failed.");
             }
         } catch (e) {
@@ -366,7 +375,13 @@ export function ProjectWorkspace({
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
               {canRenderTool && toolId && currentSpec ? (
-                <ToolRenderer toolId={toolId} spec={currentSpec} />
+                <ToolRenderer 
+                  toolId={toolId} 
+                  spec={currentSpec} 
+                  status={projectStatus}
+                  environmentReady={environmentReady}
+                  environment={environment}
+                />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {lifecycleState && lifecycleState !== "ACTIVE" && lifecycleState !== "READY"
@@ -603,18 +618,15 @@ function deriveBuildSteps(
 }
 
 function resolveLifecycleStep(
-  lifecycleState: ToolLifecycleState,
+  lifecycleState: string,
 ): { stepId: string | null; status: BuildStep["status"] | null } {
-  if (lifecycleState === "INIT") return { stepId: "intent", status: "pending" };
-  if (lifecycleState === "INTENT_PARSED") return { stepId: "entities", status: "running" };
-  if (lifecycleState === "ENTITIES_EXTRACTED") return { stepId: "integrations", status: "running" };
-  if (lifecycleState === "INTEGRATIONS_RESOLVED") return { stepId: "actions", status: "running" };
-  if (lifecycleState === "ACTIONS_DEFINED") return { stepId: "workflows", status: "running" };
-  if (lifecycleState === "WORKFLOWS_COMPILED") return { stepId: "compile", status: "running" };
-  if (lifecycleState === "RUNTIME_READY") return { stepId: "readiness", status: "running" };
-  if (lifecycleState === "DATA_FETCHED") return { stepId: "views", status: "running" };
+  // Map canonical lifecycle to UI steps
+  if (lifecycleState === "CREATED") return { stepId: "intent", status: "pending" };
+  if (lifecycleState === "RUNNING") return { stepId: "compile", status: "running" };
+  if (lifecycleState === "FINALIZING") return { stepId: "readiness", status: "running" };
+  if (lifecycleState === "READY") return { stepId: "views", status: "success" };
   
-  if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {
+  if (lifecycleState === "FAILED") {
     return { stepId: "compile", status: "error" };
   }
   
