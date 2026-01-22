@@ -8,6 +8,7 @@ import { renderView } from "@/lib/toolos/view-renderer";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
+import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -84,6 +85,7 @@ export async function POST(
       let stateToUse = recordsToUse?.state ?? {};
 
       if (action.type === "READ") {
+        console.log("[ToolRuntime] Runtime completed");
         const matResult = await materializeToolOutput({
            toolId,
            orgId: ctx.orgId,
@@ -92,14 +94,22 @@ export async function POST(
            previousRecords: recordsToUse
         });
         
-        // Fetch the fresh result to ensure we have the latest state (merged)
-        // Or we can rely on materializeToolOutput to return it? 
-        // materializeToolOutput returns status/count/id, not full records.
-        // But we can reconstruct it or fetch it.
-        // For performance, let's fetch it or trust that buildSnapshotRecords logic is consistent.
-        // We'll fetch it to be safe and authoritative.
-        const freshResult = await getLatestToolResult(toolId, ctx.orgId);
-        recordsToUse = freshResult?.records_json;
+        if (matResult.status === "MATERIALIZED") {
+             await finalizeToolLifecycle({
+                 toolId,
+                 status: "READY",
+                 environment: matResult.environment
+             });
+             recordsToUse = matResult.environment?.records;
+        } else {
+             await finalizeToolLifecycle({
+                 toolId,
+                 status: "FAILED",
+                 errorMessage: "Materialization failed"
+             });
+             return errorResponse("Tool execution completed but environment was never finalized", 500);
+        }
+        
         stateToUse = recordsToUse?.state ?? {};
       }
 

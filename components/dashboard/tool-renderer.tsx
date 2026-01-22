@@ -60,14 +60,10 @@ type BudgetSummary = {
 export function ToolRenderer({
   toolId,
   spec,
-  environmentReady,
-  environment,
   status,
 }: {
   toolId: string;
   spec: ToolSpec | null;
-  environmentReady?: boolean;
-  environment?: any;
   status?: string;
 }) {
   const [activeViewId, setActiveViewId] = React.useState<string | null>(null);
@@ -536,10 +532,6 @@ export function ToolRenderer({
         No tool specification found. Start chatting to build one.
       </div>
     );
-  }
-
-  if (environmentReady !== undefined && (!environmentReady || !environment)) {
-    return <ToolNotReadyView />;
   }
 
   if (!systemSpec) {
@@ -1430,12 +1422,4 @@ function buildLoadInput(capabilityId: string, limit: number) {
   if (cap.supportedFields.includes("first")) input.first = limit;
   if (cap.supportedFields.includes("limit")) input.limit = limit;
   return input;
-}
-
-function ToolNotReadyView() {
-  return (
-    <div className="flex h-full items-center justify-center text-muted-foreground">
-      Tool environment is not ready.
-    </div>
-  );
 }

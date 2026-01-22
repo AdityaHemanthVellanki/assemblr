@@ -1,12 +1,12 @@
 
 -- Add status and owner_id to projects (tools) table to support strict lifecycle
 alter table public.projects 
-  add column if not exists status text check (status in ('draft', 'ready', 'error', 'active', 'archived')) default 'draft',
+  add column if not exists status text check (status in ('CREATED', 'RUNNING', 'READY', 'FAILED')) default 'CREATED',
   add column if not exists owner_id uuid references auth.users(id) on delete set null;
 
 -- Backfill status based on is_activated
-update public.projects set status = 'active' where is_activated = true;
-update public.projects set status = 'draft' where status is null;
+update public.projects set status = 'READY' where is_activated = true;
+update public.projects set status = 'CREATED' where status is null;
 
 -- Add index for performance
 create index if not exists projects_status_idx on public.projects(status);

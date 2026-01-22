@@ -23,8 +23,7 @@ interface ProjectWorkspaceProps {
     lifecycle_state?: ToolLifecycleState | null;
     build_logs?: ToolBuildLog[] | null;
     status?: string | null;
-    environment_ready?: boolean | null;
-    environment?: any | null;
+    error_message?: string | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -61,17 +60,16 @@ export function ProjectWorkspace({
   const [selectedVersionId, setSelectedVersionId] = React.useState<string | null>(null);
   const [activeVersionId, setActiveVersionId] = React.useState<string | null>(null);
   const [promotingVersionId, setPromotingVersionId] = React.useState<string | null>(null);
-  const [initError, setInitError] = React.useState<string | null>(null);
+  const [initError, setInitError] = React.useState<string | null>(
+    project?.status === "FAILED" ? project?.error_message ?? "Tool initialization failed." : null
+  );
 
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "CREATED");
-  const [environmentReady, setEnvironmentReady] = React.useState<boolean>(project?.environment_ready || false);
-  const [environment, setEnvironment] = React.useState<any>(project?.environment || null);
 
   // Derived state
   const isZeroState = messages.length === 0;
   // Use DB status for lifecycle state
-  const lifecycleState = projectStatus;
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
@@ -83,14 +81,16 @@ export function ProjectWorkspace({
     
     // If already ready, don't poll
     if (canRenderTool) return;
+    if (projectStatus === "FAILED") return;
 
     // Timeout check
     const startTime = Date.now();
-    const TIMEOUT_MS = 30000; // 30s timeout as requested
+    const TIMEOUT_MS = 90000; // 90s timeout
 
     const poll = async () => {
         if (Date.now() - startTime > TIMEOUT_MS) {
             setInitError("Tool initialization timed out. The environment failed to finalize.");
+            setProjectStatus("FAILED"); // Force local failure state
             return;
         }
 
@@ -98,14 +98,15 @@ export function ProjectWorkspace({
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
             // Update local state from DB response
             if (res.status) setProjectStatus(res.status);
-            if (res.environment_ready !== undefined) setEnvironmentReady(res.environment_ready);
-            if (res.environment) setEnvironment(res.environment);
 
+            if (res.error) {
+                 setInitError(res.error);
+            }
             if (res.status === "READY") {
-                 // No need to inject status into spec anymore.
-                 // We rely on projectStatus state.
+                 // Terminal state: success
             } else if (res.status === "FAILED") {
-                 setInitError("Tool initialization failed.");
+                 // Terminal state: failure
+                 setInitError(res.error || "Tool initialization failed.");
             }
         } catch (e) {
             console.error("Status poll failed", e);
@@ -117,7 +118,7 @@ export function ProjectWorkspace({
     void poll();
     
     return () => clearInterval(timer);
-  }, [toolId, canRenderTool]);
+  }, [toolId, canRenderTool, projectStatus]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -379,14 +380,18 @@ export function ProjectWorkspace({
                   toolId={toolId} 
                   spec={currentSpec} 
                   status={projectStatus}
-                  environmentReady={environmentReady}
-                  environment={environment}
                 />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
-                  {lifecycleState && lifecycleState !== "ACTIVE" && lifecycleState !== "READY"
-                    ? "Initializing tool environment..."
-                    : "Describe the tool you want to build to see a live preview."}
+                  {initError || projectStatus === "FAILED" ? (
+                      <div className="text-red-600 font-medium bg-red-50 p-4 rounded-md border border-red-200">
+                        {initError || "Tool initialization failed. Please try again."}
+                      </div>
+                  ) : (
+                      projectStatus && projectStatus !== "READY" && projectStatus !== "FAILED"
+                        ? "Initializing tool environment..."
+                        : "Describe the tool you want to build to see a live preview."
+                  )}
                 </div>
               )}
             </div>
@@ -623,7 +628,6 @@ function resolveLifecycleStep(
   // Map canonical lifecycle to UI steps
   if (lifecycleState === "CREATED") return { stepId: "intent", status: "pending" };
   if (lifecycleState === "RUNNING") return { stepId: "compile", status: "running" };
-  if (lifecycleState === "FINALIZING") return { stepId: "readiness", status: "running" };
   if (lifecycleState === "READY") return { stepId: "views", status: "success" };
   
   if (lifecycleState === "FAILED") {

@@ -32,7 +32,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, spec, active_version_id, org_id, status, environment_ready, environment, lifecycle_state, build_logs"
+      "id, spec, active_version_id, org_id, status, error_message, lifecycle_state, build_logs"
     )
     .eq("id", toolId)
     .single();
@@ -110,8 +110,7 @@ export default async function ProjectPage({
         lifecycle_state: normalizedLifecycle,
         build_logs: normalizedBuildLogs,
         status: projectRes.data.status,
-        environment_ready: projectRes.data.environment_ready,
-        environment: projectRes.data.environment,
+        error_message: projectRes.data.error_message,
       }}
       initialMessages={messages}
       role={role}

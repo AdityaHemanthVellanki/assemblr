@@ -13,9 +13,9 @@ END $$;
 -- Add the new constraint matching PROJECT_STATUSES
 ALTER TABLE public.projects 
   ADD CONSTRAINT projects_status_check 
-  CHECK (status IN ('CREATED', 'RUNNING', 'FINALIZING', 'READY', 'FAILED'));
+  CHECK (status IN ('CREATED', 'RUNNING', 'READY', 'FAILED'));
 
 -- Update any existing rows that might have old values (optional, but good for safety)
 UPDATE public.projects 
 SET status = 'CREATED' 
-WHERE status NOT IN ('CREATED', 'RUNNING', 'FINALIZING', 'READY', 'FAILED');
+WHERE status NOT IN ('CREATED', 'RUNNING', 'READY', 'FAILED');

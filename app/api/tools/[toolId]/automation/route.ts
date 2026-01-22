@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { getLatestCommittedSnapshot } from "@/lib/toolos/snapshots";
+import { getLatestToolResult } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const bodySchema = z.object({
@@ -45,8 +45,8 @@ export async function PATCH(
     if (!project) {
       return errorResponse("Tool not found", 404);
     }
-    const snapshot = await getLatestCommittedSnapshot({ toolId, orgId: ctx.orgId });
-    if (!snapshot) {
+    const latestResult = await getLatestToolResult(toolId, ctx.orgId);
+    if (!latestResult) {
       return errorResponse("No committed snapshot", 409, {
         status: "failed",
         reason: "No committed snapshot",

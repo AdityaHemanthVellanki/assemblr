@@ -8,6 +8,7 @@ import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runti
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation } from "@/lib/toolos/materialization";
+import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
 
 export async function executeToolAction(
   toolId: string,
@@ -79,6 +80,8 @@ export async function executeToolAction(
     const action = (spec as any).actions.find((a: any) => a.id === actionId);
     if (action) {
       const previousResult = await getLatestToolResult(toolId, orgId);
+      console.log("[ToolRuntime] Runtime completed");
+      
       const matResult = await materializeToolOutput({
         toolId,
         orgId,
@@ -89,10 +92,22 @@ export async function executeToolAction(
 
       // ADD A HARD INVARIANT (REQUIRED)
       if (matResult.status !== "MATERIALIZED") {
+         await finalizeToolLifecycle({
+           toolId,
+           status: "FAILED",
+           errorMessage: "Tool execution completed but environment was never finalized"
+         });
          throw new FatalInvariantViolation(
            "Tool execution completed but environment was never finalized"
          );
       }
+      
+      // Persist the environment update (using the barrier to update projects table)
+      await finalizeToolLifecycle({
+          toolId,
+          status: "READY",
+          environment: matResult.environment
+      });
     }
 
     tracer.finish("success");
@@ -107,6 +122,15 @@ export async function executeToolAction(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     tracer.finish("failure", msg);
+    try {
+      await finalizeToolLifecycle({
+        toolId,
+        status: "FAILED",
+        errorMessage: msg
+      });
+    } catch (finalizeError) {
+      console.error("[ToolLifecycle] Failed to finalize tool", finalizeError);
+    }
 
     return {
       viewId: "action_exec",

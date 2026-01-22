@@ -1,4 +1,4 @@
-import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse } from "@/lib/api/response";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
 
@@ -10,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { toolId } = await params;
-    const supabase = createSupabaseServerClient();
+    const supabase = await createSupabaseServerClient();
     const {
       data: { user },
       error: authError,

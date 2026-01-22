@@ -1,6 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec, ActionSpec } from "./spec";
-import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export type SnapshotRecords = {
   state: Record<string, any>;
@@ -20,6 +19,7 @@ export type MaterializationResult = {
   status: "MATERIALIZED" | "FAILED";
   recordCount: number;
   resultId: string;
+  environment?: Record<string, any>;
 };
 
 export type ToolResultRow = {
@@ -55,8 +55,8 @@ async function checkProjectSchemaRuntime(toolId: string): Promise<boolean> {
    // We attempt to select the mandatory lifecycle columns. 
    // If the database does not have these columns, Supabase/Postgres will return an error.
    // This is a "canary query" to verify schema contract.
-   const { error } = await (supabase.from("projects") as any)
-     .select("status, environment_ready, environment, activated_at")
+  const { error } = await (supabase.from("projects") as any)
+    .select("status, error_message, finalized_at, environment")
      .eq("id", toolId)
      .limit(1)
      .single();
@@ -128,7 +128,7 @@ export async function finalizeToolEnvironment(
   }
 
   // 3. Write to tool_results (Atomic Insert)
-  const { data: resultData, error } = await supabase.from("tool_results").insert({
+  const { data: resultData, error } = await (supabase.from("tool_results") as any).insert({
     tool_id: toolId,
     org_id: orgId,
     schema_json: spec.entities ?? {},
@@ -144,44 +144,19 @@ export async function finalizeToolEnvironment(
     throw new Error(`Materialization failed: ${error.message}`);
   }
 
-  // 4. Finalize Tool Environment (Atomic State Transition)
-  // This satisfies the user requirement: "Set tool.status = READY"
-  if (finalStatus === "MATERIALIZED") {
-      // FAIL-FAST GUARD
-      if (!PROJECT_STATUSES.includes("READY")) {
-        throw new Error("Invalid project status: READY");
-      }
-
-      const { error: updateError } = await supabase
-        .from("projects")
-        .update({
-            status: "READY",
-            environment_ready: true,
-            activated_at: new Date().toISOString(),
-            environment: {
-                schema: spec.entities ?? {},
-                records: records,
-                recordCount: recordCount,
-                metadata: { materialized_at: new Date().toISOString() }
-            }
-        } as any)
-        .eq("id", toolId);
-
-      if (updateError) {
-          console.error("[Materialization] Failed to update project status:", updateError);
-          // Critical failure: DB schema mismatch or connection issue
-          // We must fail the tool if we can't persist the terminal state
-          await supabase.from("projects").update({ status: "FAILED" } as any).eq("id", toolId);
-          throw new Error(`Fatal: Failed to persist READY state: ${updateError.message}`);
-      }
-  } else if (finalStatus === "FAILED") {
-      await supabase.from("projects").update({ status: "FAILED" } as any).eq("id", toolId);
-  }
+  // 4. PREPARE ENVIRONMENT (Do NOT update projects here - delegated to barrier)
+  const environment = {
+      schema: spec.entities ?? {},
+      records: records,
+      recordCount: recordCount,
+      metadata: { materialized_at: new Date().toISOString() }
+  };
 
   return {
     status: finalStatus,
     recordCount,
     resultId: resultData.id,
+    environment,
   };
 }
 

@@ -20,6 +20,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 import { materializeToolOutput, finalizeToolEnvironment } from "@/lib/toolos/materialization";
+import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -159,7 +160,6 @@ export async function processToolChat(
             org_id: orgId, // Use resolved authoritative Org ID
             name: "New Tool", 
             status: "CREATED", // Canonical start state
-            environment_ready: false,
             spec: {}
         })
         .select("id")
@@ -455,7 +455,7 @@ export async function processToolChat(
             active_version_id: version.id,
             spec,
             name: spec.name,
-            status: "FINALIZING",
+            status: "RUNNING",
             updated_at: new Date().toISOString()
           })
           .eq("id", toolId);
@@ -476,7 +476,7 @@ export async function processToolChat(
       // Compiler has finished. Version is persisted. Now we execute.
       // This is the "Runtime runs it" phase.
       
-      let outputs: Array<{ action: any; output: any; error?: any }> = [];
+      const outputs: Array<{ action: any; output: any; error?: any }> = [];
       
       // Identify READ actions
       const readActions = (spec.actions || []).filter(
@@ -520,29 +520,54 @@ export async function processToolChat(
       // Even if no actions or all failed, we must finalize to READY or FAILED.
       // This persists the unified environment object and sets status=READY.
       if (spec) {
+        console.log("[ToolRuntime] Runtime completed");
+        let matResult;
         try {
           markStep(steps, "runtime", "running", "Finalizing environment...");
-          const matResult = await finalizeToolEnvironment(
+          matResult = await finalizeToolEnvironment(
               toolId,
               buildContext.orgId,
               spec,
               outputs,
               null
           );
-          
-          if (matResult.status === "FAILED") {
-              markStep(steps, "runtime", "error", "Environment Finalization Failed");
-              // await transition("FAILED", "Finalization Failed"); 
-          } else {
-              markStep(steps, "runtime", "success", "Environment READY");
-              // await transition("READY", "Tool Ready"); 
-          }
-          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: ${matResult.status}`);
-          
         } catch (err: any) {
-          console.error(`[ToolRuntime] Fatal Finalization Error:`, err);
-          await supabase.from("projects").update({ status: "FAILED" } as any).eq("id", toolId);
-          throw new Error(`Fatal Finalization Error: ${err.message}`);
+            console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
+            // If materialization fails, we must fail the build via the barrier
+            await finalizeToolLifecycle({
+                toolId,
+                status: "FAILED",
+                errorMessage: err.message
+            });
+            throw new Error(`Fatal Finalization Error: ${err.message}`);
+        }
+
+        // Now finalize the build with the result
+        // SINGLE TERMINAL WRITE BARRIER
+        const success = matResult.status === "MATERIALIZED";
+        if (success) {
+            try {
+                await finalizeToolLifecycle({
+                    toolId,
+                    status: "READY",
+                    environment: matResult.environment
+                });
+                markStep(steps, "runtime", "success", "Environment READY");
+                console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
+            } catch (err: any) {
+                // If the barrier fails, we must catch it and report
+                console.error(`[ToolRuntime] Barrier Failed:`, err);
+                markStep(steps, "runtime", "error", "Barrier Failed");
+                throw err;
+            }
+        } else {
+             await finalizeToolLifecycle({
+                toolId,
+                status: "FAILED",
+                errorMessage: "Materialization returned FAILED status"
+            });
+             markStep(steps, "runtime", "error", "Environment Finalization Failed");
+             console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
         }
       }
     }
@@ -563,13 +588,11 @@ export async function processToolChat(
   } catch (err) {
     // Atomic Failure Handling: Mark tool as error
     try {
-      const supabase = createSupabaseAdminClient();
-      if (PROJECT_STATUSES.includes("FAILED")) {
-        await (supabase.from("projects") as any)
-            .update({ status: "FAILED" })
-            .eq("id", toolId);
-      }
-      console.log(`[ToolLifecycle] Marked tool ${toolId} as error`);
+      await finalizeToolLifecycle({
+          toolId,
+          status: "FAILED",
+          errorMessage: err instanceof Error ? err.message : "Build failed"
+      });
     } catch (updateErr) {
       console.error("[ToolLifecycle] Failed to mark tool error:", updateErr);
     }
