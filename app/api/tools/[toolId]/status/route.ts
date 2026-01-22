@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@supabase/ssr";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
@@ -61,7 +62,7 @@ export async function GET(
     // Use Service Role to avoid RLS issues on status checks
     const adminSupabase = createSupabaseAdminClient();
     const { data: project, error: projectError } = await (adminSupabase.from("projects") as any)
-      .select("status, is_activated, org_id")
+      .select("org_id")
       .eq("id", toolId)
       .single();
 
@@ -85,14 +86,14 @@ export async function GET(
      // We already fetched project above with admin client
      // We need spec and active_version_id though
      const { data: fullProject } = await (adminSupabase.from("projects") as any)
-       .select("status, is_activated, spec, active_version_id")
+       .select("spec, active_version_id")
        .eq("id", toolId)
        .single();
  
      if (!fullProject) return errorResponse("Tool not found", 404);
  
-     const status = fullProject.status;
-     const isActivated = fullProject.is_activated;
+     const status = (fullProject.spec as any)?.status || "draft";
+     const isActivated = !!fullProject.active_version_id;
  
      const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
     const lifecycleState = await loadMemory({
@@ -112,17 +113,71 @@ export async function GET(
     
     if (project.status === "error") {
       lifecycle = "ERROR";
-    } else if (project.is_activated) {
+    } else if (fullProject.spec?.is_activated) {
       lifecycle = "RUNNING";
     } else if (lifecycle === "ACTIVE") {
       // If ready but not activated, it's waiting for activation
       lifecycle = "READY_TO_ACTIVATE";
     }
 
+    // FIX: Calculate real data stats
+    const spec = fullProject.spec as any;
+    let recordsFetched = 0;
+    let schemaFieldsCount = 0;
+    let lastFetchAt: number | null = null;
+    let schemaPreview: any[] = [];
+
+    if (spec?.entities) {
+        schemaFieldsCount = spec.entities.reduce((acc: number, e: any) => acc + (e.fields?.length || 0), 0);
+        schemaPreview = spec.entities.map((e: any) => ({
+            name: e.name,
+            fields: e.fields?.length || 0
+        }));
+    }
+
+    if (spec?.actions) {
+         const readActions = spec.actions.filter((a: any) => 
+            a.type === "READ" || 
+            (a.id && (a.id.includes("list") || a.id.includes("search")))
+         );
+         
+         // Parallel fetch for speed
+         await Promise.all(readActions.map(async (action: any) => {
+             try {
+                 const cached = await loadMemory({
+                     scope,
+                     namespace: "data_cache",
+                     key: action.id
+                 });
+                 if (cached && (cached as any).data) {
+                     const data = (cached as any).data;
+                     const count = Array.isArray(data) ? data.length : (data ? 1 : 0);
+                     recordsFetched += count;
+                     
+                     const ts = (cached as any).timestamp;
+                     if (ts && (!lastFetchAt || ts > lastFetchAt)) {
+                         lastFetchAt = ts;
+                     }
+                 }
+             } catch (e) {
+                 // Ignore cache read errors
+             }
+         }));
+    }
+
+    // If we have data but lifecycle says INIT, bump it? 
+    // No, trust the state machine, but return the stats.
+
     return jsonResponse({
       lifecycle,
       lastError,
-      isActivated: project.is_activated,
+      isActivated: fullProject.spec?.is_activated === true,
+      stats: {
+          records_fetched: recordsFetched,
+          schema_fields: schemaFieldsCount,
+          last_fetch_at: lastFetchAt ? new Date(lastFetchAt).toISOString() : null,
+          schema_preview: schemaPreview
+      }
     });
   } catch (e) {
     return handleApiError(e);

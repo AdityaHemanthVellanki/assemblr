@@ -35,7 +35,7 @@ export async function GET(
       .single();
 
     const { data, error } = await (supabase.from("tool_versions") as any)
-      .select("id, status, created_at, created_by, purpose, tool_spec, diff, compiled_intent")
+      .select("id, status, created_at, purpose, tool_spec, diff, compiled_intent") // REMOVED: created_by
       .eq("tool_id", toolId)
       .eq("org_id", ctx.orgId)
       .order("created_at", { ascending: false });
@@ -65,7 +65,7 @@ export async function GET(
         id: row.id,
         status: row.id === project?.active_version_id ? "active" : row.status,
         created_at: row.created_at,
-        created_by: row.created_by,
+        created_by: null, // row.created_by, // REMOVED: Schema mismatch
         purpose: row.purpose || "Tool update",
         integrations_used: integrations,
         breaking_change: breakingChange,

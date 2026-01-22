@@ -21,7 +21,7 @@ export async function GET(
     // Use Admin Client for activation state to ensure reliability
     const supabase = createSupabaseAdminClient();
     const { data: project } = await (supabase.from("projects") as any)
-      .select("is_activated")
+      .select("spec")
       .eq("id", toolId)
       .eq("org_id", ctx.orgId)
       .single();
@@ -30,7 +30,8 @@ export async function GET(
       return errorResponse("Tool not found", 404);
     }
 
-    return jsonResponse({ activated: project.is_activated === true });
+    const isActivated = (project.spec as any)?.is_activated === true;
+    return jsonResponse({ activated: isActivated });
   } catch (e) {
     return handleApiError(e);
   }
@@ -50,13 +51,18 @@ export async function PATCH(
       return errorResponse("Invalid body", 400);
     }
     const supabase = createSupabaseAdminClient();
+    
+    // Fetch current spec to preserve data
+    const { data: project } = await (supabase.from("projects") as any)
+      .select("spec, active_version_id")
+      .eq("id", toolId)
+      .eq("org_id", ctx.orgId)
+      .single();
+      
+    if (!project) return errorResponse("Tool not found", 404);
+
     if (parsed.data.activated) {
-      const { data: project } = await (supabase.from("projects") as any)
-        .select("active_version_id")
-        .eq("id", toolId)
-        .eq("org_id", ctx.orgId)
-        .single();
-      if (!project?.active_version_id) {
+      if (!project.active_version_id) {
         return errorResponse("Tool not compiled yet", 409, {
           status: "blocked",
           reason: "Tool not compiled yet",
@@ -76,8 +82,12 @@ export async function PATCH(
       }
     }
 
+    const newSpec = { ...project.spec, is_activated: parsed.data.activated };
     const { error } = await (supabase.from("projects") as any)
-      .update({ is_activated: parsed.data.activated })
+      .update({ 
+        spec: newSpec
+        // is_activated: parsed.data.activated // REMOVED: Schema mismatch
+      })
       .eq("id", toolId)
       .eq("org_id", ctx.orgId);
 

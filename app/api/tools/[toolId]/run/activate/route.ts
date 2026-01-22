@@ -91,7 +91,10 @@ export async function POST(
 
     // 2. Mark Activated
     const { error: updateError } = await (supabase.from("projects") as any)
-      .update({ is_activated: true })
+      .update({ 
+        spec: { ...spec, is_activated: true }
+        // is_activated: true // REMOVED: Schema mismatch
+      })
       .eq("id", toolId)
       .eq("org_id", ctx.orgId);
 

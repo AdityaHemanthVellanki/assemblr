@@ -6,6 +6,8 @@ import { processToolChat } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
+import { resolveBuildContext } from "@/lib/toolos/build-context";
+import { getSessionOnce } from "@/lib/auth/session.server";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -13,54 +15,86 @@ export async function sendChatMessage(
   history: Array<{ role: "user" | "assistant"; content: string }>,
   currentSpec: unknown | null
 ) {
-  const { ctx, requiresAuth, error } = await requireOrgMemberOptional();
-  if (requiresAuth) {
-    return { requiresAuth: true };
+  // 1. Authenticate User
+  const session = await getSessionOnce();
+  if (!session?.user) {
+    return { error: "Unauthorized" };
   }
-  if (!ctx) {
-    return { error: error?.message ?? "Unauthorized" };
-  }
+  const userId = session.user.id;
 
   let effectiveToolId = toolId;
   let effectiveSpec = currentSpec;
-  let orgId = ctx.orgId;
+  let orgId: string;
 
-  // 1. Resolve Tool & Org
+  // 2. Resolve Context & Create Tool (if needed)
   if (!effectiveToolId) {
-    // CRITICAL: Use Admin Client to guarantee creation (bypassing potential RLS issues on insert)
-    console.log("[ToolCreation] Using Service Role Admin Client");
-    const adminSupabase = createSupabaseAdminClient();
-    const payload = {
-        org_id: orgId,
-        owner_id: ctx.userId,
-        name: "New Tool",
-        status: "draft",
-        spec: {} as any
-    };
-    const { data: newProjects, error } = await adminSupabase.from("projects").insert(payload).select("id");
-    
-    // FIX: Safe retrieval of ID - do not assume .single() works blindly
-    const newProject = newProjects && newProjects.length > 0 ? newProjects[0] : null;
+    // Creation Flow: Use resolveBuildContext to guarantee Org exists
+    try {
+      // Auto-resolve org (creates one if missing)
+      const buildContext = await resolveBuildContext(userId);
+      orgId = buildContext.orgId;
+      
+      console.log("[ToolCreation] Context Resolved:", { orgId, userId });
 
-    if (error || !newProject) {
-        console.error("[ToolCreation] FAILED", {
-            code: error?.code,
-            message: error?.message,
-            details: error?.details,
-            hint: error?.hint,
-            payload
-        });
-        throw new Error(`Failed to create project: ${error?.message || "Unknown error"}`);
+      // CRITICAL: Use Admin Client for atomic creation
+      const adminSupabase = createSupabaseAdminClient();
+      
+      const payload = {
+          org_id: orgId,
+          // owner_id: userId, // REMOVED: Schema mismatch (column missing)
+          name: "New Tool",
+          // status: "draft", // REMOVED: Schema mismatch (column missing)
+          spec: { status: "draft" } as any // Store status in spec instead
+      };
+      
+      const { data: newProjects, error } = await adminSupabase
+        .from("projects")
+        .insert(payload)
+        .select("id");
+      
+      // FIX: Safe retrieval of ID
+      const newProject = newProjects && newProjects.length > 0 ? newProjects[0] : null;
+
+      if (error || !newProject) {
+          console.error("[ToolCreation] DB INSERT FAILED", {
+              code: error?.code,
+              message: error?.message,
+              details: error?.details,
+              hint: error?.hint,
+              payload
+          });
+          throw new Error(`Failed to create project: ${error?.message || "Unknown error"} (Code: ${error?.code})`);
+      }
+      
+      effectiveToolId = newProject.id;
+      console.log("[ToolCreation] Success:", effectiveToolId);
+
+    } catch (err) {
+      console.error("[ToolCreation] Critical Failure", err);
+      return { error: err instanceof Error ? err.message : "Failed to create tool" };
     }
-    effectiveToolId = newProject.id;
   } else {
+    // Load Flow: Verify access
+    const { ctx, error } = await requireOrgMemberOptional();
+    if (!ctx) return { error: error?.message ?? "Unauthorized" };
+    
+    // Verify tool ownership/access
     const supabase = await createSupabaseServerClient();
-    const { data: project } = await supabase.from("projects").select("org_id, spec").eq("id", effectiveToolId).single();
-    if (!project) throw new Error("Project not found");
+    const { data: project, error: loadError } = await supabase
+        .from("projects")
+        .select("org_id, spec")
+        .eq("id", effectiveToolId)
+        .single();
+        
+    if (loadError || !project) {
+        return { error: "Project not found or access denied" };
+    }
+    
     orgId = project.org_id;
     if (!effectiveSpec) effectiveSpec = project.spec as any;
   }
 
+  // 3. Load Connections & Process Chat
   const supabase = await createSupabaseServerClient();
   const connections = await loadIntegrationConnections({ supabase, orgId });
   const connectedIntegrationIds = connections.map((c) => c.integration_id);
@@ -68,12 +102,12 @@ export async function sendChatMessage(
   const response = await processToolChat({
     orgId,
     toolId: effectiveToolId,
-    userId: ctx.userId,
+    userId: userId,
     currentSpec: effectiveSpec as any,
     messages: history,
     userMessage: message,
     connectedIntegrationIds,
-    mode: "create", // Default to create for builder
+    mode: "create", 
     integrationMode: "auto",
   });
 

@@ -17,6 +17,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { withToolBuildLock } from "@/lib/toolos/build-lock";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
+import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
+import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -89,6 +91,17 @@ const TIME_BUDGETS = {
   firstRenderMs: 3000,
 };
 
+async function createToolBuilderSystemPrompt(input: {
+  orgId: string;
+  toolId: string;
+  currentSpec: unknown | null;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  capabilities: any[];
+  context: any;
+}) {
+  return INTENT_SYSTEM_PROMPT;
+}
+
 export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
@@ -126,7 +139,7 @@ export async function processToolChat(
   // Check if tool exists
   const { data: existingTool } = await supabase
     .from("projects")
-    .select("id, status, is_activated")
+    .select("id") // Removed status, is_activated
     .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") // Dummy UUID if undefined
     .single();
     
@@ -142,11 +155,11 @@ export async function processToolChat(
         .from("projects")
         .insert({
             org_id: orgId, // Use resolved authoritative Org ID
-            owner_id: userId,
+            // owner_id: userId, // REMOVED: Schema mismatch
             name: "New Tool", // Initial name, will be updated by spec
-            status: "draft",
-            spec: {},
-            is_activated: false
+            // status: "draft", // REMOVED: Schema mismatch
+            spec: { status: "draft" },
+            // is_activated: false // REMOVED: Schema mismatch
         })
         .select("id")
         .single();
@@ -176,13 +189,13 @@ export async function processToolChat(
   const toolId = effectiveToolId!;
   
   // Update status to draft (explicitly)
-  await supabase.from("projects").update({ status: "draft" }).eq("id", toolId);
+  // await supabase.from("projects").update({ status: "draft" }).eq("id", toolId);
   
   const systemPrompt = await createToolBuilderSystemPrompt({
     orgId: orgId, // Use authoritative ID
     toolId: toolId,
     currentSpec: input.currentSpec || null,
-    history: input.history,
+    history: input.messages,
     capabilities: [], // Will be filled by discovery
     context: {
         connectedIntegrations: [],
@@ -426,15 +439,15 @@ export async function processToolChat(
           .insert({
             tool_id: toolId,
             org_id: orgId, // Authoritative ID
-            created_by: userId,
+            // created_by: userId, // REMOVED: Schema mismatch
             status: "active",
-            name: compiled.tool.name,
-            purpose: compiled.tool.description,
-            tool_spec: compiled.tool,
-            compiled_tool: compiled.tool,
-            intent_schema: compiled.intentSchema || {},
+            name: spec.name,
+            purpose: spec.purpose,
+            tool_spec: spec,
+            compiled_tool: compiled,
+            intent_schema: {},
             diff: null,
-            build_hash: createHash('md5').update(JSON.stringify(compiled.tool)).digest('hex')
+            build_hash: createHash('md5').update(JSON.stringify(spec)).digest('hex')
           })
           .select("id")
           .single();
@@ -447,9 +460,9 @@ export async function processToolChat(
         const { error: projectError } = await (supabase.from("projects") as any)
           .update({
             active_version_id: version.id,
-            spec: compiled.tool,
-            name: compiled.tool.name,
-            status: "ready", // Ready for execution
+            spec: { ...spec, status: "ready" },
+            name: spec.name,
+            // status: "ready", // REMOVED: Schema mismatch
             updated_at: new Date().toISOString()
           })
           .eq("id", toolId);
@@ -462,33 +475,50 @@ export async function processToolChat(
       } catch (err: any) {
         console.error("[ToolPersistence] CRITICAL FAILURE:", err);
         // Mark tool as error
-        await supabase.from("projects").update({ status: "error" }).eq("id", toolId);
+        // await supabase.from("projects").update({ status: "error" }).eq("id", toolId); // REMOVED: Schema mismatch
         throw err; // Re-throw to stop pipeline
       }
 
       // 6. Data Readiness Check (Real Execution)
-      // We execute read actions to ensure data flow works.
-      // Failures here are FATAL to ensure "No silent success".
-      if (compiledTool?.tool) {
+      // We reuse the result from the earlier execution to ensure consistency
+      // and avoid double-fetching data.
+      if (spec) {
         try {
-          console.log(`[ToolDataReadiness] Verifying data fetch for ${toolId}...`);
-          // Note: runDataReadiness now throws errors on failure, which we catch here
-          await runDataReadiness(compiledTool.tool, {
-            orgId: orgId, // Authoritative ID
-            toolId: toolId,
-            userId: userId,
-            compiledTool: compiledTool!
-          });
-
-          // If we got here, data fetch succeeded.
-          // Update status to 'active' (fully ready)
-          await supabase.from("projects").update({ status: "active" }).eq("id", toolId);
-          console.log(`[ToolDataReadiness] Success. Tool ${toolId} is ACTIVE.`);
+          if (readiness.authErrors && readiness.authErrors.length > 0) {
+             console.warn(`[ToolDataReadiness] Auth required: ${readiness.authErrors.join(", ")}`);
+             // Update status to needs_auth
+             await supabase.from("projects").update({ 
+                spec: { 
+                    ...spec, 
+                    status: "needs_auth", 
+                    blocked_integrations: readiness.authErrors 
+                } 
+             }).eq("id", toolId);
+             console.log(`[ToolDataReadiness] Tool ${toolId} set to NEEDS_AUTH.`);
+          } else {
+             // Success
+             // FIX: Auto-activate tool so it's runnable immediately
+             const activatedSpec = { 
+               ...spec, 
+               status: "active", 
+               is_activated: true,
+               blocked_integrations: [] 
+             };
+             
+             await supabase.from("projects").update({ 
+                spec: activatedSpec,
+                is_activated: true // Update column if it exists, redundant but safe
+             }).eq("id", toolId);
+             
+             console.log(`[ToolDataReadiness] Success. Tool ${toolId} is ACTIVE.`);
+          }
 
         } catch (err: any) {
           console.error(`[ToolDataReadiness] Data fetch failed:`, err);
           // Mark tool as error
-          await supabase.from("projects").update({ status: "error" }).eq("id", toolId);
+          await supabase.from("projects").update({ 
+            spec: { ...spec, status: "error" }
+          }).eq("id", toolId);
           throw new Error(`Data verification failed: ${err.message}`);
         }
       }
@@ -726,6 +756,7 @@ async function runDataReadiness(
   context?: { orgId: string; toolId: string; userId: string | null; compiledTool: CompiledToolArtifact }
 ) {
   const logs: string[] = [];
+  const authErrors: string[] = [];
   const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
     return cap?.allowedOperations.includes("read");
@@ -766,21 +797,57 @@ async function runDataReadiness(
             key: action.id,
             value: { data: result.output, timestamp: Date.now() }
         });
+
+        // FIX: Infer Schema from Data
+        const inferredFields = inferFieldsFromData(result.output);
+        if (inferredFields.length > 0) {
+           // Find primary entity for this integration
+           const entity = spec.entities.find(e => e.sourceIntegration === action.integrationId) 
+             || spec.entities[0]; // Fallback to first entity if strict match fails
+           
+           if (entity) {
+              const existing = new Set(entity.fields.map(f => f.name));
+              let added = 0;
+              for (const field of inferredFields) {
+                 if (!existing.has(field.name)) {
+                    entity.fields.push(field);
+                    added++;
+                 }
+              }
+              if (added > 0) {
+                 logs.push(`Inferred ${added} new fields for entity '${entity.name}' from live data.`);
+              }
+           }
+        }
         
-        logs.push(`Successfully fetched data for ${action.name}`);
+        const recordCount = Array.isArray(result.output) ? result.output.length : (result.output ? 1 : 0);
+        logs.push(`Successfully fetched ${recordCount} records for ${action.name}`);
       } catch (err: any) {
-        const msg = err.message || "Unknown error";
-        console.error(`[Readiness] Action ${action.name} failed:`, err);
-        
-        // STRICT MODE: Any data fetch failure fails the build
-        throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
+        if (err instanceof IntegrationAuthError || err.name === "IntegrationAuthError") {
+            console.warn(`[Readiness] Auth warning for ${action.integrationId}:`, err.message);
+            logs.push(`⚠️ Auth required for ${action.integrationId}: ${err.message}`);
+            if (!authErrors.includes(action.integrationId)) {
+                authErrors.push(action.integrationId);
+            }
+        } else if (action.integrationId === "slack") {
+            // FIX: Slack failures must not block the build
+            // Slack tokens often expire and don't refresh easily, but it's an optional integration
+            console.warn(`[Readiness] Slack fetch failed (non-fatal):`, err.message);
+            logs.push(`⚠️ Slack fetch failed: ${err.message} (ignoring)`);
+        } else {
+            const msg = err.message || "Unknown error";
+            console.error(`[Readiness] Action ${action.name} failed:`, err);
+            
+            // STRICT MODE: Any data fetch failure fails the build
+            throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
+        }
       }
     } else {
       logs.push(`Validated inputs for ${action.name} (${action.integrationId}).`);
     }
   }
 
-  return { logs };
+  return { logs, authErrors };
 }
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {

@@ -1,5 +1,5 @@
 import { RUNTIMES } from "@/lib/integrations/map";
-import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
+import { getValidAccessToken, IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { CompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -83,6 +83,7 @@ export async function executeToolAction(params: {
     const runLogs: Array<Record<string, any>> = [];
     if (run) {
       const startedAt = new Date().toISOString();
+      console.log(`[Runtime] Action ${action.id} STARTING. Input keys: ${Object.keys(input).join(", ")}`);
       runLogs.push({
         id: `${action.id}:start`,
         timestamp: startedAt,
@@ -99,6 +100,7 @@ export async function executeToolAction(params: {
     let output: any;
     try {
       const startedAt = Date.now();
+      console.log(`[Runtime] Fetching token for ${action.integrationId}...`);
       const token = await getValidAccessToken(orgId, action.integrationId);
       const context = await runtime.resolveContext(token);
       if (runtime.checkPermissions) {
@@ -106,11 +108,15 @@ export async function executeToolAction(params: {
       }
       const tracer = new ExecutionTracer("run");
       
+      console.log(`[Runtime] Executing capability ${action.capabilityId}...`);
       // Wrap execution with retry logic
       output = await executeWithRetry(() => executor.execute(input, context, tracer), {
         maxRetries: 3,
         initialDelayMs: 1000,
       });
+
+      const recordCount = Array.isArray(output) ? output.length : (output ? 1 : 0);
+      console.log(`[Runtime] Action ${action.id} COMPLETED. Records: ${recordCount}`);
 
       if (run) {
         const durationMs = Date.now() - startedAt;
@@ -140,13 +146,30 @@ export async function executeToolAction(params: {
         }
       }
       
+      // PERSISTENCE FIX: Cache READ results for UI/Status
+      // This ensures that even if called manually, the latest data is available for status checks
+      if (isRead && output) {
+        try {
+            await saveMemory({
+                scope: toolScope,
+                namespace: "data_cache",
+                key: action.id,
+                value: { data: output, timestamp: Date.now() }
+            });
+            console.log(`[Runtime] Cached result for ${action.id}`);
+        } catch (cacheErr) {
+            console.warn(`[Runtime] Failed to cache result for ${action.id}:`, cacheErr);
+        }
+      }
+      
       return { state: {}, output, events: [] };
     } catch (err) {
       if (run) {
+        const isAuthError = err instanceof IntegrationAuthError || (err as any).name === "IntegrationAuthError";
         runLogs.push({
-          id: `${action.id}:error`,
+          id: `${action.id}:${isAuthError ? "auth_required" : "error"}`,
           timestamp: new Date().toISOString(),
-          status: "error",
+          status: isAuthError ? "warning" : "error",
           error: err instanceof Error ? err.message : String(err),
         });
         await updateExecutionRun({ runId: run.id, status: "failed", logs: runLogs });

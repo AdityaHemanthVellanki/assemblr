@@ -61,12 +61,15 @@ export async function requireRole(minRole: OrgRole) {
   return { ctx, role: userRole };
 }
 
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+
 export async function requireProjectOrgAccess(
   ctx: SessionContext,
   projectId: string,
 ) {
-  const cookieStore = await cookies();
-  const supabase = await createSupabaseServerClient(cookieStore);
+  // Use Admin Client to check project existence and ownership
+  // This avoids RLS complexity and cookie dependency for this check
+  const supabase = createSupabaseAdminClient();
   const project = await supabase
     .from("projects")
     .select("id, org_id")

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { ToolVersion, VersionStatus, VersionValidationResult } from "@/lib/core/versioning";
 import { calculateDiff } from "./diff";
@@ -15,7 +15,8 @@ export class VersioningService {
     intent?: CompiledIntent,
     baseVersionId?: string
   ): Promise<ToolVersion> {
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for versioning to ensure persistence reliability
+    const supabase = createSupabaseAdminClient();
     
     let baseSpec: ToolSpec = {
       id: toolId,

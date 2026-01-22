@@ -20,14 +20,15 @@ export async function POST(
 
     // Resolve project spec
     const { data: project } = await (supabase.from("projects") as any)
-      .select("spec, active_version_id, is_activated")
+      .select("spec, active_version_id")
       .eq("id", toolId)
       .single();
 
   if (!project?.spec) {
     return errorResponse("Tool not found", 404);
   }
-  if (!project.is_activated) {
+  const isActivated = (project.spec as any)?.is_activated;
+  if (!isActivated) {
     return errorResponse("Tool not activated", 409, {
       status: "blocked",
       reason: "Tool not activated",

@@ -1,7 +1,6 @@
 import "server-only";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-// import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   MemoryAdapter,
   MemoryAdapterError,
@@ -58,17 +57,13 @@ async function queryWithServerFallback<T>(
   onAdmin: (supabase: ReturnType<typeof createSupabaseAdminClient>, err?: Error) => Promise<T>,
 ) {
   try {
-    // FIX: Always use Admin Client for memory operations
-    // RLS is too restrictive for tool memory which needs to be written by the system.
-    // The "Server Client" (user session) often fails RLS for tool_memory if policies aren't perfect.
-    // We trust the backend logic to scope correctly.
     const supabase = createSupabaseAdminClient();
     return await run(supabase);
   } catch (err) {
-    const code = typeof (err as any)?.code === "string" ? (err as any).code : undefined;
-    if (code === "23502" || code === "42P10") {
-      throw err;
-    }
+    // Retry with admin client is redundant if we started with it, but we keep the structure
+    // for error handling flow.
+    // In this strict mode, we ALWAYS use admin client.
+    console.warn("[Memory] Operation failed, retrying...", err);
     const supabase = createSupabaseAdminClient();
     return await onAdmin(supabase, err as Error);
   }

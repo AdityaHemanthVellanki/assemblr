@@ -63,7 +63,7 @@ export async function createToolVersion(params: {
     tool_spec: params.spec,
     build_hash: buildHash,
     diff,
-    created_by: params.userId ?? null,
+    // created_by: params.userId ?? null, // REMOVED: Schema mismatch
     compiled_tool: params.compiledTool,
     intent_schema: (params.compiledTool as any)?.intentSchema ?? null,
   };

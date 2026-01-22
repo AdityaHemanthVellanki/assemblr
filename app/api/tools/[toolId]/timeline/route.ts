@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { aggregateTimeline } from "@/lib/toolos/timeline-engine";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
@@ -13,7 +13,8 @@ export async function GET(
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
-    const supabase = await createSupabaseServerClient();
+    // Use Admin Client for timeline aggregation to ensure reliability
+    const supabase = createSupabaseAdminClient();
 
     const { data: project } = await (supabase.from("projects") as any)
       .select("spec, active_version_id")

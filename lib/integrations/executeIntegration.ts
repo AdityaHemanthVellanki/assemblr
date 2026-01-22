@@ -3,7 +3,7 @@ import "server-only";
 import { Capability } from "./capabilities";
 import { NormalizedData } from "./types";
 import { getConnector } from "./registry";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { decryptJson } from "@/lib/security/encryption";
 import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 
@@ -41,7 +41,8 @@ export async function executeIntegrationFetch({
       credentials = { access_token: accessToken };
     } else if (connector.authType !== "none") {
       // Manual Credential Loading (API Keys, Database, etc.)
-      const supabase = await createSupabaseServerClient();
+      // Use Admin Client to ensure we can load credentials in background jobs
+      const supabase = createSupabaseAdminClient();
       const { data: connection, error } = await supabase
         .from("integration_connections")
         .select("encrypted_credentials")

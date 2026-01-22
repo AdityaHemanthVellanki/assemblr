@@ -3,6 +3,17 @@ import { decryptJson, encryptJson } from "@/lib/security/encryption";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 
+export class IntegrationAuthError extends Error {
+  constructor(
+    public integrationId: string,
+    public reason: "token_expired_no_refresh" | "refresh_failed" | "missing_credentials",
+    message: string
+  ) {
+    super(message);
+    this.name = "IntegrationAuthError";
+  }
+}
+
 export async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
   let connection: any;
   let supabase: any;
@@ -56,7 +67,7 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
   if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
       if (!refreshToken) {
           console.warn(`Token expired for ${integrationId} and no refresh token available`);
-          throw new Error(`Access token expired for ${integrationId} and no refresh token available. Re-connection required.`);
+          throw new IntegrationAuthError(integrationId, "missing_credentials", `Access token expired for ${integrationId} and no refresh token available. Re-connection required.`);
       }
 
       console.log(`Refreshing token for ${integrationId}...`);
@@ -64,7 +75,7 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
       if (!provider) throw new Error(`Unknown provider ${integrationId}`);
 
       if (!provider.supportsRefreshToken) {
-           throw new Error(`Provider ${integrationId} does not support token refresh but token is expired.`);
+           throw new IntegrationAuthError(integrationId, "token_expired_no_refresh", `Provider ${integrationId} does not support token refresh but token is expired.`);
       }
 
       const env = getServerEnv();
