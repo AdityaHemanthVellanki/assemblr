@@ -81,13 +81,11 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   const [budgetLoading, setBudgetLoading] = React.useState(false);
   const [budgetDraft, setBudgetDraft] = React.useState<{ monthlyLimit: number; perRunLimit: number } | null>(null);
   const [lifecycle, setLifecycle] = React.useState<string>("INIT");
-  const [isActivated, setIsActivated] = React.useState<boolean | null>(null);
-  const [activationLoading, setActivationLoading] = React.useState(false);
+  const [materialized, setMaterialized] = React.useState<boolean | null>(null);
   const [timeline, setTimeline] = React.useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = React.useState(false);
   const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
-  const [pollingInterval, setPollingInterval] = React.useState<NodeJS.Timeout | null>(null);
-
+  
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
     () => systemSpec?.views.find((v) => v.id === activeViewId),
@@ -122,8 +120,8 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
   }, [systemSpec, activeEntityId, activeViewId]);
 
   const fetchView = React.useCallback(async (viewId: string) => {
-    if (isActivated === false) {
-      setError("Tool compiled but not activated.");
+    if (materialized === false) {
+      setError("Tool not materialized.");
       return;
     }
     setIsLoading(true);
@@ -148,19 +146,19 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.data?.status === "blocked") {
-        setIsActivated(false);
-        setError(err.data?.reason ?? "Tool not activated");
+        setMaterialized(false);
+        setError(err.data?.reason ?? "Tool not materialized");
       } else {
         setError(err instanceof Error ? err.message : "Failed to load view");
       }
     } finally {
       setIsLoading(false);
     }
-  }, [toolId, isActivated]);
+  }, [toolId, materialized]);
 
   const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
-    if (isActivated === false) {
-      setError("Tool compiled but not activated.");
+    if (materialized === false) {
+      setError("Tool not materialized.");
       return;
     }
     setIsLoading(true);
@@ -184,15 +182,15 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
       void fetchRuns();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.data?.status === "blocked") {
-        setIsActivated(false);
-        setError(err.data?.reason ?? "Tool not activated");
+        setMaterialized(false);
+        setError(err.data?.reason ?? "Tool not materialized");
       } else {
         setError(err instanceof Error ? err.message : "Failed to run action");
       }
     } finally {
       setIsLoading(false);
     }
-  }, [activeViewId, toolId, isActivated]);
+  }, [activeViewId, toolId, materialized]);
 
   const fetchRuns = React.useCallback(async () => {
     try {
@@ -258,64 +256,35 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     }
   }, [toolId]);
 
-  const fetchStatus = React.useCallback(async () => {
-    // Don't show global loading for background polling
-    // setActivationLoading(true);
+  const fetchResult = React.useCallback(async () => {
     try {
       const payload = await safeFetch<{
-        isActivated: boolean;
-        lifecycle: string;
-        lastError?: string;
-        status?: string;
-      }>(`/api/tools/${toolId}/status`);
+        ok: boolean;
+        data: {
+          status: string;
+          records_json: any;
+          materialized_at: string;
+        }
+      }>(`/api/tools/${toolId}/result`);
 
-      if (payload.status === "unauthenticated") {
-        setAuthStatus("unauthenticated");
-        return;
-      } else {
+      if (payload.ok && payload.data) {
+        setMaterialized(true);
+        setLifecycle("READY");
+        setToolState(payload.data.records_json);
         setAuthStatus("authenticated");
-      }
-
-      setIsActivated(payload?.isActivated === true);
-      setLifecycle(payload?.lifecycle ?? "INIT");
-      if (payload?.lastError) {
-        setError(String(payload.lastError));
+      } else {
+        throw new Error("Invalid result format");
       }
     } catch (err) {
-      if (err instanceof ApiError && err.status === 429) {
-        // Backoff handled by useEffect
+      if (err instanceof ApiError && err.status === 404) {
+        setMaterialized(false);
+        setLifecycle("FAILED");
+        setError("Tool executed but was never materialized. No result found.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load tool result");
       }
-      setError(err instanceof Error ? err.message : "Failed to load tool status");
-    } finally {
-      setActivationLoading(false);
     }
   }, [toolId]);
-
-  const activateTool = React.useCallback(async () => {
-    setActivationLoading(true);
-    setError(null);
-    try {
-      await safeFetch(`/api/tools/${toolId}/run/activate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      
-      setIsActivated(true);
-      setLifecycle("RUNNING");
-      if (activeViewId && actionSpecs.length > 0) {
-        autoFetchedRef.current = activeViewId;
-        const firstAction = actionSpecs[0];
-        const loadInput = buildLoadInput(firstAction.capabilityId, 5);
-        await runAction(firstAction.id, loadInput);
-      }
-      void fetchRuns();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to activate tool");
-    } finally {
-      setActivationLoading(false);
-    }
-  }, [toolId, activeViewId, actionSpecs, runAction]);
 
   const saveBudget = React.useCallback(
     async (patch: { monthlyLimit?: number; perRunLimit?: number }) => {
@@ -396,42 +365,31 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec) || !activeViewId) return;
-    if (isActivated !== true) return;
+    if (materialized !== true) return;
     void fetchView(activeViewId);
-  }, [spec, activeViewId, fetchView, isActivated]);
+  }, [spec, activeViewId, fetchView, materialized]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
     
-    // Stop polling on hard error
+    // Stop fetching on hard error
     if (error) return;
 
     if (authStatus === "unauthenticated") {
-      // Backoff mode: retry every 5s
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-        setPollingInterval(null);
-      }
+      // Retry once after 5s if unauthenticated (e.g. session init)
       const timer = setTimeout(() => {
-        void fetchStatus();
+        void fetchResult();
       }, 5000);
       return () => clearTimeout(timer);
     }
 
-    void fetchStatus();
-    
-    // Regular polling every 2s if authenticated
-    const interval = setInterval(() => {
-      void fetchStatus();
-    }, 2000);
-    setPollingInterval(interval);
-
-    return () => clearInterval(interval);
-  }, [spec, authStatus, fetchStatus, error]);
+    // Fetch result once
+    void fetchResult();
+  }, [spec, authStatus, fetchResult, error]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
-    if (isActivated !== true) return;
+    if (materialized !== true) return;
     let cancelled = false;
     const run = async () => {
       await fetchRuns();
@@ -448,7 +406,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     return () => {
       cancelled = true;
     };
-  }, [spec, isActivated, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchTimeline]);
+  }, [spec, materialized, fetchRuns, fetchAutomation, fetchTriggers, fetchBudget, fetchTimeline]);
 
   React.useEffect(() => {
     if (!runInspectorOpen || !selectedRunId) return;
@@ -551,12 +509,12 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
     if (!activeView || !actionSpecs.length) return;
     if (rows.length > 0) return;
     if (autoFetchedRef.current === activeView.id) return;
-    if (isActivated !== true) return;
+    if (materialized !== true) return;
     autoFetchedRef.current = activeView.id;
     const firstAction = actionSpecs[0];
     const loadInput = buildLoadInput(firstAction.capabilityId, 5);
     void runAction(firstAction.id, loadInput);
-  }, [activeView, actionSpecs, rows, runAction, isActivated]);
+  }, [activeView, actionSpecs, rows, runAction, materialized]);
 
   if (!spec) {
     return (
@@ -582,8 +540,8 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
           <div className="flex items-center gap-2">
             <div className="text-lg font-semibold">{systemSpec.purpose}</div>
             <div className={`rounded-full px-2 py-0.5 text-[10px] font-medium border ${
-              lifecycle === "RUNNING" ? "bg-green-500/10 text-green-600 border-green-200" :
-              lifecycle === "DEGRADED" ? "bg-red-500/10 text-red-600 border-red-200" :
+              lifecycle === "ACTIVE" || lifecycle === "READY" ? "bg-green-500/10 text-green-600 border-green-200" :
+              lifecycle === "FAILED" ? "bg-red-500/10 text-red-600 border-red-200" :
               "bg-muted text-muted-foreground border-border"
             }`}>
               {lifecycle}
@@ -723,7 +681,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         </div>
       </div>
 
-      {isActivated && systemSpec.automations && (
+      {materialized && systemSpec.automations && (
         <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
           <div className="mb-2 text-[11px] font-semibold uppercase">Automation Scheduling</div>
           <div className="flex flex-wrap items-center gap-4">
@@ -849,7 +807,7 @@ export function ToolRenderer({ toolId, spec }: { toolId: string; spec: ToolSpec 
         </div>
       )}
 
-      {isActivated && (
+      {materialized && (
         <>
           <div className="border-t border-border/60 px-6 py-4 text-xs text-muted-foreground">
             <div className="mb-2 text-[11px] font-semibold uppercase">Recent Runs</div>

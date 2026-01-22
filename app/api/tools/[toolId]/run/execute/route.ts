@@ -1,14 +1,13 @@
-import { NextResponse } from "next/server";
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
-import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
-import { loadToolState } from "@/lib/toolos/state-store";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
+import { FatalInvariantViolation } from "@/lib/core/errors";
+import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -31,13 +30,6 @@ export async function POST(
       return errorResponse("Tool not found", 404);
     }
 
-    // ENFORCEMENT: Tool must be activated
-    // REMOVED: We allow execution to proceed to enable self-healing and data viewing
-    // const isActivated = (project.spec as any)?.is_activated;
-    // if (!isActivated) {
-    //   return errorResponse("Tool not activated yet", 409);
-    // }
-
     let spec = project.spec;
     let compiledTool: unknown = null;
     if (project.active_version_id) {
@@ -58,6 +50,11 @@ export async function POST(
     const viewId = typeof body?.viewId === "string" ? body.viewId : null;
     const input = body?.input && typeof body.input === "object" ? body.input : {};
 
+    const latestResult = await getLatestToolResult(toolId, ctx.orgId);
+    if (!latestResult && (project.status === "active" || (spec as any)?.status === "active")) {
+      throw new FatalInvariantViolation("ACTIVE tool without materialized result");
+    }
+
     const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
     const evidence = await loadMemory({
       scope,
@@ -70,6 +67,10 @@ export async function POST(
       if (!isCompiledToolArtifact(compiledTool)) {
         return errorResponse("Compiled tool artifact missing", 500);
       }
+      const action = spec.actions.find((entry) => entry.id === actionId);
+      if (!action) {
+        return errorResponse("Action not found", 404);
+      }
       const result = await executeToolAction({
         orgId: ctx.orgId,
         toolId,
@@ -78,17 +79,41 @@ export async function POST(
         input,
         userId: ctx.userId,
       });
+      
+      let recordsToUse = latestResult?.records_json as any ?? null;
+      let stateToUse = recordsToUse?.state ?? {};
+
+      if (action.type === "READ") {
+        const matResult = await materializeToolOutput({
+           toolId,
+           orgId: ctx.orgId,
+           actionOutputs: [{ action, output: result.output }],
+           spec: spec,
+           previousRecords: recordsToUse
+        });
+        
+        // Fetch the fresh result to ensure we have the latest state (merged)
+        // Or we can rely on materializeToolOutput to return it? 
+        // materializeToolOutput returns status/count/id, not full records.
+        // But we can reconstruct it or fetch it.
+        // For performance, let's fetch it or trust that buildSnapshotRecords logic is consistent.
+        // We'll fetch it to be safe and authoritative.
+        const freshResult = await getLatestToolResult(toolId, ctx.orgId);
+        recordsToUse = freshResult?.records_json;
+        stateToUse = recordsToUse?.state ?? {};
+      }
+
       if (viewId) {
-        const view = renderView(spec, result.state, viewId);
+        const view = renderView(spec, stateToUse, viewId);
         return jsonResponse({
           view,
-          state: result.state,
+          state: stateToUse,
           events: result.events,
           evidence: evidence ?? null,
         });
       }
       return jsonResponse({
-        state: result.state,
+        state: stateToUse,
         output: result.output,
         events: result.events,
         evidence: evidence ?? null,
@@ -96,101 +121,21 @@ export async function POST(
     }
 
     // View Rendering (Read Only)
-    // FIX: Merge persisted data cache into state so views can render
-    // This connects the "runtime success" (persisted data) to the "view renderer" (UI)
-    const state = await loadToolState(toolId, ctx.orgId);
-    
-    // Load cached data for all READ actions
-    if (spec && spec.actions) {
-      const readActions = spec.actions.filter((a) => a.type === "READ");
-      await Promise.all(readActions.map(async (action) => {
-        try {
-           const cached = await loadMemory({
-             scope,
-             namespace: "data_cache",
-             key: action.id
-           });
-           if (cached && (cached as any).data) {
-             // Merge into state if not already present
-             // We prioritize existing state (if updated by reducer) but fall back to cache
-             if (state[action.id] === undefined) {
-               state[action.id] = (cached as any).data;
-             }
-           }
-        } catch (e) {
-          // Ignore cache misses
-        }
-      }));
-     }
-
-     // FIX: Self-healing Schema Inference & Auto-Activation
-      // If we have data but no schema fields, infer them now and save to DB
-      let schemaUpdated = false;
-      let shouldActivate = !(project.spec as any)?.is_activated;
-      let hasData = false;
-
-      if (spec && spec.entities) {
-        for (const entity of spec.entities) {
-           // Find data for this entity (via sourceIntegration usually)
-           // Heuristic: Check if any action for this integration has data in state
-           const integrationId = entity.sourceIntegration;
-           if (!integrationId) continue;
-           
-           const action = spec.actions.find(a => a.integrationId === integrationId && a.type === "READ");
-           if (!action) continue;
-           
-           const data = state[action.id];
-           if (data) {
-              hasData = true;
-              if (entity.fields.length === 0) {
-                 const inferred = inferFieldsFromData(data);
-                 if (inferred.length > 0) {
-                    entity.fields = inferred;
-                    schemaUpdated = true;
-                    console.log(`[SelfHealing] Inferred schema for ${entity.name} from persisted data.`);
-                 }
-              }
-           }
-        }
-      }
-      
-      // Only auto-activate if we actually found data
-      if (shouldActivate && !hasData) {
-         shouldActivate = false;
-      }
-      
-      if (schemaUpdated || shouldActivate) {
-         if (shouldActivate) {
-             (spec as any).is_activated = true;
-             (spec as any).status = "active";
-             console.log(`[SelfHealing] Auto-activating tool ${toolId}`);
-         }
-
-         // Save back to DB to persist the fix
-         // We update project spec and active version if exists
-         try {
-            await (supabase.from("projects") as any).update({ 
-                spec,
-                is_activated: (spec as any).is_activated 
-            }).eq("id", toolId);
-            
-            if (project.active_version_id) {
-               await (supabase.from("tool_versions") as any)
-                 .update({ tool_spec: spec })
-                 .eq("id", project.active_version_id);
-            }
-            console.log(`[SelfHealing] Persisted updates for tool ${toolId}`);
-         } catch (err) {
-            console.error("[SelfHealing] Failed to persist updates:", err);
-         }
-      }
- 
-      if (viewId) {
-      const view = renderView(spec, state, viewId);
-      return jsonResponse({ view, state, evidence: evidence ?? null });
+    if (!latestResult) {
+      return errorResponse("No materialized result", 422, { status: "failed", reason: "No materialized result" });
+    }
+    const snapshotState = (latestResult.records_json as any)?.state ?? {};
+    const snapshotSchema = (latestResult.schema_json as any);
+    if (snapshotSchema) {
+      spec = { ...spec, entities: snapshotSchema };
     }
 
-    return jsonResponse({ state, evidence: evidence ?? null });
+    if (viewId) {
+      const view = renderView(spec, snapshotState, viewId);
+      return jsonResponse({ view, state: snapshotState, evidence: evidence ?? null });
+    }
+
+    return jsonResponse({ state: snapshotState, evidence: evidence ?? null });
   } catch (e) {
     return handleApiError(e);
   }

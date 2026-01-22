@@ -58,11 +58,57 @@ export function ProjectWorkspace({
   const [selectedVersionId, setSelectedVersionId] = React.useState<string | null>(null);
   const [activeVersionId, setActiveVersionId] = React.useState<string | null>(null);
   const [promotingVersionId, setPromotingVersionId] = React.useState<string | null>(null);
+  const [initError, setInitError] = React.useState<string | null>(null);
 
   // Derived state
   const isZeroState = messages.length === 0;
   const lifecycleState = project?.lifecycle_state ?? (currentSpec as any)?.lifecycle_state ?? null;
-  const canRenderTool = Boolean(currentSpec && toolId && lifecycleState === "ACTIVE");
+  // FIX: Allow 'ready' status as well
+  const canRenderTool = Boolean(currentSpec && toolId && ((currentSpec as any)?.status === "active" || (currentSpec as any)?.status === "ready"));
+
+  // Polling for lifecycle status when not ready
+  React.useEffect(() => {
+    if (!toolId) return;
+    
+    // If already ready/active, don't poll
+    if (canRenderTool) return;
+
+    // Timeout check
+    const startTime = Date.now();
+    const TIMEOUT_MS = 30000; // 30s timeout as requested
+
+    const poll = async () => {
+        if (Date.now() - startTime > TIMEOUT_MS) {
+            setInitError("Tool initialization timed out. The environment failed to finalize.");
+            return;
+        }
+
+        try {
+            const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
+            if (res.lifecycle === "READY" || res.is_ready) {
+                // Update spec status to trigger render
+                setCurrentSpec((prev) => {
+                    if (!prev) return null;
+                    return { 
+                        ...prev, 
+                        status: "ready",
+                        lifecycle_state: "READY"
+                    } as any;
+                });
+            } else if (res.lifecycle === "FAILED") {
+                 setInitError("Tool initialization failed.");
+            }
+        } catch (e) {
+            console.error("Status poll failed", e);
+        }
+    };
+
+    const timer = setInterval(poll, 2000);
+    // Poll immediately once
+    void poll();
+    
+    return () => clearInterval(timer);
+  }, [toolId, canRenderTool]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -323,8 +369,8 @@ export function ProjectWorkspace({
                 <ToolRenderer toolId={toolId} spec={currentSpec} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
-                  {lifecycleState && lifecycleState !== "ACTIVE"
-                    ? "Tool is still building. Check build progress for updates."
+                  {lifecycleState && lifecycleState !== "ACTIVE" && lifecycleState !== "READY"
+                    ? "Initializing tool environment..."
                     : "Describe the tool you want to build to see a live preview."}
                 </div>
               )}

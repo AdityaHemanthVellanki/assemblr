@@ -146,22 +146,6 @@ export async function executeToolAction(params: {
         }
       }
       
-      // PERSISTENCE FIX: Cache READ results for UI/Status
-      // This ensures that even if called manually, the latest data is available for status checks
-      if (isRead && output) {
-        try {
-            await saveMemory({
-                scope: toolScope,
-                namespace: "data_cache",
-                key: action.id,
-                value: { data: output, timestamp: Date.now() }
-            });
-            console.log(`[Runtime] Cached result for ${action.id}`);
-        } catch (cacheErr) {
-            console.warn(`[Runtime] Failed to cache result for ${action.id}:`, cacheErr);
-        }
-      }
-      
       return { state: {}, output, events: [] };
     } catch (err) {
       if (run) {

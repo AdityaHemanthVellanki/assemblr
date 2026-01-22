@@ -5,6 +5,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { getLatestToolResult, materializeToolOutput } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -27,15 +28,9 @@ export async function POST(
   if (!project?.spec) {
     return errorResponse("Tool not found", 404);
   }
-  const isActivated = (project.spec as any)?.is_activated;
-  if (!isActivated) {
-    return errorResponse("Tool not activated", 409, {
-      status: "blocked",
-      reason: "Tool not activated",
-      action: "Activate the tool before running triggers",
-    });
-  }
-
+  // Check for previous result, but don't block triggers if not present (triggers might be the first run)
+  const previousResult = await getLatestToolResult(toolId, ctx.orgId);
+  
   let spec = project.spec;
   let compiledTool: unknown = null;
   if (project.active_version_id) {
@@ -64,7 +59,12 @@ export async function POST(
         action: "Recompile the tool to generate a CompiledTool artifact",
       });
     }
-    await executeToolAction({
+    const action = spec.actions.find((a) => a.id === trigger.actionId);
+    if (!action) {
+      return errorResponse("Action not found", 404);
+    }
+
+    const result = await executeToolAction({
       orgId: ctx.orgId,
       toolId,
       compiledTool,
@@ -73,6 +73,16 @@ export async function POST(
       userId: ctx.userId,
       triggerId: trigger.id,
     });
+
+    // Materialize Output
+    await materializeToolOutput({
+      toolId,
+      orgId: ctx.orgId,
+      spec,
+      actionOutputs: [{ action, output: result.output }],
+      previousRecords: previousResult?.records_json ?? null,
+    });
+
     return jsonResponse({ status: "started" });
   }
 

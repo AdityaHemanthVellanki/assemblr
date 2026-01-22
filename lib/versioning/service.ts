@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { ToolVersion, VersionStatus, VersionValidationResult } from "@/lib/core/versioning";
 import { calculateDiff } from "./diff";

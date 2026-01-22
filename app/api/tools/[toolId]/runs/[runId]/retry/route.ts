@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -7,6 +5,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { getLatestToolResult } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -21,7 +20,7 @@ export async function POST(
     const supabase = createSupabaseAdminClient();
 
     const { data: project } = await (supabase.from("projects") as any)
-      .select("spec, active_version_id, is_activated")
+      .select("spec, active_version_id")
       .eq("id", toolId)
       .eq("org_id", ctx.orgId)
       .single();
@@ -29,12 +28,12 @@ export async function POST(
     if (!project?.spec) {
       return errorResponse("Tool not found", 404);
     }
-    if (!project.is_activated) {
-      return errorResponse(
-        "Tool not activated",
-        409,
-        { action: "Activate the tool before retrying runs" }
-      );
+    const result = await getLatestToolResult(toolId, ctx.orgId);
+    if (!result || result.status !== "MATERIALIZED") {
+      return errorResponse("Tool not materialized", 409, {
+        status: "failed",
+        reason: "No materialized result"
+      });
     }
 
     let spec = project.spec;

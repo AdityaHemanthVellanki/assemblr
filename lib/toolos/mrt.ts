@@ -41,7 +41,7 @@ export function validateMRT(
 
   // 2. Lifecycle Checks
   if (!isActivated) {
-    errors.push("Tool is not activated.");
+    errors.push("No materialized result.");
   }
 
   if (lifecycleState === "DEGRADED" || lifecycleState === "FAILED") {

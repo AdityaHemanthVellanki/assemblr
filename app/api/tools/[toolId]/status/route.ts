@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@supabase/ssr";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
+import { FatalInvariantViolation } from "@/lib/core/errors";
+import { getLatestToolResult, ToolResultRow } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export const runtime = "nodejs";
@@ -62,7 +63,7 @@ export async function GET(
     // Use Service Role to avoid RLS issues on status checks
     const adminSupabase = createSupabaseAdminClient();
     const { data: project, error: projectError } = await (adminSupabase.from("projects") as any)
-      .select("org_id")
+      .select("org_id, status")
       .eq("id", toolId)
       .single();
 
@@ -83,102 +84,38 @@ export async function GET(
           return errorResponse("Unauthorized", 401);
      }
 
-     // We already fetched project above with admin client
-     // We need spec and active_version_id though
-     const { data: fullProject } = await (adminSupabase.from("projects") as any)
-       .select("spec, active_version_id")
-       .eq("id", toolId)
-       .single();
- 
-     if (!fullProject) return errorResponse("Tool not found", 404);
- 
-     const status = (fullProject.spec as any)?.status || "draft";
-     const isActivated = !!fullProject.active_version_id;
- 
-     const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
-    const lifecycleState = await loadMemory({
-      scope,
-      namespace: "tool_builder",
-      key: "lifecycle_state",
-    });
+     // FIX: Check tool_results table for authoritative status
+     const latestResult = await getLatestToolResult(toolId, project.org_id);
+     
+     // If execution completed (implied by existence of project/spec) but no result -> FAILED
+     // But we need to distinguish "freshly created" vs "run and failed".
+     // For now, if no result, it's NOT materialized.
+     
+     const materialized = latestResult?.status === "MATERIALIZED";
+     const recordCount = latestResult?.record_count ?? 0;
+     const schemaPresent = !!latestResult?.schema_json;
+     const isReady = project.status === "ready" || project.status === "active" || materialized;
+     
+     let lifecycleState = "CREATED";
+     if (isReady) {
+         lifecycleState = "READY";
+     } else if (latestResult && !materialized) {
+         lifecycleState = "FAILED";
+     } else if (project.status === "active" || project.status === "ready") {
+         // Fallback if result missing but status says ready (shouldn't happen with strict invariant)
+         lifecycleState = "READY";
+     }
 
-    const lastError = await loadMemory({
-      scope,
-      namespace: "tool_builder",
-      key: "last_error",
-    });
+     return Response.json({
+       status: "authenticated",
+       toolId,
+       lifecycle: lifecycleState,
+       materialized,
+       record_count: recordCount,
+       schema_present: schemaPresent,
+       is_ready: isReady
+     }, { status: 200 });
 
-    // Determine effective lifecycle
-    let lifecycle = lifecycleState || "INIT";
-    
-    if (project.status === "error") {
-      lifecycle = "ERROR";
-    } else if (fullProject.spec?.is_activated) {
-      lifecycle = "RUNNING";
-    } else if (lifecycle === "ACTIVE") {
-      // If ready but not activated, it's waiting for activation
-      lifecycle = "READY_TO_ACTIVATE";
-    }
-
-    // FIX: Calculate real data stats
-    const spec = fullProject.spec as any;
-    let recordsFetched = 0;
-    let schemaFieldsCount = 0;
-    let lastFetchAt: number | null = null;
-    let schemaPreview: any[] = [];
-
-    if (spec?.entities) {
-        schemaFieldsCount = spec.entities.reduce((acc: number, e: any) => acc + (e.fields?.length || 0), 0);
-        schemaPreview = spec.entities.map((e: any) => ({
-            name: e.name,
-            fields: e.fields?.length || 0
-        }));
-    }
-
-    if (spec?.actions) {
-         const readActions = spec.actions.filter((a: any) => 
-            a.type === "READ" || 
-            (a.id && (a.id.includes("list") || a.id.includes("search")))
-         );
-         
-         // Parallel fetch for speed
-         await Promise.all(readActions.map(async (action: any) => {
-             try {
-                 const cached = await loadMemory({
-                     scope,
-                     namespace: "data_cache",
-                     key: action.id
-                 });
-                 if (cached && (cached as any).data) {
-                     const data = (cached as any).data;
-                     const count = Array.isArray(data) ? data.length : (data ? 1 : 0);
-                     recordsFetched += count;
-                     
-                     const ts = (cached as any).timestamp;
-                     if (ts && (!lastFetchAt || ts > lastFetchAt)) {
-                         lastFetchAt = ts;
-                     }
-                 }
-             } catch (e) {
-                 // Ignore cache read errors
-             }
-         }));
-    }
-
-    // If we have data but lifecycle says INIT, bump it? 
-    // No, trust the state machine, but return the stats.
-
-    return jsonResponse({
-      lifecycle,
-      lastError,
-      isActivated: fullProject.spec?.is_activated === true,
-      stats: {
-          records_fetched: recordsFetched,
-          schema_fields: schemaFieldsCount,
-          last_fetch_at: lastFetchAt ? new Date(lastFetchAt).toISOString() : null,
-          schema_preview: schemaPreview
-      }
-    });
   } catch (e) {
     return handleApiError(e);
   }

@@ -19,6 +19,7 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
+import { materializeToolOutput } from "@/lib/toolos/materialization";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -266,7 +267,7 @@ export async function processToolChat(
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
   const latestEvidence: Record<string, DataEvidence> = {};
-  let activeVersionId: string | null = null;
+  const activeVersionId: string | null = null;
   let runTokens = 0;
   const consumeTokens = async (usage?: { total_tokens?: number }) => {
     if (!usage?.total_tokens) return;
@@ -404,10 +405,7 @@ export async function processToolChat(
     }
     readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
     markStep(steps, "readiness", "success", "Data readiness checks complete");
-
-    markStep(steps, "runtime", "pending", "Activating tool");
-    markStep(steps, "views", "success", `Views: ${spec.views.length}`);
-    await transition("ACTIVE", "Tool compiled");
+    markStep(steps, "runtime", "running", "Finalizing tool");
 
     try {
       await saveMemory({
@@ -420,7 +418,6 @@ export async function processToolChat(
       console.error("[LifecyclePersistenceFailed]", err);
     }
 
-    let versionId: string | null = null;
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
     const specValidation = ToolSystemSpecSchema.safeParse(spec);
     const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
@@ -460,7 +457,7 @@ export async function processToolChat(
         const { error: projectError } = await (supabase.from("projects") as any)
           .update({
             active_version_id: version.id,
-            spec: { ...spec, status: "ready" },
+            spec,
             name: spec.name,
             // status: "ready", // REMOVED: Schema mismatch
             updated_at: new Date().toISOString()
@@ -484,42 +481,37 @@ export async function processToolChat(
       // and avoid double-fetching data.
       if (spec) {
         try {
-          if (readiness.authErrors && readiness.authErrors.length > 0) {
-             console.warn(`[ToolDataReadiness] Auth required: ${readiness.authErrors.join(", ")}`);
-             // Update status to needs_auth
-             await supabase.from("projects").update({ 
-                spec: { 
-                    ...spec, 
-                    status: "needs_auth", 
-                    blocked_integrations: readiness.authErrors 
-                } 
-             }).eq("id", toolId);
-             console.log(`[ToolDataReadiness] Tool ${toolId} set to NEEDS_AUTH.`);
-          } else {
-             // Success
-             // FIX: Auto-activate tool so it's runnable immediately
-             const activatedSpec = { 
-               ...spec, 
-               status: "active", 
-               is_activated: true,
-               blocked_integrations: [] 
-             };
-             
-             await supabase.from("projects").update({ 
-                spec: activatedSpec,
-                is_activated: true // Update column if it exists, redundant but safe
-             }).eq("id", toolId);
-             
-             console.log(`[ToolDataReadiness] Success. Tool ${toolId} is ACTIVE.`);
+          const outputs = readiness.outputs ?? [];
+          if (outputs.length === 0) {
+            throw new Error("No committed snapshot");
           }
+          const snapshotSpec: ToolSystemSpec = {
+            ...applySchemaToViews(spec),
+            status: "active",
+            blocked_integrations: [],
+          };
+          
+          // Materialize Tool Output (Atomic Commit)
+          await materializeToolOutput({
+             toolId,
+             orgId: buildContext.orgId,
+             actionOutputs: outputs,
+             spec: snapshotSpec,
+             previousRecords: null
+          });
 
+          spec = snapshotSpec;
+          markStep(steps, "runtime", "success", "Tool Materialized");
+          markStep(steps, "views", "success", `Views: ${spec.views.length}`);
+          await transition("ACTIVE", "Tool Materialized");
+          console.log(`[ToolDataReadiness] Materialized tool ${toolId}.`);
         } catch (err: any) {
-          console.error(`[ToolDataReadiness] Data fetch failed:`, err);
-          // Mark tool as error
-          await supabase.from("projects").update({ 
+          console.error(`[ToolDataReadiness] Snapshot commit failed:`, err);
+          await supabase.from("projects").update({
+            status: "error",
             spec: { ...spec, status: "error" }
           }).eq("id", toolId);
-          throw new Error(`Data verification failed: ${err.message}`);
+          throw new Error(`Snapshot commit failed: ${err.message}`);
         }
       }
     }
@@ -734,7 +726,7 @@ function createBuildSteps(): BuildStep[] {
     { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
     { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
     { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
-    { id: "runtime", title: "Awaiting activation", status: "pending", logs: [] },
+    { id: "runtime", title: "Finalizing tool", status: "pending", logs: [] },
     { id: "views", title: "Rendering views", status: "pending", logs: [] },
   ];
 }
@@ -757,6 +749,7 @@ async function runDataReadiness(
 ) {
   const logs: string[] = [];
   const authErrors: string[] = [];
+  const outputs: Array<{ action: ToolSystemSpec["actions"][number]; output: any }> = [];
   const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
     return cap?.allowedOperations.includes("read");
@@ -790,38 +783,30 @@ async function runDataReadiness(
             dryRun: false
         });
         
-        // Store result in memory
-        await saveMemory({
-            scope: { type: "tool_org", toolId: context.toolId, orgId: context.orgId },
-            namespace: "data_cache",
-            key: action.id,
-            value: { data: result.output, timestamp: Date.now() }
-        });
-
-        // FIX: Infer Schema from Data
-        const inferredFields = inferFieldsFromData(result.output);
-        if (inferredFields.length > 0) {
-           // Find primary entity for this integration
-           const entity = spec.entities.find(e => e.sourceIntegration === action.integrationId) 
-             || spec.entities[0]; // Fallback to first entity if strict match fails
-           
-           if (entity) {
+        const recordCount = Array.isArray(result.output) ? result.output.length : (result.output ? 1 : 0);
+        if (recordCount > 0) {
+          outputs.push({ action, output: result.output });
+          const inferredFields = inferFieldsFromData(result.output);
+          if (inferredFields.length > 0) {
+            const entity = spec.entities.find(e => e.sourceIntegration === action.integrationId) || spec.entities[0];
+            if (entity) {
               const existing = new Set(entity.fields.map(f => f.name));
               let added = 0;
               for (const field of inferredFields) {
-                 if (!existing.has(field.name)) {
-                    entity.fields.push(field);
-                    added++;
-                 }
+                if (!existing.has(field.name)) {
+                  entity.fields.push(field);
+                  added++;
+                }
               }
               if (added > 0) {
-                 logs.push(`Inferred ${added} new fields for entity '${entity.name}' from live data.`);
+                logs.push(`Inferred ${added} new fields for entity '${entity.name}' from live data.`);
               }
-           }
+            }
+          }
+          logs.push(`Successfully fetched ${recordCount} records for ${action.name}`);
+        } else {
+          logs.push(`No records returned for ${action.name}.`);
         }
-        
-        const recordCount = Array.isArray(result.output) ? result.output.length : (result.output ? 1 : 0);
-        logs.push(`Successfully fetched ${recordCount} records for ${action.name}`);
       } catch (err: any) {
         if (err instanceof IntegrationAuthError || err.name === "IntegrationAuthError") {
             console.warn(`[Readiness] Auth warning for ${action.integrationId}:`, err.message);
@@ -847,7 +832,7 @@ async function runDataReadiness(
     }
   }
 
-  return { logs, authErrors };
+  return { logs, authErrors, outputs };
 }
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
@@ -857,6 +842,20 @@ function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
   if (cap.supportedFields.includes("first")) input.first = 5;
   if (cap.supportedFields.includes("limit")) input.limit = 5;
   return input;
+}
+
+function applySchemaToViews(spec: ToolSystemSpec) {
+  const entitiesByName = new Map(spec.entities.map((entity) => [entity.name, entity]));
+  const views = spec.views.map((view) => {
+    if (view.fields.length > 0) return view;
+    const entity = entitiesByName.get(view.source.entity);
+    if (!entity || entity.fields.length === 0) return view;
+    return {
+      ...view,
+      fields: entity.fields.map((field) => field.name).slice(0, 6),
+    };
+  });
+  return { ...spec, views };
 }
 
 function buildQueryPlans(spec: ToolSystemSpec) {

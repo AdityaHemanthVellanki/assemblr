@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
+import { getLatestCommittedSnapshot } from "@/lib/toolos/snapshots";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 const bodySchema = z.object({
@@ -38,18 +38,18 @@ export async function PATCH(
     const { ctx } = await requireOrgMember();
     const supabase = await createSupabaseServerClient();
     const { data: project } = await (supabase.from("projects") as any)
-      .select("is_activated")
+      .select("org_id")
       .eq("id", toolId)
       .eq("org_id", ctx.orgId)
       .single();
     if (!project) {
       return errorResponse("Tool not found", 404);
     }
-    if (!project.is_activated) {
-      return errorResponse("Tool not activated", 409, {
-        status: "blocked",
-        reason: "Tool not activated",
-        action: "Activate the tool before adjusting automation",
+    const snapshot = await getLatestCommittedSnapshot({ toolId, orgId: ctx.orgId });
+    if (!snapshot) {
+      return errorResponse("No committed snapshot", 409, {
+        status: "failed",
+        reason: "No committed snapshot",
       });
     }
     const json = await req.json().catch(() => ({}));

@@ -7,6 +7,7 @@ import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runtime";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation } from "@/lib/toolos/materialization";
 
 export async function executeToolAction(
   toolId: string,
@@ -73,6 +74,26 @@ export async function executeToolAction(
       actionId,
       input: args,
     });
+
+    // Materialize the output
+    const action = (spec as any).actions.find((a: any) => a.id === actionId);
+    if (action) {
+      const previousResult = await getLatestToolResult(toolId, orgId);
+      const matResult = await materializeToolOutput({
+        toolId,
+        orgId,
+        spec: spec as any,
+        actionOutputs: [{ action, output: result.output }],
+        previousRecords: previousResult?.records_json ?? null,
+      });
+
+      // ADD A HARD INVARIANT (REQUIRED)
+      if (matResult.status !== "MATERIALIZED") {
+         throw new FatalInvariantViolation(
+           "Tool execution completed but environment was never finalized"
+         );
+      }
+    }
 
     tracer.finish("success");
 

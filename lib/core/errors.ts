@@ -35,3 +35,10 @@ export class CapabilityParamError extends ExecutionError {
     super("CapabilityParamError", `Invalid parameters for ${capabilityId}: ${message}`, { capabilityId });
   }
 }
+
+export class FatalInvariantViolation extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FatalInvariantViolation";
+  }
+}
