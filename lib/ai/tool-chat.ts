@@ -19,9 +19,8 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
-import { materializeToolOutput, finalizeToolEnvironment, type SnapshotRecords } from "@/lib/toolos/materialization";
+import { materializeToolOutput, finalizeToolEnvironment } from "@/lib/toolos/materialization";
 import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
-import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -121,6 +120,7 @@ export async function processToolChat(
   
   // 0. Resolve Context Securely
   const supabase = createSupabaseAdminClient();
+  const statusSupabase = await createSupabaseServerClient();
   // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
   // Instead, we verify ownership via resolveBuildContext later.
   
@@ -275,14 +275,6 @@ export async function processToolChat(
       runTokens,
     });
   };
-
-    let finalStatus: "READY" | "FAILED" | null = null;
-    let finalError: string | null = null;
-    let finalEnvironment: any = null;
-    let finalViewSpec: Record<string, any> | null = null;
-    let finalDataSnapshot: SnapshotRecords | null = null;
-    let finalDataFetchedAt: string | null = null;
-    let didFinalizeExecution = false;
 
   try {
     await persistLifecycle();
@@ -517,6 +509,74 @@ export async function processToolChat(
               }
           }
       }
+
+      const integrationResults: Record<string, Record<string, any>> = {};
+      for (const entry of outputs) {
+        if (entry.error || entry.output === null || entry.output === undefined) continue;
+        const integrationId = entry.action?.integrationId;
+        if (!integrationId) continue;
+        integrationResults[integrationId] = integrationResults[integrationId] ?? {};
+        integrationResults[integrationId][entry.action.id] = entry.output;
+      }
+
+      if (Object.keys(integrationResults).length === 0) {
+        throw new Error("Integration data empty — abort finalize");
+      }
+
+      const finalizedAt = new Date().toISOString();
+      const snapshot = {
+        integrations: integrationResults,
+        generated_at: finalizedAt,
+      };
+      const viewSpec = buildDefaultViewSpec({
+        state: {},
+        actions: {},
+        integrations: integrationResults,
+      });
+
+      console.log("[FINALIZE] Writing flags to toolId:", toolId);
+      const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+        p_tool_id: toolId,
+        p_org_id: buildContext.orgId,
+        p_integration_data: integrationResults,
+        p_snapshot: snapshot,
+        p_view_spec: viewSpec,
+        p_finalized_at: finalizedAt,
+      });
+
+      if (finalizeError) {
+        throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
+      }
+
+      const { data: renderState, error: renderStateError } = await (statusSupabase as any)
+        .from("tool_render_state")
+        .select("tool_id")
+        .eq("tool_id", toolId)
+        .eq("org_id", buildContext.orgId)
+        .single();
+
+      if (renderStateError || !renderState) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
+      }
+
+      const { data: updatedTool, error: verifyError } = await (statusSupabase as any)
+        .from("projects")
+        .select("id, data_ready, view_ready")
+        .eq("id", toolId)
+        .single();
+
+      if (verifyError) {
+        throw new Error(`Finalize DB update failed: ${verifyError.message}`);
+      }
+      if (!updatedTool || updatedTool.data_ready !== true || updatedTool.view_ready !== true) {
+        throw new Error("Finalize flags did NOT persist");
+      }
+
+      console.log("[FINALIZE] Integrations completed AND state persisted", {
+        toolId,
+        render_state: renderState.tool_id,
+        flags: updatedTool,
+      });
       
       // 7. Finalize Environment (REQUIRED)
       // Even if no actions or all failed, we must finalize to ACTIVE or FAILED.
@@ -535,46 +595,17 @@ export async function processToolChat(
           );
         } catch (err: any) {
             console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
-            // If materialization fails, we must fail the build via the barrier
-            finalStatus = "FAILED";
-            finalError = err.message;
             throw new Error(`Fatal Finalization Error: ${err.message}`);
         }
 
-        // Now finalize the build with the result
-        // SINGLE TERMINAL WRITE BARRIER
         const success = matResult.status === "MATERIALIZED";
         if (success) {
-            try {
-                finalStatus = "READY";
-                finalEnvironment = matResult.environment;
-                finalDataSnapshot = matResult.environment?.records ?? {};
-                finalDataFetchedAt = new Date().toISOString();
-                finalViewSpec = buildDefaultViewSpec(finalDataSnapshot);
-
-                await finalizeToolExecution({
-                  toolId,
-                  status: "READY",
-                  data_snapshot: finalDataSnapshot,
-                  view_spec: finalViewSpec,
-                  environment: finalEnvironment,
-                  data_fetched_at: finalDataFetchedAt,
-                });
-                didFinalizeExecution = true;
-
-                markStep(steps, "runtime", "success", "Environment READY");
-                console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
-            } catch (err: any) {
-                console.error(`[ToolRuntime] Barrier Failed:`, err);
-                markStep(steps, "runtime", "error", "Barrier Failed");
-                throw err;
-            }
+          markStep(steps, "runtime", "success", "Environment READY");
+          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
         } else {
-             finalStatus = "FAILED";
-             finalError = "Materialization returned FAILED status";
-             
-             markStep(steps, "runtime", "error", "Environment Finalization Failed");
-             console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
+          markStep(steps, "runtime", "error", "Environment Finalization Failed");
+          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
+          throw new Error("Materialization returned FAILED status");
         }
       }
     }
@@ -594,9 +625,6 @@ export async function processToolChat(
     };
   } catch (err) {
     // Atomic Failure Handling: Mark tool as error
-    finalStatus = "FAILED";
-    finalError = err instanceof Error ? err.message : "Build failed";
-
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
     
@@ -631,24 +659,6 @@ export async function processToolChat(
       };
     }
     throw err;
-  } finally {
-    if (finalStatus && !didFinalizeExecution) {
-      try {
-          await finalizeToolExecution({
-            toolId,
-            status: finalStatus,
-            errorMessage: finalError,
-            environment: finalEnvironment,
-            view_spec: finalViewSpec,
-            view_ready: Boolean(finalViewSpec),
-            data_snapshot: finalDataSnapshot,
-            data_ready: finalDataSnapshot !== null,
-            data_fetched_at: finalDataFetchedAt,
-          });
-      } catch (e) {
-           console.error("[ToolLifecycle] Finalization failed in finally block:", e);
-      }
-    }
   }
 
   const refinements = await withTimeout(

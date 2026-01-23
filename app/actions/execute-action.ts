@@ -7,9 +7,7 @@ import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runtime";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation, type SnapshotRecords } from "@/lib/toolos/materialization";
-import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
-import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation } from "@/lib/toolos/materialization";
 
 export async function executeToolAction(
   toolId: string,
@@ -21,14 +19,7 @@ export async function executeToolAction(
   const supabase = await createSupabaseServerClient();
   const tracer = new ExecutionTracer("run");
 
-  let finalStatus: "READY" | "FAILED" = "FAILED";
-    let finalError: string | null = null;
-    let finalEnvironment: any = null;
-    let finalViewSpec: Record<string, any> | null = null;
-    let finalDataSnapshot: SnapshotRecords | null = null;
-    let finalDataFetchedAt: string | null = null;
-
-    try {
+  try {
     let spec: unknown;
     let compiledTool: unknown = null;
     let orgId: string | undefined;
@@ -100,37 +91,22 @@ export async function executeToolAction(
 
       // ADD A HARD INVARIANT (REQUIRED)
       if (matResult.status !== "MATERIALIZED") {
-         finalStatus = "FAILED";
-         finalError = "Tool execution completed but environment was never finalized";
-         throw new FatalInvariantViolation(
-           "Tool execution completed but environment was never finalized"
-         );
+        throw new FatalInvariantViolation(
+          "Tool execution completed but environment was never finalized"
+        );
       }
-      
-      finalStatus = "READY";
-      finalEnvironment = matResult.environment;
-      finalViewSpec = buildDefaultViewSpec(matResult.environment?.records ?? null);
-      finalDataSnapshot = (matResult.environment?.records ?? {
-        state: {},
-        actions: {},
-        integrations: {},
-      }) as SnapshotRecords;
-      finalDataFetchedAt = new Date().toISOString();
     } else {
        // If no action found, is it success? Assuming yes for now, but usually action is required.
        // If we got here, execution finished.
-       finalStatus = "READY";
-       finalViewSpec = buildDefaultViewSpec(null);
-       finalDataSnapshot = {
-         state: {},
-         actions: {},
-         integrations: {},
-       };
-       finalDataFetchedAt = new Date().toISOString();
+      return {
+        viewId: "action_exec",
+        status: "success",
+        rows: Array.isArray(result.output) ? result.output : [result.output],
+        timestamp: new Date().toISOString(),
+        source: "live_api",
+      };
     }
-
     tracer.finish("success");
-
     return {
       viewId: "action_exec",
       status: "success",
@@ -141,9 +117,6 @@ export async function executeToolAction(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     tracer.finish("failure", msg);
-    
-    finalStatus = "FAILED";
-    finalError = msg;
 
     return {
       viewId: "action_exec",
@@ -153,21 +126,5 @@ export async function executeToolAction(
       timestamp: new Date().toISOString(),
       source: "live_api",
     };
-  } finally {
-    try {
-      await finalizeToolExecution({
-        toolId,
-        status: finalStatus,
-        errorMessage: finalError,
-        environment: finalEnvironment,
-        view_spec: finalViewSpec,
-        view_ready: Boolean(finalViewSpec),
-        data_snapshot: finalDataSnapshot,
-        data_ready: finalDataSnapshot !== null,
-        data_fetched_at: finalDataFetchedAt
-      });
-    } catch (finalizeError) {
-      console.error("[ToolLifecycle] Failed to finalize tool", finalizeError);
-    }
   }
 }

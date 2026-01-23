@@ -1,14 +1,13 @@
 import { requireOrgMember } from "@/lib/auth/permissions.server";
-// import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { buildCompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { renderView, buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { buildDefaultViewSpec, renderView } from "@/lib/toolos/view-renderer";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
-import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -18,7 +17,7 @@ export async function POST(
   try {
     const { toolId } = await params;
     const { ctx } = await requireOrgMember();
-    // Use Admin Client for execution to ensure access to all needed data
+    const statusSupabase = await createSupabaseServerClient();
     const supabase = createSupabaseAdminClient();
 
     const { data: project, error } = await (supabase.from("projects") as any)
@@ -100,10 +99,9 @@ export async function POST(
 
         // Only materialize and finalize on READ (Integration Fetch) actions
         // or if it's the first run (no records yet)
-        const isRead = action.type === "READ" || action.type === "read";
+        const isRead = action.type === "READ";
         
         if (isRead) {
-          console.log("[FINALIZE] All integrations completed for tool", toolId);
           const matResult = await materializeToolOutput({
              toolId,
              orgId: ctx.orgId,
@@ -113,31 +111,74 @@ export async function POST(
           });
           
           if (matResult.status === "MATERIALIZED") {
-               const dataSnapshot = matResult.environment?.records ?? {};
-               const viewSpec = buildDefaultViewSpec(dataSnapshot);
-               
-               // CALL SINGLE FINALIZATION FUNCTION
-               await finalizeToolExecution({
-                 toolId,
-                 status: "READY",
-                 data_snapshot: dataSnapshot,
-                 view_spec: viewSpec,
-                 environment: matResult.environment,
-               });
-               
                recordsToUse = matResult.environment?.records;
           } else {
-               await finalizeToolExecution({
-                 toolId,
-                 status: "FAILED",
-                 errorMessage: "Materialization failed",
-                 view_ready: false,
-                 data_ready: false,
-               });
                throw new Error("Tool execution completed but environment was never finalized");
           }
           
           stateToUse = recordsToUse?.state ?? {};
+
+          const readActionIds = (spec?.actions ?? [])
+            .filter((specAction: any) => specAction?.type === "READ")
+            .map((specAction: any) => specAction?.id)
+            .filter((id: any) => typeof id === "string");
+
+          const actionOutputs = recordsToUse?.actions ?? {};
+          const actionsComplete =
+            readActionIds.length === 0 || readActionIds.every((id: string) => id in actionOutputs);
+
+          if (actionsComplete) {
+            const integrationData: Record<string, Record<string, any>> = {};
+            for (const specAction of (spec?.actions ?? [])) {
+              if (specAction?.type !== "READ") continue;
+              const output = actionOutputs?.[specAction.id];
+              if (output === undefined || output === null) continue;
+              integrationData[specAction.integrationId] = integrationData[specAction.integrationId] ?? {};
+              integrationData[specAction.integrationId][specAction.id] = output;
+            }
+
+            if (Object.keys(integrationData).length === 0) {
+              throw new Error("Integration data empty — abort finalize");
+            }
+
+            const finalizedAt = new Date().toISOString();
+            const snapshot = {
+              integrations: integrationData,
+              generated_at: finalizedAt,
+            };
+            const viewSpec = buildDefaultViewSpec({
+              state: {},
+              actions: {},
+              integrations: integrationData,
+            });
+
+            console.log("[FINALIZE] Writing flags to toolId:", toolId);
+            const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+              p_tool_id: toolId,
+              p_org_id: ctx.orgId,
+              p_integration_data: integrationData,
+              p_snapshot: snapshot,
+              p_view_spec: viewSpec,
+              p_finalized_at: finalizedAt,
+            });
+
+            if (finalizeError) {
+              throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
+            }
+
+            const { data: renderState, error: renderStateError } = await (statusSupabase as any)
+              .from("tool_render_state")
+              .select("tool_id")
+              .eq("tool_id", toolId)
+              .eq("org_id", ctx.orgId)
+              .single();
+
+            if (renderStateError || !renderState) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
+            }
+
+            console.log("[FINALIZE] Integrations completed AND state persisted", renderState);
+          }
         }
 
         if (viewId) {

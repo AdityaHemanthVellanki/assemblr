@@ -14,6 +14,15 @@ export type FinalizeToolExecutionInput = {
   data_fetched_at?: string | null;
 };
 
+function normalizeSnapshotRecords(snapshot?: SnapshotRecords | null): SnapshotRecords {
+  const base = snapshot ?? { state: {}, actions: {}, integrations: {} };
+  const state = base && typeof base.state === "object" && base.state ? base.state : {};
+  const actions = base && typeof base.actions === "object" && base.actions ? base.actions : {};
+  const integrations =
+    base && typeof base.integrations === "object" && base.integrations ? base.integrations : {};
+  return { state, actions, integrations };
+}
+
 /**
  * SINGLE TERMINAL WRITE BARRIER
  * 
@@ -47,29 +56,41 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
     lifecycle_done: true,
   };
 
-  const resolvedViewSpec =
-    status === "READY" && !view_spec && data_snapshot
-      ? buildDefaultViewSpec(data_snapshot)
-      : view_spec;
-
-  if (resolvedViewSpec) {
-    updatePayload.view_spec = resolvedViewSpec;
-    updatePayload.view_ready = true;
-  } else if (typeof view_ready === "boolean") {
-    updatePayload.view_ready = view_ready;
-  }
-
-  if (data_snapshot) {
-    console.log("[FINALIZE] Writing data snapshot", { toolId, snapshotSize: JSON.stringify(data_snapshot).length });
-    updatePayload.data_snapshot = data_snapshot;
+  if (status === "READY") {
+    const normalizedSnapshot = normalizeSnapshotRecords(data_snapshot);
+    const resolvedViewSpec = view_spec ?? buildDefaultViewSpec(normalizedSnapshot);
+    console.log("[FINALIZE] Writing data snapshot", {
+      toolId,
+      snapshotSize: JSON.stringify(normalizedSnapshot).length,
+    });
+    updatePayload.data_snapshot = normalizedSnapshot;
     updatePayload.data_ready = true;
     updatePayload.data_fetched_at = data_fetched_at ?? new Date().toISOString();
-  } else if (typeof data_ready === "boolean") {
-    updatePayload.data_ready = data_ready;
-    if (data_ready && !data_fetched_at) {
-      updatePayload.data_fetched_at = new Date().toISOString();
-    } else if (data_fetched_at) {
-      updatePayload.data_fetched_at = data_fetched_at;
+    updatePayload.view_spec = resolvedViewSpec;
+    updatePayload.view_ready = true;
+  } else {
+    if (view_spec) {
+      updatePayload.view_spec = view_spec;
+      updatePayload.view_ready = true;
+    } else if (typeof view_ready === "boolean") {
+      updatePayload.view_ready = view_ready;
+    }
+
+    if (data_snapshot) {
+      console.log("[FINALIZE] Writing data snapshot", {
+        toolId,
+        snapshotSize: JSON.stringify(data_snapshot).length,
+      });
+      updatePayload.data_snapshot = data_snapshot;
+      updatePayload.data_ready = true;
+      updatePayload.data_fetched_at = data_fetched_at ?? new Date().toISOString();
+    } else if (typeof data_ready === "boolean") {
+      updatePayload.data_ready = data_ready;
+      if (data_ready && !data_fetched_at) {
+        updatePayload.data_fetched_at = new Date().toISOString();
+      } else if (data_fetched_at) {
+        updatePayload.data_fetched_at = data_fetched_at;
+      }
     }
   }
 

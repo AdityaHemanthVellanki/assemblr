@@ -10,7 +10,8 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import type { DefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { buildDefaultViewSpec, type DefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { type SnapshotRecords } from "@/lib/toolos/materialization";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
@@ -90,6 +91,7 @@ export function ProjectWorkspace({
     didPollRef.current = false;
   }, [toolId]);
 
+
   React.useEffect(() => {
     if (!toolId) return;
     if (didPollRef.current) return;
@@ -112,21 +114,14 @@ export function ProjectWorkspace({
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
             
-            // Hard stop condition per user mandate
             if (res.data_ready === true && res.view_ready === true) {
                  console.log("[UI] Data ready, stopping polling");
                  setDataReady(true);
                  setViewReady(true);
                  if (res.data_snapshot) setDataSnapshot(res.data_snapshot);
                  if (res.view_spec) setViewSpec(res.view_spec);
-                 
-                 // Fallback render logic
-                 if (!res.view_spec && res.data_snapshot) {
-                     setViewSpec({
-                         type: "debug",
-                         title: "Raw Tool Output",
-                         payload: res.data_snapshot
-                     } as any);
+                 if (!res.view_spec) {
+                     setViewSpec(buildDefaultViewSpec(resolveSnapshotRecords(res.data_snapshot ?? null)));
                  }
                  return;
             }
@@ -148,7 +143,6 @@ export function ProjectWorkspace({
                  setViewSpec(res.view_spec);
             }
             
-            // Redundant check but keeping for safety if logic falls through
             if (res.data_ready === true && res.view_ready === true) {
                  if (res.status === "FAILED") {
                      setInitError(res.error || "Tool initialization failed.");
@@ -168,6 +162,12 @@ export function ProjectWorkspace({
     didPollRef.current = true;
     void poll();
   }, [toolId, canRenderTool, projectStatus, viewReady, dataReady]);
+
+  React.useEffect(() => {
+    if (viewReady && dataReady && !viewSpec) {
+      setViewSpec(buildDefaultViewSpec(resolveSnapshotRecords(dataSnapshot ?? null)));
+    }
+  }, [viewReady, dataReady, viewSpec, dataSnapshot]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -674,6 +674,24 @@ function ViewSpecRenderer({
       </div>
     </div>
   );
+}
+
+function resolveSnapshotRecords(snapshot: Record<string, any> | null | undefined): SnapshotRecords {
+  if (
+    snapshot &&
+    typeof snapshot === "object" &&
+    "state" in snapshot &&
+    "actions" in snapshot &&
+    "integrations" in snapshot
+  ) {
+    const cast = snapshot as SnapshotRecords;
+    return {
+      state: typeof cast.state === "object" && cast.state ? cast.state : {},
+      actions: typeof cast.actions === "object" && cast.actions ? cast.actions : {},
+      integrations: typeof cast.integrations === "object" && cast.integrations ? cast.integrations : {},
+    };
+  }
+  return { state: {}, actions: {}, integrations: {} };
 }
 
 function defaultBuildSteps(): BuildStep[] {

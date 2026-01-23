@@ -32,7 +32,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, spec, active_version_id, org_id, status, error_message, lifecycle_state, build_logs, view_spec, view_ready, data_snapshot, data_ready"
+      "id, spec, active_version_id, org_id, status, error_message, lifecycle_state, build_logs"
     )
     .eq("id", toolId)
     .single();
@@ -43,7 +43,14 @@ export default async function ProjectPage({
     .eq("tool_id", toolId)
     .order("created_at", { ascending: true });
 
-  const projectRes = await projectResPromise;
+  const [projectRes, renderStateRes] = await Promise.all([
+    projectResPromise,
+    (supabase.from("tool_render_state") as any)
+      .select("snapshot, view_spec")
+      .eq("tool_id", toolId)
+      .eq("org_id", ctx.orgId)
+      .single(),
+  ]);
 
   if (!projectRes.data) notFound();
 
@@ -111,10 +118,10 @@ export default async function ProjectPage({
         build_logs: normalizedBuildLogs,
         status: projectRes.data.status,
         error_message: projectRes.data.error_message,
-        view_spec: projectRes.data.view_spec,
-        view_ready: projectRes.data.view_ready,
-        data_snapshot: projectRes.data.data_snapshot,
-        data_ready: projectRes.data.data_ready,
+        view_spec: renderStateRes?.data?.view_spec ?? null,
+        view_ready: Boolean(renderStateRes?.data?.view_spec),
+        data_snapshot: (renderStateRes?.data?.snapshot as any)?.integrations ?? renderStateRes?.data?.snapshot ?? null,
+        data_ready: Boolean(renderStateRes?.data?.snapshot),
       }}
       initialMessages={messages}
       role={role}
