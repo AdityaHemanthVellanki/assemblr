@@ -32,7 +32,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, spec, active_version_id, org_id, status, error_message, lifecycle_state, build_logs"
+      "id, spec, active_version_id, org_id, status, error_message"
     )
     .eq("id", toolId)
     .single();
@@ -52,6 +52,20 @@ export default async function ProjectPage({
       .single(),
   ]);
 
+  if (projectRes.error) {
+    console.error("Project load failed", {
+      toolId,
+      orgId: ctx.orgId,
+      message: projectRes.error.message,
+    });
+  }
+  if (renderStateRes?.error) {
+    console.error("Render state load failed", {
+      toolId,
+      orgId: ctx.orgId,
+      message: renderStateRes.error.message,
+    });
+  }
   if (!projectRes.data) notFound();
 
   if (messagesRes.error) {
@@ -120,7 +134,7 @@ export default async function ProjectPage({
         error_message: projectRes.data.error_message,
         view_spec: renderStateRes?.data?.view_spec ?? null,
         view_ready: Boolean(renderStateRes?.data?.view_spec),
-        data_snapshot: (renderStateRes?.data?.snapshot as any)?.integrations ?? renderStateRes?.data?.snapshot ?? null,
+        data_snapshot: renderStateRes?.data?.snapshot ?? null,
         data_ready: Boolean(renderStateRes?.data?.snapshot),
       }}
       initialMessages={messages}

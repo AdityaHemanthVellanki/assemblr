@@ -6,7 +6,7 @@ export async function runDesignViews(
   ctx: ToolCompilerStageContext,
 ): Promise<ToolCompilerStageResult> {
   if (ctx.spec.entities.length === 0) {
-    return { specPatch: { views: buildFallbackViews(ctx) } };
+    throw new Error("View spec required but no entities found");
   }
   const response = await azureOpenAIClient.chat.completions.create({
     model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
@@ -14,8 +14,8 @@ export async function runDesignViews(
       {
         role: "system",
         content:
-          `Return JSON: {"views":[{"id":string,"name":string,"type":"table"|"kanban"|"timeline"|"chat"|"form"|"inspector"|"command","source":{"entity":string,"statePath":string},"fields":string[],"actions":string[]}]}.
-Only reference entities: ${ctx.spec.entities.map((e) => e.name).join(", ") || "none"}.`,
+          `Return JSON: {"views":[{"id":string,"name":string,"type":"table"|"kanban"|"timeline"|"chat"|"form"|"inspector"|"command"|"detail","source":{"entity":string,"statePath":string},"fields":string[],"actions":string[]}]}.
+Only include views that directly answer the user prompt. Do not include unrelated entities. Only reference entities: ${ctx.spec.entities.map((e) => e.name).join(", ") || "none"}.`,
       },
       {
         role: "user",
@@ -32,47 +32,57 @@ Only reference entities: ${ctx.spec.entities.map((e) => e.name).join(", ") || "n
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
-  if (!content) return { specPatch: { views: buildFallbackViews(ctx) } };
+  if (!content) {
+    throw new Error("View spec required but model returned empty");
+  }
   try {
     const json = JSON.parse(content);
-    const views = Array.isArray(json.views) ? json.views : [];
-    return { specPatch: { views: views.length > 0 ? views : buildFallbackViews(ctx) } };
+    const rawViews = Array.isArray(json.views) ? json.views : [];
+    const filtered = filterRelevantViews(ctx, rawViews);
+    if (filtered.length === 0) {
+      throw new Error("View spec required but none matched user intent");
+    }
+    const normalized = normalizeViewFields(ctx, filtered);
+    return { specPatch: { views: normalized } };
   } catch {
-    return { specPatch: { views: buildFallbackViews(ctx) } };
+    throw new Error("View spec required but invalid JSON");
   }
 }
 
-function buildFallbackViews(ctx: ToolCompilerStageContext): ViewSpec[] {
-  if (ctx.spec.entities.length > 0) {
-    return ctx.spec.entities.map((entity): ViewSpec => {
-      const actions = ctx.spec.actions.filter((action) => action.integrationId === entity.sourceIntegration);
-      const type: ViewSpec["type"] =
-        entity.name.toLowerCase().includes("issue") || entity.name.toLowerCase().includes("task")
-          ? "kanban"
-          : "table";
-      return {
-        id: `view.${slug(entity.name)}`,
-        name: entity.name,
-        type,
-        source: { entity: entity.name, statePath: `${entity.sourceIntegration}.${slug(entity.name)}s` },
-        fields: entity.fields.map((f) => f.name).slice(0, 6),
-        actions: actions.map((a) => a.id),
-      };
-    });
-  }
-  return ctx.spec.integrations.map((integration): ViewSpec => ({
-    id: `view.${integration.id}`,
-    name: integration.id.toUpperCase(),
-    type: "table",
-    source: { entity: integration.id, statePath: `${integration.id}.data` },
-    fields: [],
-    actions: ctx.spec.actions.filter((a) => a.integrationId === integration.id).map((a) => a.id),
-  }));
+function filterRelevantViews(ctx: ToolCompilerStageContext, views: ViewSpec[]): ViewSpec[] {
+  const prompt = ctx.prompt.toLowerCase();
+  const wantsEmail = prompt.includes("mail") || prompt.includes("email") || prompt.includes("inbox") || prompt.includes("gmail");
+  const wantsGithub = prompt.includes("github");
+  const wantsLinear = prompt.includes("linear");
+  const wantsNotion = prompt.includes("notion");
+  const wantsSlack = prompt.includes("slack");
+  const entityIntegration = new Map(ctx.spec.entities.map((entity) => [entity.name, entity.sourceIntegration]));
+  const matchesIntegration = (view: ViewSpec) => {
+    const integration = entityIntegration.get(view.source.entity);
+    if (!integration) return false;
+    if (wantsEmail && integration === "google") return true;
+    if (wantsGithub && integration === "github") return true;
+    if (wantsLinear && integration === "linear") return true;
+    if (wantsNotion && integration === "notion") return true;
+    if (wantsSlack && integration === "slack") return true;
+    if (!wantsEmail && !wantsGithub && !wantsLinear && !wantsNotion && !wantsSlack) return true;
+    return false;
+  };
+  return views.filter((view) => matchesIntegration(view));
 }
 
-function slug(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+function normalizeViewFields(ctx: ToolCompilerStageContext, views: ViewSpec[]): ViewSpec[] {
+  const prompt = ctx.prompt.toLowerCase();
+  const wantsEmail = prompt.includes("mail") || prompt.includes("email") || prompt.includes("inbox") || prompt.includes("gmail");
+  const entityFields = new Map(ctx.spec.entities.map((entity) => [entity.name, entity.fields.map((field) => field.name)]));
+  return views.map((view) => {
+    const availableFields = entityFields.get(view.source.entity) ?? view.fields;
+    if (wantsEmail) {
+      return { ...view, fields: ["from", "subject", "snippet", "date"] };
+    }
+    if (!Array.isArray(view.fields) || view.fields.length === 0) {
+      return { ...view, fields: availableFields.slice(0, 6) };
+    }
+    return view;
+  });
 }

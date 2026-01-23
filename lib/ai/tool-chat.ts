@@ -19,8 +19,7 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
-import { materializeToolOutput, finalizeToolEnvironment } from "@/lib/toolos/materialization";
-import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } from "@/lib/toolos/materialization";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -120,7 +119,13 @@ export async function processToolChat(
   
   // 0. Resolve Context Securely
   const supabase = createSupabaseAdminClient();
-  const statusSupabase = await createSupabaseServerClient();
+  let statusSupabase: any;
+  try {
+    statusSupabase = await createSupabaseServerClient();
+  } catch (err) {
+    console.error("[FINALIZE CONTEXT] Server client unavailable, falling back to admin", err);
+    statusSupabase = createSupabaseAdminClient();
+  }
   // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
   // Instead, we verify ownership via resolveBuildContext later.
   
@@ -324,6 +329,7 @@ export async function processToolChat(
       });
 
     spec = canonicalizeToolSpec(compilerResult.spec);
+    spec = enforceViewSpecForPrompt(spec, input.userMessage);
     transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
     const toolSystemValidation = validateToolSystem(spec);
@@ -415,20 +421,15 @@ export async function processToolChat(
     const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
     
     if (shouldPersistVersion) {
-      // 5. Version Persistence & Status Update
-      // Atomic Update: We update the tool status AND create the version in one flow (conceptually).
-      // If version creation fails, we MUST mark tool as 'error'.
       try {
         console.log(`[ToolPersistence] Persisting version for ${toolId}...`);
         
         const compiled = compiledTool!;
 
-        // Upsert version
         const { data: version, error: versionError } = await (supabase.from("tool_versions") as any)
           .insert({
             tool_id: toolId,
-            org_id: orgId, // Authoritative ID
-            // created_by: userId, // REMOVED: Schema mismatch
+            org_id: orgId,
             status: "active",
             name: spec.name,
             purpose: spec.purpose,
@@ -445,7 +446,6 @@ export async function processToolChat(
           throw new Error(`Version persistence failed: ${versionError.message} (${versionError.code})`);
         }
         
-        // Update Project Reference
         const { error: projectError } = await (supabase.from("projects") as any)
           .update({
             active_version_id: version.id,
@@ -463,78 +463,77 @@ export async function processToolChat(
         console.log(`[ToolPersistence] Success. Version: ${version.id}`);
       } catch (err: any) {
         console.error("[ToolPersistence] CRITICAL FAILURE:", err);
-        // Mark tool as error
-        // await supabase.from("projects").update({ status: "error" }).eq("id", toolId); // REMOVED: Schema mismatch
-        throw err; // Re-throw to stop pipeline
+        throw err;
       }
+    }
 
-      // 6. Runtime Execution & Materialization (Strict Order)
-      // Compiler has finished. Version is persisted. Now we execute.
-      // This is the "Runtime runs it" phase.
-      
-      const outputs: Array<{ action: any; output: any; error?: any }> = [];
-      
-      // Identify READ actions
-      const readActions = (spec.actions || []).filter((action) => action.type === "READ");
-      
-      // Initial Fetch Priority
-      if (spec.initialFetch?.actionId) {
-          const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
-          if (initial && !readActions.find(a => a.id === initial.id)) {
-              readActions.unshift(initial);
-          }
-      }
-      
-      if (readActions.length > 0) {
-          console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
-          markStep(steps, "runtime", "running", "Executing actions...");
-          
-          for (const action of readActions) {
-              try {
-                   const input = { limit: spec.initialFetch?.limit ?? 10 };
-                   const result = await executeToolAction({
-                        orgId: buildContext.orgId,
-                        toolId,
-                        compiledTool: compiledTool!,
-                        actionId: action.id,
-                        input,
-                        userId: userId, // Fix: use resolved userId
-                        triggerId: "initial_run",
-                        recordRun: true
-                   });
-                   outputs.push({ action, output: result.output });
-              } catch (err) {
-                  console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
-                  outputs.push({ action, output: null, error: err });
-              }
-          }
-      }
+    const outputs: Array<{ action: any; output: any; error?: any }> = [];
+    
+    const readActions = (spec.actions || []).filter((action) => action.type === "READ");
+    
+    if (spec.initialFetch?.actionId) {
+        const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
+        if (initial && !readActions.find(a => a.id === initial.id)) {
+            readActions.unshift(initial);
+        }
+    }
+    
+    if (readActions.length > 0) {
+        console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
+        markStep(steps, "runtime", "running", "Executing actions...");
+        
+        for (const action of readActions) {
+            try {
+                 const input = { limit: spec.initialFetch?.limit ?? 10 };
+                 const result = await executeToolAction({
+                      orgId: buildContext.orgId,
+                      toolId,
+                      compiledTool: compiledTool!,
+                      actionId: action.id,
+                      input,
+                      userId: userId,
+                      triggerId: "initial_run",
+                      recordRun: true
+                 });
+                 outputs.push({ action, output: result.output });
+            } catch (err) {
+                console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
+                outputs.push({ action, output: null, error: err });
+            }
+        }
+    }
 
-      const integrationResults: Record<string, Record<string, any>> = {};
-      for (const entry of outputs) {
-        if (entry.error || entry.output === null || entry.output === undefined) continue;
-        const integrationId = entry.action?.integrationId;
-        if (!integrationId) continue;
-        integrationResults[integrationId] = integrationResults[integrationId] ?? {};
-        integrationResults[integrationId][entry.action.id] = entry.output;
-      }
-
-      if (Object.keys(integrationResults).length === 0) {
+      const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
+      if (successfulOutputs.length === 0) {
         throw new Error("Integration data empty — abort finalize");
       }
 
-      const finalizedAt = new Date().toISOString();
-      const snapshot = {
-        integrations: integrationResults,
-        generated_at: finalizedAt,
-      };
-      const viewSpec = buildDefaultViewSpec({
-        state: {},
-        actions: {},
-        integrations: integrationResults,
+      if (!spec.views || spec.views.length === 0) {
+        throw new Error("View spec required but missing");
+      }
+      const invalidView = spec.views.find((view) => !Array.isArray(view.fields) || view.fields.length === 0);
+      if (invalidView) {
+        throw new Error("View spec required but invalid fields");
+      }
+
+      const snapshotRecords = buildSnapshotRecords({
+        spec,
+        outputs: successfulOutputs.map((entry) => ({ action: entry.action, output: entry.output })),
+        previous: null,
       });
 
+      const integrationResults = snapshotRecords.integrations;
+      const finalizedAt = new Date().toISOString();
+      const snapshot = snapshotRecords;
+      const viewSpec = spec.views;
+
       console.log("[FINALIZE] Writing flags to toolId:", toolId);
+      console.error("[FINALIZE CONTEXT]", {
+        toolId,
+        supabaseUrl: process.env.SUPABASE_URL ?? null,
+        schema: "public",
+        client: "server",
+      });
       const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
         p_tool_id: toolId,
         p_org_id: buildContext.orgId,
@@ -550,13 +549,23 @@ export async function processToolChat(
 
       const { data: renderState, error: renderStateError } = await (statusSupabase as any)
         .from("tool_render_state")
-        .select("tool_id")
+        .select("tool_id, data_ready, view_ready, finalized_at")
         .eq("tool_id", toolId)
         .eq("org_id", buildContext.orgId)
-        .single();
+        .maybeSingle();
+
+      console.error("[FINALIZE VERIFICATION]", {
+        toolId,
+        data: renderState ?? null,
+        error: renderStateError ?? null,
+        supabaseUrl: process.env.SUPABASE_URL ?? null,
+      });
 
       if (renderStateError || !renderState) {
         throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
+      }
+      if (renderState.data_ready !== true || renderState.view_ready !== true) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT FLAGS NOT TRUE IN tool_render_state");
       }
 
       const { data: updatedTool, error: verifyError } = await (statusSupabase as any)
@@ -608,7 +617,6 @@ export async function processToolChat(
           throw new Error("Materialization returned FAILED status");
         }
       }
-    }
 
     return {
       explanation: spec.purpose,
@@ -781,7 +789,7 @@ function parseIntent(
 function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
   const normalized = text.toLowerCase();
   const hits = new Set<ToolSystemSpec["integrations"][number]["id"]>();
-  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive")) hits.add("google");
+  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox")) hits.add("google");
   if (normalized.includes("github")) hits.add("github");
   if (normalized.includes("slack")) hits.add("slack");
   if (normalized.includes("notion")) hits.add("notion");
@@ -940,6 +948,43 @@ function applySchemaToViews(spec: ToolSystemSpec) {
     };
   });
   return { ...spec, views };
+}
+
+function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSystemSpec {
+  const normalized = prompt.toLowerCase();
+  const wantsEmail = normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox") || normalized.includes("gmail");
+  const wantsGithub = normalized.includes("github");
+  const wantsLinear = normalized.includes("linear");
+  const wantsNotion = normalized.includes("notion");
+  const wantsSlack = normalized.includes("slack");
+  const entityIntegration = new Map(spec.entities.map((entity) => [entity.name, entity.sourceIntegration]));
+  const entityFields = new Map(spec.entities.map((entity) => [entity.name, entity.fields.map((field) => field.name)]));
+  const matchesIntegration = (view: ToolSystemSpec["views"][number]) => {
+    const integration = entityIntegration.get(view.source.entity);
+    if (!integration) return false;
+    if (wantsEmail && integration === "google") return true;
+    if (wantsGithub && integration === "github") return true;
+    if (wantsLinear && integration === "linear") return true;
+    if (wantsNotion && integration === "notion") return true;
+    if (wantsSlack && integration === "slack") return true;
+    if (!wantsEmail && !wantsGithub && !wantsLinear && !wantsNotion && !wantsSlack) return true;
+    return false;
+  };
+  const filtered = spec.views.filter((view) => matchesIntegration(view));
+  if (filtered.length === 0) {
+    throw new Error("View spec required but none matched user intent");
+  }
+  const normalizedViews = filtered.map((view) => {
+    const availableFields = entityFields.get(view.source.entity) ?? view.fields;
+    if (wantsEmail) {
+      return { ...view, fields: ["from", "subject", "snippet", "date"] };
+    }
+    if (!Array.isArray(view.fields) || view.fields.length === 0) {
+      return { ...view, fields: availableFields.slice(0, 6) };
+    }
+    return view;
+  });
+  return { ...spec, views: normalizedViews };
 }
 
 function buildQueryPlans(spec: ToolSystemSpec) {

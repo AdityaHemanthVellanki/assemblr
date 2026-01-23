@@ -1,17 +1,3 @@
-CREATE TABLE IF NOT EXISTS public.tool_render_state (
-  tool_id uuid PRIMARY KEY REFERENCES public.projects(id) ON DELETE CASCADE,
-  org_id uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-  integration_data jsonb NOT NULL,
-  snapshot jsonb NOT NULL,
-  view_spec jsonb NOT NULL,
-  data_ready boolean NOT NULL DEFAULT true,
-  view_ready boolean NOT NULL DEFAULT true,
-  finalized_at timestamptz NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS tool_render_state_org_idx
-  ON public.tool_render_state(org_id);
-
 CREATE OR REPLACE FUNCTION public.finalize_tool_render_state(
   p_tool_id uuid,
   p_org_id uuid,
@@ -28,7 +14,7 @@ AS $$
 DECLARE
   v_rowcount integer;
 BEGIN
-  IF p_integration_data IS NULL OR (jsonb_typeof(p_integration_data) = 'object' AND NOT EXISTS (SELECT 1 FROM jsonb_each(p_integration_data))) THEN
+  IF p_integration_data IS NULL OR p_integration_data = '{}'::jsonb THEN
     RAISE EXCEPTION 'Integration data empty — abort finalize';
   END IF;
 

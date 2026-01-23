@@ -1,6 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
-import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
 
 export type FinalizeToolExecutionInput = {
   toolId: string;
@@ -58,7 +57,10 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
 
   if (status === "READY") {
     const normalizedSnapshot = normalizeSnapshotRecords(data_snapshot);
-    const resolvedViewSpec = view_spec ?? buildDefaultViewSpec(normalizedSnapshot);
+    if (!view_spec) {
+      throw new Error("View spec required but missing");
+    }
+    const resolvedViewSpec = view_spec;
     console.log("[FINALIZE] Writing data snapshot", {
       toolId,
       snapshotSize: JSON.stringify(normalizedSnapshot).length,

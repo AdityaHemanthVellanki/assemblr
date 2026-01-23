@@ -20,18 +20,22 @@ export async function GET(
     }
 
     console.log("[STATUS] Reading flags for toolId:", toolId);
+    console.error("[STATUS CONTEXT]", {
+      toolId,
+      supabaseUrl: process.env.SUPABASE_URL ?? null,
+      schema: "public",
+      client: "server",
+    });
     const { data: renderState } = await (supabase.from("tool_render_state") as any)
-      .select("snapshot, view_spec")
+      .select("snapshot, view_spec, data_ready, view_ready")
       .eq("tool_id", toolId)
       .eq("org_id", project.org_id)
       .single();
 
-    const snapshot = renderState?.snapshot ?? null;
-    const responseSnapshot =
-      snapshot && typeof snapshot === "object"
-        ? ((snapshot as any).integrations ?? snapshot)
-        : null;
+    const responseSnapshot = renderState?.snapshot ?? null;
     const responseViewSpec = renderState?.view_spec ?? null;
+    const responseDataReady = renderState?.data_ready === true;
+    const responseViewReady = renderState?.view_ready === true;
 
     console.log("[STATUS]", { toolId, data_ready: project.data_ready, view_ready: project.view_ready });
 
@@ -39,9 +43,9 @@ export async function GET(
       status: project.status,
       error: project.error_message ?? null,
       done: project.lifecycle_done ?? Boolean(project.view_ready && project.data_ready),
-      view_ready: Boolean(responseViewSpec),
+      view_ready: responseViewReady,
       view_spec: responseViewSpec,
-      data_ready: Boolean(responseSnapshot),
+      data_ready: responseDataReady,
       data_snapshot: responseSnapshot,
       data_fetched_at: project.data_fetched_at ?? null,
     });

@@ -4,7 +4,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { buildCompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { buildDefaultViewSpec, renderView } from "@/lib/toolos/view-renderer";
+import { renderView } from "@/lib/toolos/view-renderer";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
@@ -128,31 +128,29 @@ export async function POST(
             readActionIds.length === 0 || readActionIds.every((id: string) => id in actionOutputs);
 
           if (actionsComplete) {
-            const integrationData: Record<string, Record<string, any>> = {};
-            for (const specAction of (spec?.actions ?? [])) {
-              if (specAction?.type !== "READ") continue;
-              const output = actionOutputs?.[specAction.id];
-              if (output === undefined || output === null) continue;
-              integrationData[specAction.integrationId] = integrationData[specAction.integrationId] ?? {};
-              integrationData[specAction.integrationId][specAction.id] = output;
-            }
-
+            const integrationData = recordsToUse?.integrations ?? {};
             if (Object.keys(integrationData).length === 0) {
               throw new Error("Integration data empty — abort finalize");
             }
+            if (!spec.views || spec.views.length === 0) {
+              throw new Error("View spec required but missing");
+            }
+            const invalidView = spec.views.find((view: any) => !Array.isArray(view.fields) || view.fields.length === 0);
+            if (invalidView) {
+              throw new Error("View spec required but invalid fields");
+            }
 
             const finalizedAt = new Date().toISOString();
-            const snapshot = {
-              integrations: integrationData,
-              generated_at: finalizedAt,
-            };
-            const viewSpec = buildDefaultViewSpec({
-              state: {},
-              actions: {},
-              integrations: integrationData,
-            });
+            const snapshot = recordsToUse;
+            const viewSpec = spec.views;
 
             console.log("[FINALIZE] Writing flags to toolId:", toolId);
+            console.error("[FINALIZE CONTEXT]", {
+              toolId,
+              supabaseUrl: process.env.SUPABASE_URL ?? null,
+              schema: "public",
+              client: "server",
+            });
             const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
               p_tool_id: toolId,
               p_org_id: ctx.orgId,
@@ -168,13 +166,23 @@ export async function POST(
 
             const { data: renderState, error: renderStateError } = await (statusSupabase as any)
               .from("tool_render_state")
-              .select("tool_id")
+              .select("tool_id, data_ready, view_ready, finalized_at")
               .eq("tool_id", toolId)
               .eq("org_id", ctx.orgId)
-              .single();
+              .maybeSingle();
+
+            console.error("[FINALIZE VERIFICATION]", {
+              toolId,
+              data: renderState ?? null,
+              error: renderStateError ?? null,
+              supabaseUrl: process.env.SUPABASE_URL ?? null,
+            });
 
             if (renderStateError || !renderState) {
               throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
+            }
+            if (renderState.data_ready !== true || renderState.view_ready !== true) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT FLAGS NOT TRUE IN tool_render_state");
             }
 
             console.log("[FINALIZE] Integrations completed AND state persisted", renderState);

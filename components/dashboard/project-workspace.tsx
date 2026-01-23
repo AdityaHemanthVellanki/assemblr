@@ -10,7 +10,7 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { buildDefaultViewSpec, type DefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { type ViewSpec } from "@/lib/toolos/spec";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
@@ -25,7 +25,7 @@ interface ProjectWorkspaceProps {
     build_logs?: ToolBuildLog[] | null;
     status?: string | null;
     error_message?: string | null;
-    view_spec?: DefaultViewSpec | null;
+    view_spec?: ViewSpec[] | null;
     view_ready?: boolean | null;
     data_snapshot?: Record<string, any> | null;
     data_ready?: boolean | null;
@@ -72,7 +72,7 @@ export function ProjectWorkspace({
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
   const [viewReady, setViewReady] = React.useState<boolean>(project?.view_ready ?? false);
-  const [viewSpec, setViewSpec] = React.useState<DefaultViewSpec | null>(project?.view_spec ?? null);
+  const [viewSpec, setViewSpec] = React.useState<ViewSpec[] | null>(project?.view_spec ?? null);
   const [dataReady, setDataReady] = React.useState<boolean>(project?.data_ready ?? false);
   const [dataSnapshot, setDataSnapshot] = React.useState<Record<string, any> | null>(project?.data_snapshot ?? null);
   const didPollRef = React.useRef(false);
@@ -83,7 +83,7 @@ export function ProjectWorkspace({
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
-  const canRenderTool = Boolean(toolId && viewReady && dataReady && viewSpec);
+  const canRenderTool = Boolean(toolId && viewReady && dataReady && viewSpec && dataSnapshot);
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
@@ -119,10 +119,7 @@ export function ProjectWorkspace({
                  setDataReady(true);
                  setViewReady(true);
                  if (res.data_snapshot) setDataSnapshot(res.data_snapshot);
-                 if (res.view_spec) setViewSpec(res.view_spec);
-                 if (!res.view_spec) {
-                     setViewSpec(buildDefaultViewSpec(resolveSnapshotRecords(res.data_snapshot ?? null)));
-                 }
+                if (res.view_spec) setViewSpec(res.view_spec);
                  return;
             }
 
@@ -162,12 +159,6 @@ export function ProjectWorkspace({
     didPollRef.current = true;
     void poll();
   }, [toolId, canRenderTool, projectStatus, viewReady, dataReady]);
-
-  React.useEffect(() => {
-    if (viewReady && dataReady && !viewSpec) {
-      setViewSpec(buildDefaultViewSpec(resolveSnapshotRecords(dataSnapshot ?? null)));
-    }
-  }, [viewReady, dataReady, viewSpec, dataSnapshot]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -429,7 +420,7 @@ export function ProjectWorkspace({
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
               {canRenderTool && viewSpec ? (
-                <ViewSpecRenderer view={viewSpec} dataSnapshot={dataSnapshot} />
+                <ToolViewRenderer views={viewSpec} dataSnapshot={dataSnapshot} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {initError || projectStatus === "FAILED" ? (
@@ -634,46 +625,106 @@ function formatDiff(diff: Record<string, any> | null) {
   return entries;
 }
 
-function ViewSpecRenderer({
-  view,
+function ToolViewRenderer({
+  views,
   dataSnapshot,
 }: {
-  view: DefaultViewSpec;
+  views: ViewSpec[];
   dataSnapshot: Record<string, any> | null;
 }) {
-  const sections = Array.isArray(view.sections) ? view.sections : [];
-  const snapshotSources = dataSnapshot && typeof dataSnapshot === "object" ? dataSnapshot : {};
+  const records = resolveSnapshotRecords(dataSnapshot ?? null);
+  const state = records.state ?? {};
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="border-b border-border/60 px-6 py-4">
         <div className="text-xs uppercase text-muted-foreground">Output</div>
-        <div className="text-lg font-semibold">{view.title || "Assemblr Tool Output"}</div>
+        <div className="text-lg font-semibold">Result</div>
       </div>
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {sections.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No output available.</div>
-        ) : (
-          sections.map((section, index) => (
-            <div key={`${section.title}-${index}`} className="rounded-lg border border-border/60 bg-background p-4">
-              <div className="text-sm font-medium">{section.title}</div>
-              <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-                {Array.isArray(section.items) && section.items.length > 0 ? (
-                  section.items.map((item, itemIndex) => (
-                    <div key={`${item.source}-${itemIndex}`} className="flex items-center justify-between">
-                      <span>{item.source}</span>
-                      <span>{typeof item.count === "number" ? item.count : Array.isArray((snapshotSources as any)[item.source]) ? (snapshotSources as any)[item.source].length : 0}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div>No data returned.</div>
+        {views.map((view) => {
+          const data = resolveStatePath(state, view.source.statePath);
+          const rows = normalizeRows(data);
+          return (
+            <div key={view.id} className="rounded-lg border border-border/60 bg-background">
+              <div className="border-b border-border/60 px-4 py-3 text-sm font-medium">{view.name}</div>
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 text-muted-foreground">
+                    <tr>
+                      {view.fields.map((field) => (
+                        <th key={field} className="px-4 py-2 text-left font-medium">
+                          {field}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => (
+                      <tr key={`${view.id}-${index}`} className="border-t border-border/60">
+                        {view.fields.map((field) => (
+                          <td key={`${view.id}-${index}-${field}`} className="px-4 py-2 align-top">
+                            {formatCell(row?.[field])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length === 0 && (
+                  <div className="px-4 py-6 text-sm text-muted-foreground">No results.</div>
                 )}
               </div>
             </div>
-          ))
-        )}
+          );
+        })}
       </div>
     </div>
   );
+}
+
+function normalizeRows(data: any): Array<Record<string, any>> {
+  if (Array.isArray(data)) {
+    return data.map((row) => normalizeGmailRow(row) ?? row);
+  }
+  if (data && typeof data === "object") {
+    return Object.values(data)
+      .filter((value) => value && typeof value === "object")
+      .map((row) => normalizeGmailRow(row) ?? row) as Array<Record<string, any>>;
+  }
+  return [];
+}
+
+function normalizeGmailRow(row: any): Record<string, any> | null {
+  const headers = Array.isArray(row?.payload?.headers) ? row.payload.headers : [];
+  if (headers.length === 0) return null;
+  const findHeader = (name: string) =>
+    headers.find((h: any) => String(h?.name ?? "").toLowerCase() === name.toLowerCase())?.value ?? "";
+  const dateValue = findHeader("date");
+  const internalDate = row?.internalDate ? new Date(Number(row.internalDate)).toISOString() : "";
+  return {
+    from: findHeader("from"),
+    subject: findHeader("subject"),
+    snippet: row?.snippet ?? "",
+    date: dateValue || internalDate,
+  };
+}
+
+function formatCell(value: any) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function resolveStatePath(state: Record<string, any>, path: string) {
+  const parts = path.split(".");
+  let current: any = state;
+  for (const part of parts) {
+    if (current == null) return null;
+    current = current[part];
+  }
+  return current ?? null;
 }
 
 function resolveSnapshotRecords(snapshot: Record<string, any> | null | undefined): SnapshotRecords {
