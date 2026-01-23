@@ -45,7 +45,7 @@ async function runE2E() {
     userId,
     currentSpec: null,
     messages: [],
-    userMessage: "show mails about contexto",
+    userMessage: "show mails about contexto wherever build failed and show that particular commit on github wherever it failed",
     connectedIntegrationIds: ["github", "google", "linear", "notion", "slack"],
     mode: "create",
   });
@@ -86,6 +86,9 @@ async function runE2E() {
   if (views.length === 0) {
     throw new Error("View spec missing after finalize");
   }
+  if (!viewPayload?.goal_plan?.primary_goal) {
+    throw new Error("Goal plan missing after finalize");
+  }
   if (!viewPayload?.answer_contract) {
     throw new Error("Answer contract missing after finalize");
   }
@@ -93,14 +96,14 @@ async function runE2E() {
   if (!googlePlan || !String(googlePlan.query?.q ?? "").includes("contexto")) {
     throw new Error("Query plan missing semantic constraint");
   }
-  const nonGoogleView = views.find((view: any) => !String(view?.source?.statePath ?? "").startsWith("google."));
-  if (nonGoogleView) {
-    throw new Error("View spec includes non-Gmail views");
+  const failureView = views.find((view: any) => String(view?.source?.statePath ?? "").includes("derived.failure_incidents"));
+  if (!failureView) {
+    throw new Error("Failure incidents view missing");
   }
-  const mailFields = ["from", "subject", "snippet", "date"];
-  const missingFields = mailFields.filter((field) => !views[0]?.fields?.includes(field));
+  const requiredFields = ["repo", "commitSha", "failureType", "failedAt", "emailCount"];
+  const missingFields = requiredFields.filter((field) => !failureView?.fields?.includes(field));
   if (missingFields.length > 0) {
-    throw new Error(`Mail view missing fields: ${missingFields.join(", ")}`);
+    throw new Error(`Failure view missing fields: ${missingFields.join(", ")}`);
   }
   if (!projectRow || projectRow.data_ready !== true || projectRow.view_ready !== true) {
     throw new Error("Project flags are not true");
@@ -158,8 +161,8 @@ async function runE2E() {
   if (html.includes("Fetched Data")) {
     throw new Error("UI render shows fallback summary");
   }
-  if (!html.includes("Emails") && !html.includes("Email")) {
-    throw new Error("UI render does not show email list title");
+  if (!html.includes("Contexto Build Failures")) {
+    throw new Error("UI render does not show failure title");
   }
 }
 

@@ -23,6 +23,7 @@ export const EntitySpecSchema = z.object({
   name: z.string().min(1),
   fields: z.array(EntityFieldSchema),
   sourceIntegration: IntegrationIdSchema,
+  derived: z.boolean().optional(),
   identifiers: z.array(z.string()).default([]),
   supportedActions: z.array(z.string()).default([]),
   relations: z.array(EntityRelationSchema).optional(),
@@ -217,6 +218,21 @@ export const AnswerContractSchema = z.object({
 });
 export type AnswerContract = z.infer<typeof AnswerContractSchema>;
 
+export const DerivedEntitySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  fields: z.array(z.object({ name: z.string().min(1), type: z.string().min(1) })).default([]),
+});
+export type DerivedEntity = z.infer<typeof DerivedEntitySchema>;
+
+export const GoalPlanSchema = z.object({
+  primary_goal: z.string().min(1),
+  sub_goals: z.array(z.string()).default([]),
+  constraints: z.array(z.string()).default([]),
+  derived_entities: z.array(DerivedEntitySchema).default([]),
+});
+export type GoalPlan = z.infer<typeof GoalPlanSchema>;
+
 export const IntegrationQueryPlanSchema = z.object({
   integrationId: IntegrationIdSchema,
   actionId: z.string().min(1),
@@ -249,6 +265,7 @@ export type ToolGraph = z.infer<typeof ToolGraphSchema>;
 
 export const ViewSpecPayloadSchema = z.object({
   views: z.array(ViewSpecSchema),
+  goal_plan: GoalPlanSchema.optional(),
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),
@@ -332,6 +349,8 @@ export const ToolSystemSpecSchema = z.object({
   integrations: z.array(IntegrationSpecSchema),
   initialFetch: InitialFetchSchema.optional(),
   dataReadiness: DataReadinessGateSchema.optional(),
+  goal_plan: GoalPlanSchema.optional(),
+  derived_entities: z.array(DerivedEntitySchema).default([]),
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),

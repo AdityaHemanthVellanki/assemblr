@@ -680,7 +680,9 @@ function ToolViewRenderer({
                 </table>
                 {rows.length === 0 && (
                   <div className="px-4 py-6 text-sm text-muted-foreground">
-                    {answerContract?.required_constraints?.[0]
+                    {viewSpec.goal_plan?.primary_goal
+                      ? `No results for ${viewSpec.goal_plan.primary_goal}.`
+                      : answerContract?.required_constraints?.[0]
                       ? `No ${answerContract.entity_type}s found related to "${answerContract.required_constraints[0].value}".`
                       : "No results."}
                   </div>

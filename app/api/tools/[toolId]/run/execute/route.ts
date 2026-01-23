@@ -164,6 +164,7 @@ export async function POST(
             const snapshot = snapshotRecords;
             const viewSpec: ViewSpecPayload = {
               views: spec.views,
+              goal_plan: spec.goal_plan,
               answer_contract: spec.answer_contract,
               query_plans: spec.query_plans,
               tool_graph: spec.tool_graph,

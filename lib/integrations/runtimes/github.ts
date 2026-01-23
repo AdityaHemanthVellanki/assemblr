@@ -72,6 +72,51 @@ export class GitHubRuntime implements IntegrationRuntime {
       }
     };
 
+    this.capabilities["github_commit_status_list"] = {
+      id: "github_commit_status_list",
+      integrationId: "github",
+      paramsSchema: z.object({
+        owner: z.string().optional(),
+        repo: z.string(),
+        sha: z.string(),
+      }),
+      autoResolvedParams: ["owner"],
+      execute: async (params, context, trace) => {
+        const owner = params.owner ?? context.owner;
+        if (!owner) throw new Error("Missing owner and unable to infer from context");
+        const { repo, sha } = params;
+        const { token } = context;
+        const url = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/status`;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        try {
+          const res = await fetch(url, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          });
+          if (!res.ok) {
+            status = "error";
+            throw new Error(`GitHub API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "github",
+            capabilityId: "github_commit_status_list",
+            params: { owner, repo, sha },
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url },
+          });
+        }
+      },
+    };
+
     this.capabilities["github_repos_list"] = {
         id: "github_repos_list",
         integrationId: "github",

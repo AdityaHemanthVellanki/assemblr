@@ -30,6 +30,8 @@ export class VersioningService {
       workflows: [],
       triggers: [],
       views: [],
+      goal_plan: undefined,
+      derived_entities: [],
       query_plans: [],
       permissions: { roles: [], grants: [] },
       integrations: [],

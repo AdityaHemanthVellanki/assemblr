@@ -3,7 +3,7 @@ import "server-only";
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, type AnswerContract, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
@@ -331,6 +331,7 @@ export async function processToolChat(
 
     spec = canonicalizeToolSpec(compilerResult.spec);
     spec = enforceViewSpecForPrompt(spec, input.userMessage);
+    spec = await applyGoalPlan(spec, input.userMessage);
     spec = await applyAnswerContract(spec, input.userMessage);
     transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
@@ -469,7 +470,7 @@ export async function processToolChat(
       }
     }
 
-    const outputs: Array<{ action: any; output: any; error?: any }> = [];
+    let outputs: Array<{ action: any; output: any; error?: any }> = [];
     
     const readActions = (spec.actions || []).filter((action) => action.type === "READ");
     const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
@@ -481,7 +482,15 @@ export async function processToolChat(
         }
     }
     
-    if (readActions.length > 0) {
+    if (shouldUseGoalPlannerLoop(spec, input.userMessage)) {
+        outputs = await runPlannerExecutorLoop({
+          spec,
+          compiledTool: compiledTool!,
+          orgId: buildContext.orgId,
+          toolId,
+          userId,
+        });
+    } else if (readActions.length > 0) {
         console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
         markStep(steps, "runtime", "running", "Executing actions...");
         
@@ -544,6 +553,7 @@ export async function processToolChat(
       const snapshot = snapshotRecords;
       const viewSpec: ViewSpecPayload = {
         views: spec.views,
+        goal_plan: spec.goal_plan,
         answer_contract: spec.answer_contract,
         query_plans: spec.query_plans,
         tool_graph: spec.tool_graph,
@@ -890,6 +900,12 @@ async function runDataReadiness(
           plan && Object.keys(plan.query ?? {}).length > 0
             ? plan.query
             : buildDefaultInput(cap);
+        const requiredFilters = cap?.constraints?.requiredFilters ?? [];
+        const missing = requiredFilters.filter((key) => input?.[key] === undefined || input?.[key] === null);
+        if (missing.length > 0) {
+          logs.push(`Skipping ${action.name} (${action.integrationId}) missing ${missing.join(", ")}.`);
+          continue;
+        }
         logs.push(`Executing ${action.name} (${action.integrationId})...`);
         
         const result = await executeToolAction({
@@ -1014,6 +1030,177 @@ function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSys
   return { ...spec, views: normalizedViews };
 }
 
+async function applyGoalPlan(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
+  const goalPlan = await generateGoalPlanWithRetry(prompt);
+  const next = augmentSpecForGoalPlan(spec, prompt, goalPlan);
+  return { ...next, goal_plan: goalPlan };
+}
+
+async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await azureOpenAIClient.chat.completions.create({
+      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+      messages: [
+        {
+          role: "system",
+          content:
+            `Return JSON only: {"primary_goal":string,"sub_goals":[string],"constraints":[string],"derived_entities":[{"name":string,"description":string,"fields":[{"name":string,"type":string}]}]}.`,
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0,
+      max_tokens: 300,
+      response_format: { type: "json_object" },
+    });
+    const content = response.choices[0]?.message?.content;
+    if (!content) continue;
+    try {
+      const parsed = GoalPlanSchema.safeParse(JSON.parse(content));
+      if (parsed.success) return parsed.data;
+    } catch {
+      continue;
+    }
+  }
+  console.warn("[GoalPlan] Falling back to deterministic goal plan");
+  return buildDeterministicGoalPlan(prompt);
+}
+
+function buildDeterministicGoalPlan(prompt: string): GoalPlan {
+  const normalized = prompt.toLowerCase();
+  const keyword = normalized.includes("contexto") ? "contexto" : "";
+  const primary_goal = normalized.includes("build")
+    ? `Investigate ${keyword ? `${keyword} ` : ""}build failures`
+    : "Understand user request";
+  return {
+    primary_goal,
+    sub_goals: [
+      "Identify build failures in GitHub",
+      "Identify failing commits",
+      "Find related emails",
+    ],
+    constraints: [
+      "Only failures",
+      keyword ? `Only ${keyword}-related` : "Only related",
+      "Must show exact commit",
+    ],
+    derived_entities: [
+      {
+        name: "FailureIncident",
+        description: "Build failures correlated with related emails",
+        fields: [
+          { name: "repo", type: "string" },
+          { name: "commitSha", type: "string" },
+          { name: "failureType", type: "string" },
+          { name: "failedAt", type: "string" },
+          { name: "emailCount", type: "number" },
+          { name: "emails", type: "array" },
+        ],
+      },
+    ],
+  };
+}
+
+function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: GoalPlan): ToolSystemSpec {
+  const normalized = prompt.toLowerCase();
+  if (!normalized.includes("build") || !normalized.includes("fail")) {
+    return { ...spec, derived_entities: spec.derived_entities ?? [] };
+  }
+  const derivedEntity = goalPlan.derived_entities.find((entity) => entity.name.toLowerCase().includes("failure"));
+  const fields = derivedEntity?.fields.length
+    ? derivedEntity.fields
+    : [
+        { name: "repo", type: "string" },
+        { name: "commitSha", type: "string" },
+        { name: "failureType", type: "string" },
+        { name: "failedAt", type: "string" },
+        { name: "emailCount", type: "number" },
+        { name: "emails", type: "array" },
+      ];
+  const derivedEntities: ToolSystemSpec["derived_entities"] = [
+    ...(spec.derived_entities ?? []),
+    {
+      name: derivedEntity?.name ?? "FailureIncident",
+      description: derivedEntity?.description ?? "Build failures correlated with related emails",
+      fields,
+    },
+  ];
+  const entities: ToolSystemSpec["entities"] = spec.entities.some((entity) => entity.name === "FailureIncident")
+    ? spec.entities
+    : [
+        ...spec.entities,
+        {
+          name: "FailureIncident",
+          sourceIntegration: "github",
+          derived: true,
+          fields,
+          identifiers: ["commitSha"],
+          supportedActions: [],
+        },
+      ];
+  const actions = ensureGoalActions(spec.actions);
+  const views = ensureGoalViews(spec.views);
+  const integrations = ensureGoalIntegrations(spec.integrations, actions);
+  return {
+    ...spec,
+    entities,
+    actions,
+    views,
+    integrations,
+    derived_entities: derivedEntities,
+  };
+}
+
+function ensureGoalActions(actions: ToolSystemSpec["actions"]) {
+  const next = [...actions];
+  const ensure = (id: string, integrationId: IntegrationId, capabilityId: string, name: string) => {
+    if (next.some((action) => action.id === id)) return;
+    next.push({
+      id,
+      name,
+      description: name,
+      type: "READ",
+      integrationId,
+      capabilityId,
+      inputSchema: {},
+      outputSchema: {},
+      writesToState: false,
+    });
+  };
+  ensure("github.repos.list", "github", "github_repos_list", "List repositories");
+  ensure("github.commits.list", "github", "github_commits_list", "List commits");
+  ensure("github.commit.status", "github", "github_commit_status_list", "List commit status");
+  ensure("google.gmail.search", "google", "google_gmail_list", "Search Gmail");
+  ensure("github.failure.incidents", "github", "github_commit_status_list", "Derive failure incidents");
+  return next;
+}
+
+function ensureGoalIntegrations(
+  integrations: ToolSystemSpec["integrations"],
+  actions: ToolSystemSpec["actions"]
+) {
+  const ids = new Set(integrations.map((integration) => integration.id));
+  const next = [...integrations];
+  for (const action of actions) {
+    if (ids.has(action.integrationId)) continue;
+    ids.add(action.integrationId);
+    next.push({ id: action.integrationId, capabilities: [] });
+  }
+  return next;
+}
+
+function ensureGoalViews(views: ToolSystemSpec["views"]): ToolSystemSpec["views"] {
+  return [
+    {
+      id: "view.failure.incidents",
+      name: "Contexto Build Failures",
+      type: "table" as const,
+      source: { entity: "FailureIncident", statePath: "derived.failure_incidents" },
+      fields: ["repo", "commitSha", "failureType", "failedAt", "emailCount", "emails"],
+      actions: ["github.failure.incidents"],
+    },
+  ];
+}
+
 async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
   const response = await azureOpenAIClient.chat.completions.create({
     model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
@@ -1062,7 +1249,7 @@ function buildQueryPlansForContract(spec: ToolSystemSpec, contract: AnswerContra
   const queryPlans: IntegrationQueryPlan[] = [];
   for (const action of spec.actions) {
     if (action.type !== "READ") continue;
-    if (contract.entity_type === "email" && action.integrationId === "google") {
+    if (action.integrationId === "google") {
       queryPlans.push({
         integrationId: action.integrationId,
         actionId: action.id,
@@ -1107,6 +1294,183 @@ function buildToolGraphForContract(queryPlans: IntegrationQueryPlan[]): ToolGrap
   const edges = nodes.map((node) => ({ from: node.id, to: filterNode.id }));
   edges.push({ from: filterNode.id, to: viewNode.id });
   return { nodes: [...nodes, filterNode, viewNode], edges };
+}
+
+function shouldUseGoalPlannerLoop(spec: ToolSystemSpec, prompt: string) {
+  if (!spec.goal_plan) return false;
+  const normalized = prompt.toLowerCase();
+  return normalized.includes("build") && normalized.includes("fail") && normalized.includes("commit");
+}
+
+async function runPlannerExecutorLoop(params: {
+  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
+  orgId: string;
+  toolId: string;
+  userId?: string | null;
+}) {
+  const { spec, compiledTool, orgId, toolId, userId } = params;
+  const keyword = spec.answer_contract?.required_constraints?.[0]?.value?.toLowerCase() ?? "";
+  const repoAction = findActionByCapability(spec, "github_repos_list");
+  const commitAction = findActionByCapability(spec, "github_commits_list");
+  const statusAction = findActionByCapability(spec, "github_commit_status_list");
+  const gmailAction = findActionByCapability(spec, "google_gmail_list");
+  const derivedAction = spec.actions.find((action) => action.id === "github.failure.incidents");
+
+  if (!repoAction || !commitAction || !statusAction || !gmailAction || !derivedAction) {
+    throw new Error("Goal planner missing required actions");
+  }
+
+  const reposResult = await executeToolAction({
+    orgId,
+    toolId,
+    compiledTool,
+    actionId: repoAction.id,
+    input: { limit: 20 },
+    userId,
+    triggerId: "planner_loop",
+    recordRun: true,
+  });
+  const repos = Array.isArray(reposResult.output) ? reposResult.output : [];
+  const filteredRepos = keyword
+    ? repos.filter((repo: any) => String(repo?.name ?? "").toLowerCase().includes(keyword))
+    : repos;
+  const repoBatch = filteredRepos.length > 0 ? filteredRepos : repos;
+
+  const failures: Array<{
+    repo: string;
+    commitSha: string;
+    failureType: string;
+    failedAt: string;
+    commitMessage: string;
+  }> = [];
+
+  for (const repo of repoBatch.slice(0, 10)) {
+    const owner = repo?.owner?.login ?? repo?.owner?.name ?? repo?.full_name?.split("/")?.[0];
+    const repoName = repo?.name ?? repo?.full_name?.split("/")?.[1];
+    if (!owner || !repoName) continue;
+    const commitsResult = await executeToolAction({
+      orgId,
+      toolId,
+      compiledTool,
+      actionId: commitAction.id,
+      input: { owner, repo: repoName, limit: 20 },
+      userId,
+      triggerId: "planner_loop",
+      recordRun: true,
+    });
+    const commits = Array.isArray(commitsResult.output) ? commitsResult.output : [];
+    for (const commit of commits.slice(0, 10)) {
+      const sha = String(commit?.sha ?? "");
+      if (!sha) continue;
+      const message = String(commit?.commit?.message ?? "");
+      if (keyword && !message.toLowerCase().includes(keyword) && !repoName.toLowerCase().includes(keyword)) {
+        continue;
+      }
+      const statusResult = await executeToolAction({
+        orgId,
+        toolId,
+        compiledTool,
+        actionId: statusAction.id,
+        input: { owner, repo: repoName, sha },
+        userId,
+        triggerId: "planner_loop",
+        recordRun: true,
+      });
+      const status = statusResult.output ?? {};
+      if (!isFailureStatus(status)) continue;
+      failures.push({
+        repo: repoName,
+        commitSha: sha,
+        failureType: status?.state ?? "failure",
+        failedAt: status?.updated_at ?? commit?.commit?.author?.date ?? new Date().toISOString(),
+        commitMessage: message,
+      });
+    }
+  }
+
+  const emailsByFailure = new Map<string, Array<Record<string, any>>>();
+  if (failures.length > 0) {
+    for (const failure of failures) {
+      const query = keyword ? `${keyword} ${failure.commitSha}` : failure.commitSha;
+      const gmailResult = await executeToolAction({
+        orgId,
+        toolId,
+        compiledTool,
+        actionId: gmailAction.id,
+        input: { q: query, maxResults: 50 },
+        userId,
+        triggerId: "planner_loop",
+        recordRun: true,
+      });
+      const normalized = normalizeEmailRows(gmailResult.output);
+      const related = normalized.filter((email) =>
+        matchesFailureEmail(email, failure, keyword)
+      );
+      emailsByFailure.set(failure.commitSha, related);
+    }
+  }
+
+  const incidents = failures
+    .map((failure) => {
+      const emails = emailsByFailure.get(failure.commitSha) ?? [];
+      return {
+        repo: failure.repo,
+        commitSha: failure.commitSha,
+        failureType: failure.failureType,
+        failedAt: failure.failedAt,
+        emailCount: emails.length,
+        emails,
+      };
+    })
+    .filter((incident) => incident.emailCount > 0);
+
+  return [{ action: derivedAction, output: incidents }];
+}
+
+function findActionByCapability(spec: ToolSystemSpec, capabilityId: string) {
+  return spec.actions.find((action) => action.capabilityId === capabilityId);
+}
+
+function isFailureStatus(status: any) {
+  const state = String(status?.state ?? "").toLowerCase();
+  if (state === "failure" || state === "error") return true;
+  const statuses = Array.isArray(status?.statuses) ? status.statuses : [];
+  return statuses.some((entry: any) => {
+    const s = String(entry?.state ?? "").toLowerCase();
+    return s === "failure" || s === "error";
+  });
+}
+
+function normalizeEmailRows(output: any): Array<Record<string, any>> {
+  if (Array.isArray(output)) {
+    return output.map((row) => normalizeEmailRow(row) ?? row).filter(Boolean) as Array<Record<string, any>>;
+  }
+  return [];
+}
+
+function normalizeEmailRow(row: any): Record<string, any> | null {
+  if (!row || typeof row !== "object") return null;
+  if ("subject" in row || "snippet" in row) return row as Record<string, any>;
+  const headers = Array.isArray(row?.payload?.headers) ? row.payload.headers : [];
+  if (headers.length === 0) return null;
+  const findHeader = (name: string) =>
+    headers.find((h: any) => String(h?.name ?? "").toLowerCase() === name.toLowerCase())?.value ?? "";
+  return {
+    from: findHeader("from"),
+    subject: findHeader("subject"),
+    snippet: row?.snippet ?? "",
+    date: findHeader("date") || "",
+    body: row?.snippet ?? "",
+  };
+}
+
+function matchesFailureEmail(email: Record<string, any>, failure: { repo: string; commitSha: string }, keyword: string) {
+  const subject = String(email.subject ?? "").toLowerCase();
+  const snippet = String(email.snippet ?? "").toLowerCase();
+  const combined = `${subject} ${snippet}`.toLowerCase();
+  if (keyword && !combined.includes(keyword.toLowerCase())) return false;
+  return combined.includes(failure.commitSha.toLowerCase()) || combined.includes(failure.repo.toLowerCase());
 }
 
 function buildQueryPlans(spec: ToolSystemSpec) {
@@ -1301,6 +1665,7 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     workflows,
     triggers,
     views,
+    derived_entities: spec.derived_entities ?? [],
     query_plans: spec.query_plans ?? [],
     integrations,
     automations,
@@ -1567,6 +1932,7 @@ function buildFallbackToolSpec(
     workflows: [],
     triggers: [],
     views,
+    derived_entities: [],
     query_plans: [],
     permissions: { roles: [{ id: "owner", name: "Owner" }], grants: [] },
     integrations: normalized.map((id) => ({
