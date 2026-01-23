@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Share, User } from "lucide-react";
+import { Loader2, Share, User } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -65,7 +65,8 @@ export function ProjectWorkspace({
   );
 
   // DB-Backed State (Single Source of Truth)
-  const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "CREATED");
+  const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
+  const [lifecycleDone, setLifecycleDone] = React.useState<boolean>(false);
 
   // Derived state
   const isZeroState = messages.length === 0;
@@ -82,18 +83,9 @@ export function ProjectWorkspace({
     // If already ready, don't poll
     if (canRenderTool) return;
     if (projectStatus === "FAILED") return;
-
-    // Timeout check
-    const startTime = Date.now();
-    const TIMEOUT_MS = 90000; // 90s timeout
+    if (lifecycleDone) return; // Stop polling if done (Authoritative)
 
     const poll = async () => {
-        if (Date.now() - startTime > TIMEOUT_MS) {
-            setInitError("Tool initialization timed out. The environment failed to finalize.");
-            setProjectStatus("FAILED"); // Force local failure state
-            return;
-        }
-
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
             // Update local state from DB response
@@ -102,6 +94,16 @@ export function ProjectWorkspace({
             if (res.error) {
                  setInitError(res.error);
             }
+
+            // AUTHORITATIVE LIFECYCLE SIGNAL
+            if (res.done === true) {
+                 setLifecycleDone(true);
+                 if (res.status === "FAILED") {
+                     setInitError(res.error || "Tool initialization failed.");
+                 }
+                 return; // Stop polling
+            }
+
             if (res.status === "READY") {
                  // Terminal state: success
             } else if (res.status === "FAILED") {
@@ -118,7 +120,7 @@ export function ProjectWorkspace({
     void poll();
     
     return () => clearInterval(timer);
-  }, [toolId, canRenderTool, projectStatus]);
+  }, [toolId, canRenderTool, projectStatus, lifecycleDone]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -384,13 +386,24 @@ export function ProjectWorkspace({
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {initError || projectStatus === "FAILED" ? (
-                      <div className="text-red-600 font-medium bg-red-50 p-4 rounded-md border border-red-200">
-                        {initError || "Tool initialization failed. Please try again."}
-                      </div>
+                    <div className="text-red-600 font-medium bg-red-50 p-4 rounded-md border border-red-200">
+                      {initError || "Tool failed. Please try again."}
+                    </div>
+                  ) : projectStatus === "BUILDING" || projectStatus === "COMPILING" ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Building tool…
+                    </div>
+                  ) : projectStatus === "MATERIALIZED" ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Finalizing tool…
+                    </div>
                   ) : (
-                      projectStatus && projectStatus !== "READY" && projectStatus !== "FAILED"
-                        ? "Initializing tool environment..."
-                        : "Describe the tool you want to build to see a live preview."
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Initializing…
+                    </div>
                   )}
                 </div>
               )}
@@ -594,7 +607,7 @@ function deriveBuildSteps(
 ): BuildStep[] {
   const steps = defaultBuildSteps();
   if (!lifecycleState) return steps;
-  if (lifecycleState === "ACTIVE") return markAllSuccess(steps);
+  if (lifecycleState === "READY") return markAllSuccess(steps);
 
   const order = steps.map((step) => step.id);
   const current = resolveLifecycleStep(lifecycleState);
@@ -626,9 +639,23 @@ function resolveLifecycleStep(
   lifecycleState: string,
 ): { stepId: string | null; status: BuildStep["status"] | null } {
   // Map canonical lifecycle to UI steps
-  if (lifecycleState === "CREATED") return { stepId: "intent", status: "pending" };
-  if (lifecycleState === "RUNNING") return { stepId: "compile", status: "running" };
+  if (lifecycleState === "DRAFT") return { stepId: "intent", status: "pending" };
+  if (lifecycleState === "BUILDING") return { stepId: "compile", status: "running" };
   if (lifecycleState === "READY") return { stepId: "views", status: "success" };
+  
+  // Map granular build states to UI steps
+  if (lifecycleState === "INTENT_PARSED") return { stepId: "intent", status: "success" };
+  if (lifecycleState === "ENTITIES_EXTRACTED") return { stepId: "entities", status: "success" };
+  if (lifecycleState === "INTEGRATIONS_RESOLVED") return { stepId: "integrations", status: "success" };
+  if (lifecycleState === "ACTIONS_DEFINED") return { stepId: "actions", status: "success" };
+  if (lifecycleState === "WORKFLOWS_COMPILED") return { stepId: "workflows", status: "success" };
+  if (lifecycleState === "RUNTIME_READY") return { stepId: "compile", status: "success" };
+  if (lifecycleState === "DATA_FETCHED") return { stepId: "runtime", status: "success" };
+
+  // Legacy mappings (cleanup)
+  // if (lifecycleState === "COMPILING") return { stepId: "compile", status: "running" };
+  // if (lifecycleState === "MATERIALIZED") return { stepId: "views", status: "success" };
+  // if (lifecycleState === "ACTIVE") return { stepId: "views", status: "success" };
   
   if (lifecycleState === "FAILED") {
     return { stepId: "compile", status: "error" };

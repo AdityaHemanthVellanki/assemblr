@@ -43,8 +43,8 @@ export async function sendChatMessage(
       const payload = {
           org_id: orgId,
           name: "New Tool",
-          status: "CREATED", // Canonical status
-          spec: {} // Clean spec, no status inside
+          status: "DRAFT",
+          spec: {}
       };
       
       // FAIL-FAST GUARD

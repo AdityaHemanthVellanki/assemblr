@@ -159,7 +159,7 @@ export async function processToolChat(
         .insert({
             org_id: orgId, // Use resolved authoritative Org ID
             name: "New Tool", 
-            status: "CREATED", // Canonical start state
+            status: "BUILDING",
             spec: {}
         })
         .select("id")
@@ -185,8 +185,7 @@ export async function processToolChat(
   // FIX: Inject effectiveToolId into context
   const toolId = effectiveToolId!;
 
-  // Update tool status to 'RUNNING' to indicate activity
-  await (supabase.from("projects") as any).update({ status: "RUNNING" }).eq("id", toolId);
+  await (supabase.from("projects") as any).update({ status: "BUILDING" }).eq("id", toolId);
   
   const systemPrompt = await createToolBuilderSystemPrompt({
     orgId: orgId, // Use authoritative ID
@@ -275,6 +274,10 @@ export async function processToolChat(
       runTokens,
     });
   };
+
+    let finalStatus: "READY" | "FAILED" | null = null;
+    let finalError: string | null = null;
+    let finalEnvironment: any = null;
 
   try {
     await persistLifecycle();
@@ -455,7 +458,7 @@ export async function processToolChat(
             active_version_id: version.id,
             spec,
             name: spec.name,
-            status: "RUNNING",
+            status: "BUILDING",
             updated_at: new Date().toISOString()
           })
           .eq("id", toolId);
@@ -517,8 +520,8 @@ export async function processToolChat(
       }
       
       // 7. Finalize Environment (REQUIRED)
-      // Even if no actions or all failed, we must finalize to READY or FAILED.
-      // This persists the unified environment object and sets status=READY.
+      // Even if no actions or all failed, we must finalize to ACTIVE or FAILED.
+      // This persists the unified environment object and sets status=ACTIVE.
       if (spec) {
         console.log("[ToolRuntime] Runtime completed");
         let matResult;
@@ -534,11 +537,8 @@ export async function processToolChat(
         } catch (err: any) {
             console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
             // If materialization fails, we must fail the build via the barrier
-            await finalizeToolLifecycle({
-                toolId,
-                status: "FAILED",
-                errorMessage: err.message
-            });
+            finalStatus = "FAILED";
+            finalError = err.message;
             throw new Error(`Fatal Finalization Error: ${err.message}`);
         }
 
@@ -547,11 +547,13 @@ export async function processToolChat(
         const success = matResult.status === "MATERIALIZED";
         if (success) {
             try {
-                await finalizeToolLifecycle({
-                    toolId,
-                    status: "READY",
-                    environment: matResult.environment
-                });
+                // await (supabase.from("projects") as any)
+                //   .update({ status: "MATERIALIZED" })
+                //   .eq("id", toolId);
+                
+                finalStatus = "READY";
+                finalEnvironment = matResult.environment;
+
                 markStep(steps, "runtime", "success", "Environment READY");
                 console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
             } catch (err: any) {
@@ -561,11 +563,9 @@ export async function processToolChat(
                 throw err;
             }
         } else {
-             await finalizeToolLifecycle({
-                toolId,
-                status: "FAILED",
-                errorMessage: "Materialization returned FAILED status"
-            });
+             finalStatus = "FAILED";
+             finalError = "Materialization returned FAILED status";
+             
              markStep(steps, "runtime", "error", "Environment Finalization Failed");
              console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
         }
@@ -587,15 +587,8 @@ export async function processToolChat(
     };
   } catch (err) {
     // Atomic Failure Handling: Mark tool as error
-    try {
-      await finalizeToolLifecycle({
-          toolId,
-          status: "FAILED",
-          errorMessage: err instanceof Error ? err.message : "Build failed"
-      });
-    } catch (updateErr) {
-      console.error("[ToolLifecycle] Failed to mark tool error:", updateErr);
-    }
+    finalStatus = "FAILED";
+    finalError = err instanceof Error ? err.message : "Build failed";
 
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
@@ -631,6 +624,20 @@ export async function processToolChat(
       };
     }
     throw err;
+  } finally {
+    if (finalStatus) {
+      try {
+          await finalizeToolLifecycle({
+              toolId,
+              status: finalStatus,
+              errorMessage: finalError,
+              environment: finalEnvironment,
+              lifecycle_done: true
+          });
+      } catch (e) {
+           console.error("[ToolLifecycle] Finalization failed in finally block:", e);
+      }
+    }
   }
 
   const refinements = await withTimeout(

@@ -279,7 +279,7 @@ export function ToolRenderer({
 
       if (payload.ok && payload.data) {
         setMaterialized(true);
-        setLifecycle("READY");
+        setLifecycle("ACTIVE");
         setToolState(payload.data.records_json);
         setAuthStatus("authenticated");
       } else {
@@ -550,7 +550,7 @@ export function ToolRenderer({
           <div className="flex items-center gap-2">
             <div className="text-lg font-semibold">{systemSpec.purpose}</div>
             <div className={`rounded-full px-2 py-0.5 text-[10px] font-medium border ${
-              lifecycle === "ACTIVE" || lifecycle === "READY" ? "bg-green-500/10 text-green-600 border-green-200" :
+              lifecycle === "ACTIVE" ? "bg-green-500/10 text-green-600 border-green-200" :
               lifecycle === "FAILED" ? "bg-red-500/10 text-red-600 border-red-200" :
               "bg-muted text-muted-foreground border-border"
             }`}>

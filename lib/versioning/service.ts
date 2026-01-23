@@ -116,7 +116,7 @@ export class VersioningService {
           active_version_id: versionId,
       }).eq("id", toolId);
 
-      await finalizeToolLifecycle({ toolId, status: "READY" });
+      await finalizeToolLifecycle({ toolId, status: "ACTIVE" });
 
       // 3. Update Version Status
       await (supabase.from("tool_versions") as any).update({ status: "READY" }).eq("id", versionId);

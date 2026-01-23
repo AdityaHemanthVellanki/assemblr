@@ -229,6 +229,10 @@ export const ObservabilitySpecSchema = z.object({
 export type ObservabilitySpec = z.infer<typeof ObservabilitySpecSchema>;
 
 export const ToolLifecycleStateSchema = z.enum([
+  "DRAFT",
+  "BUILDING",
+  "READY",
+  "FAILED",
   "INIT",
   "INTENT_PARSED",
   "ENTITIES_EXTRACTED",
@@ -239,7 +243,6 @@ export const ToolLifecycleStateSchema = z.enum([
   "DATA_FETCHED",
   "ACTIVE",
   "DEGRADED",
-  "FAILED",
   "INFRA_ERROR",
   "NEEDS_CLARIFICATION",
   "AWAITING_CLARIFICATION",

@@ -1,4 +1,5 @@
 -- Fix tool lifecycle schema to be strict and source-of-truth
+-- Canonical Enum: DRAFT, BUILDING, READY, FAILED
 
 -- 1. Ensure columns exist
 alter table public.projects 
@@ -6,8 +7,11 @@ alter table public.projects
   add column if not exists finalized_at timestamptz,
   add column if not exists environment jsonb;
 
+-- Drop constraint BEFORE updates to allow transitions during migration
+alter table public.projects drop constraint if exists projects_status_check;
+
 -- Handle status column (ensure it exists)
-alter table public.projects add column if not exists status text default 'CREATED';
+alter table public.projects add column if not exists status text default 'DRAFT';
 
 -- 2. Data Migration & Normalization
 DO $$
@@ -22,27 +26,28 @@ BEGIN
 END $$;
 
 -- Normalize old status values to canonical ones
-update public.projects set status = 'READY' where status = 'active' or status = 'ready';
-update public.projects set status = 'CREATED' where status = 'draft' or status = 'building' or status is null;
-update public.projects set status = 'FAILED' where status = 'error';
-update public.projects set status = 'RUNNING' where status = 'FINALIZING';
+-- READY mappings
+update public.projects set status = 'READY' where status in ('active', 'ACTIVE', 'ready', 'MATERIALIZED', 'FINALIZING', 'READY');
 
--- Default unknowns to CREATED
+-- BUILDING mappings
+update public.projects set status = 'BUILDING' where status in ('building', 'COMPILING', 'RUNNING');
+
+-- FAILED mappings
+update public.projects set status = 'FAILED' where status in ('error', 'FAILED');
+
+-- DRAFT mappings (everything else or explicit)
+update public.projects set status = 'DRAFT' where status in ('draft', 'DRAFT', 'CREATED') or status is null;
+
+-- Default unknowns to DRAFT
 update public.projects 
-set status = 'CREATED' 
-where status not in ('CREATED', 'RUNNING', 'READY', 'FAILED');
+set status = 'DRAFT' 
+where status not in ('DRAFT', 'BUILDING', 'READY', 'FAILED');
 
 -- 3. Apply Constraints
--- We drop the constraint if it exists to ensure it matches our new definition, or we just add it if missing.
-DO $$
-BEGIN
-    -- Drop existing check if it exists (to ensure we update it if it was different)
-    -- Actually, modifying a constraint is hard. We can drop and recreate.
-    ALTER TABLE public.projects DROP CONSTRAINT IF EXISTS projects_status_check;
-    ALTER TABLE public.projects ADD CONSTRAINT projects_status_check CHECK (status in ('CREATED', 'RUNNING', 'READY', 'FAILED'));
-END $$;
+alter table public.projects add constraint projects_status_check 
+  check (status in ('DRAFT', 'BUILDING', 'READY', 'FAILED'));
 
--- 4. Cleanup old columns (Strict Schema)
+-- 4. Cleanup old columns (Strict Schema - Zero Phantom Columns)
 alter table public.projects drop column if exists is_activated;
 alter table public.projects drop column if exists environment_ready;
 alter table public.projects drop column if exists activated_at;

@@ -20,7 +20,11 @@ export async function executeToolAction(
   const supabase = await createSupabaseServerClient();
   const tracer = new ExecutionTracer("run");
 
-  try {
+  let finalStatus: "READY" | "FAILED" = "FAILED";
+    let finalError: string | null = null;
+    let finalEnvironment: any = null;
+
+    try {
     let spec: unknown;
     let compiledTool: unknown = null;
     let orgId: string | undefined;
@@ -92,22 +96,19 @@ export async function executeToolAction(
 
       // ADD A HARD INVARIANT (REQUIRED)
       if (matResult.status !== "MATERIALIZED") {
-         await finalizeToolLifecycle({
-           toolId,
-           status: "FAILED",
-           errorMessage: "Tool execution completed but environment was never finalized"
-         });
+         finalStatus = "FAILED";
+         finalError = "Tool execution completed but environment was never finalized";
          throw new FatalInvariantViolation(
            "Tool execution completed but environment was never finalized"
          );
       }
       
-      // Persist the environment update (using the barrier to update projects table)
-      await finalizeToolLifecycle({
-          toolId,
-          status: "READY",
-          environment: matResult.environment
-      });
+      finalStatus = "READY";
+      finalEnvironment = matResult.environment;
+    } else {
+       // If no action found, is it success? Assuming yes for now, but usually action is required.
+       // If we got here, execution finished.
+       finalStatus = "READY";
     }
 
     tracer.finish("success");
@@ -122,15 +123,9 @@ export async function executeToolAction(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     tracer.finish("failure", msg);
-    try {
-      await finalizeToolLifecycle({
-        toolId,
-        status: "FAILED",
-        errorMessage: msg
-      });
-    } catch (finalizeError) {
-      console.error("[ToolLifecycle] Failed to finalize tool", finalizeError);
-    }
+    
+    finalStatus = "FAILED";
+    finalError = msg;
 
     return {
       viewId: "action_exec",
@@ -140,5 +135,17 @@ export async function executeToolAction(
       timestamp: new Date().toISOString(),
       source: "live_api",
     };
+  } finally {
+    try {
+      await finalizeToolLifecycle({
+        toolId,
+        status: finalStatus,
+        errorMessage: finalError,
+        environment: finalEnvironment,
+        lifecycle_done: true
+      });
+    } catch (finalizeError) {
+      console.error("[ToolLifecycle] Failed to finalize tool", finalizeError);
+    }
   }
 }

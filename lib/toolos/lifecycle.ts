@@ -5,6 +5,7 @@ export type FinalizeLifecycleInput = {
   status: "READY" | "FAILED";
   errorMessage?: string | null;
   environment?: Record<string, any>;
+  lifecycle_done?: boolean;
 };
 
 /**
@@ -17,16 +18,20 @@ export type FinalizeLifecycleInput = {
  * 3. Throw on DB failure
  */
 export async function finalizeToolLifecycle(input: FinalizeLifecycleInput): Promise<void> {
-  const { toolId, status, errorMessage, environment } = input;
+  const { toolId, status, errorMessage, environment, lifecycle_done } = input;
   const supabase = createSupabaseAdminClient();
   
-  console.log(`[Lifecycle] Tool finalized: ${status}`, { toolId, errorMessage });
+  console.log(`[Lifecycle] Tool finalized: ${status}`, { toolId, errorMessage, lifecycle_done });
 
   const updatePayload: any = {
     status,
     error_message: status === "FAILED" ? errorMessage ?? "Unknown error" : null,
     finalized_at: new Date().toISOString(),
   };
+
+  if (lifecycle_done) {
+    updatePayload.lifecycle_done = true;
+  }
 
   if (status === "READY" && environment) {
     updatePayload.environment = environment;

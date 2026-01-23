@@ -1,7 +1,7 @@
 
 export const PROJECT_STATUSES = [
-  'CREATED',
-  'RUNNING',
+  'DRAFT',
+  'BUILDING',
   'READY',
   'FAILED'
 ] as const;

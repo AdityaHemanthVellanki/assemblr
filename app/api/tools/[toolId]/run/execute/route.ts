@@ -52,8 +52,8 @@ export async function POST(
     const input = body?.input && typeof body.input === "object" ? body.input : {};
 
     const latestResult = await getLatestToolResult(toolId, ctx.orgId);
-    if (!latestResult && (project.status === "active" || (spec as any)?.status === "active")) {
-      throw new FatalInvariantViolation("ACTIVE tool without materialized result");
+    if (!latestResult && (project.status === "READY" || (spec as any)?.status === "active")) {
+      throw new FatalInvariantViolation("READY tool without materialized result");
     }
 
     const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
@@ -95,6 +95,9 @@ export async function POST(
         });
         
         if (matResult.status === "MATERIALIZED") {
+             // await (supabase.from("projects") as any)
+             //   .update({ status: "MATERIALIZED" })
+             //   .eq("id", toolId);
              await finalizeToolLifecycle({
                  toolId,
                  status: "READY",
