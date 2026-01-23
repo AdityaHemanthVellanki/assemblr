@@ -123,6 +123,11 @@ export default async function ProjectPage({
       | undefined,
   }));
 
+  const viewSpecPayload =
+    Array.isArray(renderStateRes?.data?.view_spec)
+      ? { views: renderStateRes?.data?.view_spec }
+      : renderStateRes?.data?.view_spec ?? null;
+
   return (
     <ProjectWorkspace
       project={{
@@ -132,8 +137,8 @@ export default async function ProjectPage({
         build_logs: normalizedBuildLogs,
         status: projectRes.data.status,
         error_message: projectRes.data.error_message,
-        view_spec: renderStateRes?.data?.view_spec ?? null,
-        view_ready: Boolean(renderStateRes?.data?.view_spec),
+        view_spec: viewSpecPayload,
+        view_ready: Boolean(viewSpecPayload),
         data_snapshot: renderStateRes?.data?.snapshot ?? null,
         data_ready: Boolean(renderStateRes?.data?.snapshot),
       }}

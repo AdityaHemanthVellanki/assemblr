@@ -30,6 +30,7 @@ export class VersioningService {
       workflows: [],
       triggers: [],
       views: [],
+      query_plans: [],
       permissions: { roles: [], grants: [] },
       integrations: [],
       memory: { tool: { namespace: toolId, retentionDays: 30, schema: {} }, user: { namespace: toolId, retentionDays: 30, schema: {} } },

@@ -10,7 +10,7 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { type ViewSpec } from "@/lib/toolos/spec";
+import { type ViewSpec, type ViewSpecPayload } from "@/lib/toolos/spec";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
@@ -25,7 +25,7 @@ interface ProjectWorkspaceProps {
     build_logs?: ToolBuildLog[] | null;
     status?: string | null;
     error_message?: string | null;
-    view_spec?: ViewSpec[] | null;
+    view_spec?: ViewSpecPayload | null;
     view_ready?: boolean | null;
     data_snapshot?: Record<string, any> | null;
     data_ready?: boolean | null;
@@ -72,7 +72,7 @@ export function ProjectWorkspace({
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
   const [viewReady, setViewReady] = React.useState<boolean>(project?.view_ready ?? false);
-  const [viewSpec, setViewSpec] = React.useState<ViewSpec[] | null>(project?.view_spec ?? null);
+  const [viewSpec, setViewSpec] = React.useState<ViewSpecPayload | null>(project?.view_spec ?? null);
   const [dataReady, setDataReady] = React.useState<boolean>(project?.data_ready ?? false);
   const [dataSnapshot, setDataSnapshot] = React.useState<Record<string, any> | null>(project?.data_snapshot ?? null);
   const didPollRef = React.useRef(false);
@@ -119,7 +119,11 @@ export function ProjectWorkspace({
                  setDataReady(true);
                  setViewReady(true);
                  if (res.data_snapshot) setDataSnapshot(res.data_snapshot);
-                if (res.view_spec) setViewSpec(res.view_spec);
+                if (res.view_spec) {
+                  const normalized =
+                    Array.isArray(res.view_spec) ? { views: res.view_spec } : res.view_spec;
+                  setViewSpec(normalized);
+                }
                  return;
             }
 
@@ -136,8 +140,10 @@ export function ProjectWorkspace({
             }
 
             if (res.view_ready === true && res.view_spec) {
+                 const normalized =
+                   Array.isArray(res.view_spec) ? { views: res.view_spec } : res.view_spec;
                  setViewReady(true);
-                 setViewSpec(res.view_spec);
+                 setViewSpec(normalized);
             }
             
             if (res.data_ready === true && res.view_ready === true) {
@@ -420,7 +426,7 @@ export function ProjectWorkspace({
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
               {canRenderTool && viewSpec ? (
-                <ToolViewRenderer views={viewSpec} dataSnapshot={dataSnapshot} />
+                <ToolViewRenderer viewSpec={viewSpec} dataSnapshot={dataSnapshot} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {initError || projectStatus === "FAILED" ? (
@@ -626,14 +632,16 @@ function formatDiff(diff: Record<string, any> | null) {
 }
 
 function ToolViewRenderer({
-  views,
+  viewSpec,
   dataSnapshot,
 }: {
-  views: ViewSpec[];
+  viewSpec: ViewSpecPayload;
   dataSnapshot: Record<string, any> | null;
 }) {
   const records = resolveSnapshotRecords(dataSnapshot ?? null);
   const state = records.state ?? {};
+  const views = Array.isArray(viewSpec.views) ? viewSpec.views : [];
+  const answerContract = viewSpec.answer_contract;
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="border-b border-border/60 px-6 py-4">
@@ -671,7 +679,11 @@ function ToolViewRenderer({
                   </tbody>
                 </table>
                 {rows.length === 0 && (
-                  <div className="px-4 py-6 text-sm text-muted-foreground">No results.</div>
+                  <div className="px-4 py-6 text-sm text-muted-foreground">
+                    {answerContract?.required_constraints?.[0]
+                      ? `No ${answerContract.entity_type}s found related to "${answerContract.required_constraints[0].value}".`
+                      : "No results."}
+                  </div>
                 )}
               </div>
             </div>

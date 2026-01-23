@@ -5,9 +5,11 @@ import { buildCompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/
 import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
+import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
-import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
+import { materializeToolOutput, getLatestToolResult, buildSnapshotRecords } from "@/lib/toolos/materialization";
+import { type ViewSpecPayload } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -128,9 +130,8 @@ export async function POST(
             readActionIds.length === 0 || readActionIds.every((id: string) => id in actionOutputs);
 
           if (actionsComplete) {
-            const integrationData = recordsToUse?.integrations ?? {};
-            if (Object.keys(integrationData).length === 0) {
-              throw new Error("Integration data empty — abort finalize");
+            if (!spec.answer_contract) {
+              throw new Error("Answer contract required but missing");
             }
             if (!spec.views || spec.views.length === 0) {
               throw new Error("View spec required but missing");
@@ -140,9 +141,33 @@ export async function POST(
               throw new Error("View spec required but invalid fields");
             }
 
+            const outputEntries = (spec?.actions ?? [])
+              .filter((specAction: any) => specAction?.type === "READ")
+              .map((specAction: any) => ({
+                action: specAction,
+                output: actionOutputs?.[specAction.id],
+              }))
+              .filter((entry: any) => entry.output !== undefined && entry.output !== null);
+
+            const validation = validateFetchedData(outputEntries, spec.answer_contract);
+            const snapshotRecords = buildSnapshotRecords({
+              spec,
+              outputs: validation.outputs,
+              previous: null,
+            });
+            const integrationData = snapshotRecords.integrations;
+            if (Object.keys(integrationData).length === 0) {
+              throw new Error("Integration data empty — abort finalize");
+            }
+
             const finalizedAt = new Date().toISOString();
-            const snapshot = recordsToUse;
-            const viewSpec = spec.views;
+            const snapshot = snapshotRecords;
+            const viewSpec: ViewSpecPayload = {
+              views: spec.views,
+              answer_contract: spec.answer_contract,
+              query_plans: spec.query_plans,
+              tool_graph: spec.tool_graph,
+            };
 
             console.log("[FINALIZE] Writing flags to toolId:", toolId);
             console.error("[FINALIZE CONTEXT]", {

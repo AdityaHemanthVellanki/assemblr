@@ -272,6 +272,9 @@ function mergeSpec(base: ToolSystemSpec, patch: Partial<ToolSystemSpec>): ToolSy
     workflows: patch.workflows ?? base.workflows,
     triggers: patch.triggers ?? base.triggers,
     views: patch.views ?? base.views,
+    answer_contract: patch.answer_contract ?? base.answer_contract,
+    query_plans: patch.query_plans ?? base.query_plans,
+    tool_graph: patch.tool_graph ?? base.tool_graph,
     permissions: patch.permissions ?? base.permissions,
     integrations: patch.integrations ?? base.integrations,
     memory: patch.memory ?? base.memory,
@@ -295,6 +298,7 @@ function buildBaseSpec(prompt: string, toolId: string): ToolSystemSpec {
     workflows: [],
     triggers: [],
     views: [],
+    query_plans: [],
     permissions: { roles: [], grants: [] },
     integrations: [],
     memory: {

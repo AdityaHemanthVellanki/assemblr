@@ -81,9 +81,17 @@ async function runE2E() {
   if (renderState.data_ready !== true || renderState.view_ready !== true) {
     throw new Error("Render state flags are not true");
   }
-  const views = Array.isArray(renderState.view_spec) ? renderState.view_spec : [];
+  const viewPayload = renderState.view_spec ?? null;
+  const views = Array.isArray(viewPayload?.views) ? viewPayload.views : [];
   if (views.length === 0) {
     throw new Error("View spec missing after finalize");
+  }
+  if (!viewPayload?.answer_contract) {
+    throw new Error("Answer contract missing after finalize");
+  }
+  const googlePlan = (viewPayload?.query_plans ?? []).find((plan: any) => plan.integrationId === "google");
+  if (!googlePlan || !String(googlePlan.query?.q ?? "").includes("contexto")) {
+    throw new Error("Query plan missing semantic constraint");
   }
   const nonGoogleView = views.find((view: any) => !String(view?.source?.statePath ?? "").startsWith("google."));
   if (nonGoogleView) {

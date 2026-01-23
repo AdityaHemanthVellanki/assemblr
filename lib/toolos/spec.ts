@@ -203,6 +203,58 @@ export const DataReadinessGateSchema = z.object({
 });
 export type DataReadinessGate = z.infer<typeof DataReadinessGateSchema>;
 
+export const AnswerConstraintSchema = z.object({
+  field: z.string().min(1),
+  operator: z.enum(["semantic_contains"]),
+  value: z.string().min(1),
+});
+export type AnswerConstraint = z.infer<typeof AnswerConstraintSchema>;
+
+export const AnswerContractSchema = z.object({
+  entity_type: z.string().min(1),
+  required_constraints: z.array(AnswerConstraintSchema).default([]),
+  failure_policy: z.enum(["empty_over_incorrect"]),
+});
+export type AnswerContract = z.infer<typeof AnswerContractSchema>;
+
+export const IntegrationQueryPlanSchema = z.object({
+  integrationId: IntegrationIdSchema,
+  actionId: z.string().min(1),
+  query: z.record(z.string(), z.any()).default({}),
+  fields: z.array(z.string()).default([]),
+  max_results: z.number().min(1).optional(),
+});
+export type IntegrationQueryPlan = z.infer<typeof IntegrationQueryPlanSchema>;
+
+export const ToolGraphNodeSchema = z.object({
+  id: z.string().min(1),
+  type: z.string().min(1),
+  inputs: z.array(z.string()).default([]),
+  outputs: z.array(z.string()).default([]),
+  config: z.record(z.string(), z.any()).default({}),
+});
+export type ToolGraphNode = z.infer<typeof ToolGraphNodeSchema>;
+
+export const ToolGraphEdgeSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+});
+export type ToolGraphEdge = z.infer<typeof ToolGraphEdgeSchema>;
+
+export const ToolGraphSchema = z.object({
+  nodes: z.array(ToolGraphNodeSchema).default([]),
+  edges: z.array(ToolGraphEdgeSchema).default([]),
+});
+export type ToolGraph = z.infer<typeof ToolGraphSchema>;
+
+export const ViewSpecPayloadSchema = z.object({
+  views: z.array(ViewSpecSchema),
+  answer_contract: AnswerContractSchema.optional(),
+  query_plans: z.array(IntegrationQueryPlanSchema).default([]),
+  tool_graph: ToolGraphSchema.optional(),
+});
+export type ViewSpecPayload = z.infer<typeof ViewSpecPayloadSchema>;
+
 export const AutomationCapabilitiesSchema = z.object({
   canRunWithoutUI: z.boolean(),
   supportedTriggers: z.array(z.string()).default([]),
@@ -280,6 +332,9 @@ export const ToolSystemSpecSchema = z.object({
   integrations: z.array(IntegrationSpecSchema),
   initialFetch: InitialFetchSchema.optional(),
   dataReadiness: DataReadinessGateSchema.optional(),
+  answer_contract: AnswerContractSchema.optional(),
+  query_plans: z.array(IntegrationQueryPlanSchema).default([]),
+  tool_graph: ToolGraphSchema.optional(),
   memory: MemorySpecSchema,
   automations: AutomationsSpecSchema.optional(),
   observability: ObservabilitySpecSchema.optional(),

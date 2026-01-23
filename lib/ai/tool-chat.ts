@@ -3,7 +3,7 @@ import "server-only";
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, type AnswerContract, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
@@ -20,6 +20,7 @@ import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } from "@/lib/toolos/materialization";
+import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -330,6 +331,7 @@ export async function processToolChat(
 
     spec = canonicalizeToolSpec(compilerResult.spec);
     spec = enforceViewSpecForPrompt(spec, input.userMessage);
+    spec = await applyAnswerContract(spec, input.userMessage);
     transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
     const toolSystemValidation = validateToolSystem(spec);
@@ -470,6 +472,7 @@ export async function processToolChat(
     const outputs: Array<{ action: any; output: any; error?: any }> = [];
     
     const readActions = (spec.actions || []).filter((action) => action.type === "READ");
+    const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
     
     if (spec.initialFetch?.actionId) {
         const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
@@ -484,7 +487,11 @@ export async function processToolChat(
         
         for (const action of readActions) {
             try {
-                 const input = { limit: spec.initialFetch?.limit ?? 10 };
+                 const plan = queryPlanByAction.get(action.id);
+                 const input =
+                   plan && Object.keys(plan.query ?? {}).length > 0
+                     ? plan.query
+                     : { limit: spec.initialFetch?.limit ?? 10 };
                  const result = await executeToolAction({
                       orgId: buildContext.orgId,
                       toolId,
@@ -507,6 +514,9 @@ export async function processToolChat(
       if (successfulOutputs.length === 0) {
         throw new Error("Integration data empty — abort finalize");
       }
+      if (!spec.answer_contract) {
+        throw new Error("Answer contract required but missing");
+      }
 
       if (!spec.views || spec.views.length === 0) {
         throw new Error("View spec required but missing");
@@ -516,16 +526,28 @@ export async function processToolChat(
         throw new Error("View spec required but invalid fields");
       }
 
+      const validation = validateFetchedData(
+        successfulOutputs.map((entry) => ({ action: entry.action, output: entry.output })),
+        spec.answer_contract
+      );
+      if (validation.violations.length > 0) {
+        console.warn("[AnswerContract] Dropped rows", validation.violations);
+      }
       const snapshotRecords = buildSnapshotRecords({
         spec,
-        outputs: successfulOutputs.map((entry) => ({ action: entry.action, output: entry.output })),
+        outputs: validation.outputs,
         previous: null,
       });
 
       const integrationResults = snapshotRecords.integrations;
       const finalizedAt = new Date().toISOString();
       const snapshot = snapshotRecords;
-      const viewSpec = spec.views;
+      const viewSpec: ViewSpecPayload = {
+        views: spec.views,
+        answer_contract: spec.answer_contract,
+        query_plans: spec.query_plans,
+        tool_graph: spec.tool_graph,
+      };
 
       console.log("[FINALIZE] Writing flags to toolId:", toolId);
       console.error("[FINALIZE CONTEXT]", {
@@ -842,6 +864,7 @@ async function runDataReadiness(
   const logs: string[] = [];
   const authErrors: string[] = [];
   const outputs: Array<{ action: ToolSystemSpec["actions"][number]; output: any }> = [];
+  const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
   const readActions = spec.actions.filter((action) => {
     const cap = getCapability(action.capabilityId);
     return cap?.allowedOperations.includes("read");
@@ -862,7 +885,11 @@ async function runDataReadiness(
     
     if (context) {
       try {
-        const input = buildDefaultInput(cap);
+        const plan = queryPlanByAction.get(action.id);
+        const input =
+          plan && Object.keys(plan.query ?? {}).length > 0
+            ? plan.query
+            : buildDefaultInput(cap);
         logs.push(`Executing ${action.name} (${action.integrationId})...`);
         
         const result = await executeToolAction({
@@ -985,6 +1012,101 @@ function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSys
     return view;
   });
   return { ...spec, views: normalizedViews };
+}
+
+async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
+  const response = await azureOpenAIClient.chat.completions.create({
+    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    messages: [
+      {
+        role: "system",
+        content:
+          `Return JSON only: {"entity_type":string,"required_constraints":[{"field":string,"operator":"semantic_contains","value":string}],"failure_policy":"empty_over_incorrect"}.`,
+      },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0,
+    max_tokens: 200,
+    response_format: { type: "json_object" },
+  });
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Answer contract required but invalid");
+  }
+  let parsed;
+  try {
+    parsed = AnswerContractSchema.safeParse(JSON.parse(content));
+  } catch {
+    throw new Error("Answer contract required but invalid");
+  }
+  if (!parsed.success) {
+    throw new Error("Answer contract required but invalid");
+  }
+  const contract = parsed.data;
+  const queryPlans = buildQueryPlansForContract(spec, contract);
+  if (queryPlans.length === 0) {
+    throw new Error("Answer contract required but query plans missing");
+  }
+  const toolGraph = buildToolGraphForContract(queryPlans);
+  return {
+    ...spec,
+    answer_contract: contract,
+    query_plans: queryPlans,
+    tool_graph: toolGraph,
+  };
+}
+
+function buildQueryPlansForContract(spec: ToolSystemSpec, contract: AnswerContract): IntegrationQueryPlan[] {
+  const constraint = contract.required_constraints[0];
+  if (!constraint) return [];
+  const queryPlans: IntegrationQueryPlan[] = [];
+  for (const action of spec.actions) {
+    if (action.type !== "READ") continue;
+    if (contract.entity_type === "email" && action.integrationId === "google") {
+      queryPlans.push({
+        integrationId: action.integrationId,
+        actionId: action.id,
+        query: { q: constraint.value, maxResults: 50 },
+        fields: ["from", "subject", "snippet", "date"],
+        max_results: 50,
+      });
+      continue;
+    }
+    queryPlans.push({
+      integrationId: action.integrationId,
+      actionId: action.id,
+      query: {},
+      fields: [],
+    });
+  }
+  return queryPlans;
+}
+
+function buildToolGraphForContract(queryPlans: IntegrationQueryPlan[]): ToolGraph {
+  const nodes = queryPlans.map((plan) => ({
+    id: `query.${plan.integrationId}.${plan.actionId}`,
+    type: "QueryNode",
+    inputs: [],
+    outputs: [`data.${plan.actionId}`],
+    config: plan,
+  }));
+  const filterNode = {
+    id: "filter.contract",
+    type: "FilterNode",
+    inputs: nodes.map((node) => node.outputs[0]),
+    outputs: ["data.filtered"],
+    config: {},
+  };
+  const viewNode = {
+    id: "view.output",
+    type: "ViewNode",
+    inputs: ["data.filtered"],
+    outputs: ["ui.view"],
+    config: {},
+  };
+  const edges = nodes.map((node) => ({ from: node.id, to: filterNode.id }));
+  edges.push({ from: filterNode.id, to: viewNode.id });
+  return { nodes: [...nodes, filterNode, viewNode], edges };
 }
 
 function buildQueryPlans(spec: ToolSystemSpec) {
@@ -1179,6 +1301,7 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     workflows,
     triggers,
     views,
+    query_plans: spec.query_plans ?? [],
     integrations,
     automations,
     observability: spec.observability ?? {
@@ -1444,6 +1567,7 @@ function buildFallbackToolSpec(
     workflows: [],
     triggers: [],
     views,
+    query_plans: [],
     permissions: { roles: [{ id: "owner", name: "Owner" }], grants: [] },
     integrations: normalized.map((id) => ({
       id,
