@@ -56,7 +56,7 @@ async function checkProjectSchemaRuntime(toolId: string): Promise<boolean> {
    // If the database does not have these columns, Supabase/Postgres will return an error.
    // This is a "canary query" to verify schema contract.
   const { error } = await (supabase.from("projects") as any)
-    .select("status, error_message, finalized_at, environment")
+    .select("status, error_message, finalized_at, environment, view_spec, view_ready, data_snapshot, data_ready, data_fetched_at")
      .eq("id", toolId)
      .limit(1)
      .single();

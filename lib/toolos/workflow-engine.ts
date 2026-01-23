@@ -57,64 +57,56 @@ export async function runWorkflow(params: {
     if (node.type === "action") {
       if (!node.actionId) throw new Error(`Workflow node ${node.id} missing actionId`);
       await updateExecutionRun({ runId: run.id, currentStep: node.id });
-      const retryPolicy = workflow.retryPolicy;
-      let attempts = 0;
       const inputPayload = { ...input, ...(nodeResults[node.id] ?? {}) };
       const actionSpec = actionMap.get(node.actionId);
-      while (true) {
-        const startedAt = Date.now();
-        try {
-      const result = await executeToolAction({
-        orgId,
-        toolId,
-        compiledTool,
-        actionId: node.actionId,
-        input: inputPayload,
-        recordRun: false,
-      });
-          nodeResults[node.id] = result.output;
-          runLogs.push({
-            id: `${node.id}:done`,
-            timestamp: new Date().toISOString(),
-            status: "done",
-            actionId: node.actionId,
-            integrationId: actionSpec?.integrationId,
-            capabilityId: actionSpec?.capabilityId,
-            durationMs: Date.now() - startedAt,
-            retries: attempts,
-            input: sanitizeLogData(inputPayload),
-            output: summarizeOutput(result.output),
-          });
-          await updateExecutionRun({
-            runId: run.id,
-            logs: runLogs,
-          });
-          break;
-        } catch (err) {
-          attempts += 1;
-          if (attempts > retryPolicy.maxRetries) {
-            runLogs.push({
-              id: `${node.id}:failed`,
-              timestamp: new Date().toISOString(),
-              status: "failed",
-              actionId: node.actionId,
-              integrationId: actionSpec?.integrationId,
-              capabilityId: actionSpec?.capabilityId,
-              durationMs: Date.now() - startedAt,
-              retries: attempts,
-              input: sanitizeLogData(inputPayload),
-              error: err instanceof Error ? err.message : "error",
-            });
-            await updateExecutionRun({
-              runId: run.id,
-              status: "failed",
-              currentStep: node.id,
-              logs: runLogs,
-            });
-            throw err;
-          }
-          await new Promise((resolve) => setTimeout(resolve, retryPolicy.backoffMs));
-        }
+      
+      const startedAt = Date.now();
+      try {
+        const result = await executeToolAction({
+          orgId,
+          toolId,
+          compiledTool,
+          actionId: node.actionId,
+          input: inputPayload,
+          recordRun: false,
+        });
+        nodeResults[node.id] = result.output;
+        runLogs.push({
+          id: `${node.id}:done`,
+          timestamp: new Date().toISOString(),
+          status: "done",
+          actionId: node.actionId,
+          integrationId: actionSpec?.integrationId,
+          capabilityId: actionSpec?.capabilityId,
+          durationMs: Date.now() - startedAt,
+          retries: 0,
+          input: sanitizeLogData(inputPayload),
+          output: summarizeOutput(result.output),
+        });
+        await updateExecutionRun({
+          runId: run.id,
+          logs: runLogs,
+        });
+      } catch (err) {
+        runLogs.push({
+          id: `${node.id}:failed`,
+          timestamp: new Date().toISOString(),
+          status: "failed",
+          actionId: node.actionId,
+          integrationId: actionSpec?.integrationId,
+          capabilityId: actionSpec?.capabilityId,
+          durationMs: Date.now() - startedAt,
+          retries: 0,
+          input: sanitizeLogData(inputPayload),
+          error: err instanceof Error ? err.message : "error",
+        });
+        await updateExecutionRun({
+          runId: run.id,
+          status: "failed",
+          currentStep: node.id,
+          logs: runLogs,
+        });
+        throw err;
       }
       continue;
     }

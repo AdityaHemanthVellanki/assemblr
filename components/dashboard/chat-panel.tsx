@@ -124,10 +124,8 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     }
 
     fetchStatuses();
-    const interval = setInterval(fetchStatuses, 5000); // Poll every 5s
     return () => {
       mounted = false;
-      clearInterval(interval);
     };
   }, []);
 

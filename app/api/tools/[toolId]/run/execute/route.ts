@@ -1,14 +1,14 @@
 import { requireOrgMember } from "@/lib/auth/permissions.server";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
+import { buildCompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { renderView } from "@/lib/toolos/view-renderer";
+import { renderView, buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult } from "@/lib/toolos/materialization";
-import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
+import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export async function POST(
@@ -22,7 +22,7 @@ export async function POST(
     const supabase = createSupabaseAdminClient();
 
     const { data: project, error } = await (supabase.from("projects") as any)
-      .select("spec, active_version_id")
+      .select("spec, active_version_id, status")
       .eq("id", toolId)
       .eq("org_id", ctx.orgId)
       .single();
@@ -46,6 +46,10 @@ export async function POST(
       return errorResponse("Invalid tool spec", 422);
     }
 
+    const compiledArtifact = isCompiledToolArtifact(compiledTool)
+      ? compiledTool
+      : buildCompiledToolArtifact(spec as ToolSystemSpec);
+
     const body = await req.json().catch(() => ({}));
     const actionId = typeof body?.actionId === "string" ? body.actionId : null;
     const viewId = typeof body?.viewId === "string" ? body.viewId : null;
@@ -53,7 +57,10 @@ export async function POST(
 
     const latestResult = await getLatestToolResult(toolId, ctx.orgId);
     if (!latestResult && (project.status === "READY" || (spec as any)?.status === "active")) {
-      throw new FatalInvariantViolation("READY tool without materialized result");
+      // Allow execution if we are running an action (bootstrapping)
+      if (!actionId) {
+         throw new FatalInvariantViolation("READY tool without materialized result");
+      }
     }
 
     const scope: MemoryScope = { type: "tool_org", toolId, orgId: ctx.orgId };
@@ -63,74 +70,94 @@ export async function POST(
       key: "data_evidence",
     });
 
-    // Action Execution
     if (actionId) {
-      if (!isCompiledToolArtifact(compiledTool)) {
-        return errorResponse("Compiled tool artifact missing", 500);
-      }
-      const action = spec.actions.find((entry) => entry.id === actionId);
-      if (!action) {
-        return errorResponse("Action not found", 404);
-      }
-      const result = await executeToolAction({
-        orgId: ctx.orgId,
-        toolId,
-        compiledTool,
-        actionId,
-        input,
-        userId: ctx.userId,
+      // DEADMAN TIMEOUT: Force fail if execution hangs
+      const DEADMAN_TIMEOUT_MS = 60000;
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Tool execution deadlocked: data_ready never set")), DEADMAN_TIMEOUT_MS);
       });
-      
-      let recordsToUse = latestResult?.records_json as any ?? null;
-      let stateToUse = recordsToUse?.state ?? {};
 
-      if (action.type === "READ") {
-        console.log("[ToolRuntime] Runtime completed");
-        const matResult = await materializeToolOutput({
-           toolId,
-           orgId: ctx.orgId,
-           actionOutputs: [{ action, output: result.output }],
-           spec: spec,
-           previousRecords: recordsToUse
+      // Execute Action with Timeout Race
+      const executionPromise = (async () => {
+        // Resolve Action Definition
+        let action: any = null;
+        action = compiledArtifact.actions.find((a) => a.id === actionId);
+        if (!action) {
+            throw new Error(`Action ${actionId} not found in spec`);
+        }
+
+        const result = await executeToolAction({
+          orgId: ctx.orgId,
+          toolId,
+          compiledTool: compiledArtifact,
+          actionId,
+          input,
+          userId: ctx.userId,
         });
         
-        if (matResult.status === "MATERIALIZED") {
-             // await (supabase.from("projects") as any)
-             //   .update({ status: "MATERIALIZED" })
-             //   .eq("id", toolId);
-             await finalizeToolLifecycle({
+        let recordsToUse = latestResult?.records_json as any ?? null;
+        let stateToUse = recordsToUse?.state ?? {};
+
+        // Only materialize and finalize on READ (Integration Fetch) actions
+        // or if it's the first run (no records yet)
+        const isRead = action.type === "READ" || action.type === "read";
+        
+        if (isRead) {
+          console.log("[FINALIZE] All integrations completed for tool", toolId);
+          const matResult = await materializeToolOutput({
+             toolId,
+             orgId: ctx.orgId,
+             actionOutputs: [{ action, output: result.output }],
+             spec: spec,
+             previousRecords: recordsToUse
+          });
+          
+          if (matResult.status === "MATERIALIZED") {
+               const dataSnapshot = matResult.environment?.records ?? {};
+               const viewSpec = buildDefaultViewSpec(dataSnapshot);
+               
+               // CALL SINGLE FINALIZATION FUNCTION
+               await finalizeToolExecution({
                  toolId,
                  status: "READY",
-                 environment: matResult.environment
-             });
-             recordsToUse = matResult.environment?.records;
-        } else {
-             await finalizeToolLifecycle({
+                 data_snapshot: dataSnapshot,
+                 view_spec: viewSpec,
+                 environment: matResult.environment,
+               });
+               
+               recordsToUse = matResult.environment?.records;
+          } else {
+               await finalizeToolExecution({
                  toolId,
                  status: "FAILED",
-                 errorMessage: "Materialization failed"
-             });
-             return errorResponse("Tool execution completed but environment was never finalized", 500);
+                 errorMessage: "Materialization failed",
+                 view_ready: false,
+                 data_ready: false,
+               });
+               throw new Error("Tool execution completed but environment was never finalized");
+          }
+          
+          stateToUse = recordsToUse?.state ?? {};
         }
-        
-        stateToUse = recordsToUse?.state ?? {};
-      }
 
-      if (viewId) {
-        const view = renderView(spec, stateToUse, viewId);
+        if (viewId) {
+          const view = renderView(spec, stateToUse, viewId);
+          return jsonResponse({
+            view,
+            state: stateToUse,
+            events: result.events,
+            evidence: evidence ?? null,
+          });
+        }
         return jsonResponse({
-          view,
           state: stateToUse,
+          output: result.output,
           events: result.events,
           evidence: evidence ?? null,
         });
-      }
-      return jsonResponse({
-        state: stateToUse,
-        output: result.output,
-        events: result.events,
-        evidence: evidence ?? null,
-      });
+      })();
+
+      return await Promise.race([executionPromise, timeoutPromise]) as Response;
     }
 
     // View Rendering (Read Only)

@@ -18,8 +18,6 @@ export class EventLoop {
     
     // Initial Run
     this.tick();
-
-    this.interval = setInterval(() => this.tick(), intervalMs);
   }
 
   stop() {

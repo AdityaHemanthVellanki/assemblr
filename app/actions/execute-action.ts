@@ -7,8 +7,9 @@ import { ensureCorePluginsLoaded } from "@/lib/core/plugins/loader";
 import { executeToolAction as executeToolSystemAction } from "@/lib/toolos/runtime";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation } from "@/lib/toolos/materialization";
-import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
+import { materializeToolOutput, getLatestToolResult, FatalInvariantViolation, type SnapshotRecords } from "@/lib/toolos/materialization";
+import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
+import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
 
 export async function executeToolAction(
   toolId: string,
@@ -23,6 +24,9 @@ export async function executeToolAction(
   let finalStatus: "READY" | "FAILED" = "FAILED";
     let finalError: string | null = null;
     let finalEnvironment: any = null;
+    let finalViewSpec: Record<string, any> | null = null;
+    let finalDataSnapshot: SnapshotRecords | null = null;
+    let finalDataFetchedAt: string | null = null;
 
     try {
     let spec: unknown;
@@ -105,10 +109,24 @@ export async function executeToolAction(
       
       finalStatus = "READY";
       finalEnvironment = matResult.environment;
+      finalViewSpec = buildDefaultViewSpec(matResult.environment?.records ?? null);
+      finalDataSnapshot = (matResult.environment?.records ?? {
+        state: {},
+        actions: {},
+        integrations: {},
+      }) as SnapshotRecords;
+      finalDataFetchedAt = new Date().toISOString();
     } else {
        // If no action found, is it success? Assuming yes for now, but usually action is required.
        // If we got here, execution finished.
        finalStatus = "READY";
+       finalViewSpec = buildDefaultViewSpec(null);
+       finalDataSnapshot = {
+         state: {},
+         actions: {},
+         integrations: {},
+       };
+       finalDataFetchedAt = new Date().toISOString();
     }
 
     tracer.finish("success");
@@ -137,12 +155,16 @@ export async function executeToolAction(
     };
   } finally {
     try {
-      await finalizeToolLifecycle({
+      await finalizeToolExecution({
         toolId,
         status: finalStatus,
         errorMessage: finalError,
         environment: finalEnvironment,
-        lifecycle_done: true
+        view_spec: finalViewSpec,
+        view_ready: Boolean(finalViewSpec),
+        data_snapshot: finalDataSnapshot,
+        data_ready: finalDataSnapshot !== null,
+        data_fetched_at: finalDataFetchedAt
       });
     } catch (finalizeError) {
       console.error("[ToolLifecycle] Failed to finalize tool", finalizeError);

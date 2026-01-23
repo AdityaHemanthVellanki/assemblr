@@ -10,7 +10,7 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { ToolRenderer } from "@/components/dashboard/tool-renderer";
+import type { DefaultViewSpec } from "@/lib/toolos/view-renderer";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
@@ -24,6 +24,10 @@ interface ProjectWorkspaceProps {
     build_logs?: ToolBuildLog[] | null;
     status?: string | null;
     error_message?: string | null;
+    view_spec?: DefaultViewSpec | null;
+    view_ready?: boolean | null;
+    data_snapshot?: Record<string, any> | null;
+    data_ready?: boolean | null;
   } | null;
   initialMessages: Array<{
     role: "user" | "assistant";
@@ -66,7 +70,11 @@ export function ProjectWorkspace({
 
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
-  const [lifecycleDone, setLifecycleDone] = React.useState<boolean>(false);
+  const [viewReady, setViewReady] = React.useState<boolean>(project?.view_ready ?? false);
+  const [viewSpec, setViewSpec] = React.useState<DefaultViewSpec | null>(project?.view_spec ?? null);
+  const [dataReady, setDataReady] = React.useState<boolean>(project?.data_ready ?? false);
+  const [dataSnapshot, setDataSnapshot] = React.useState<Record<string, any> | null>(project?.data_snapshot ?? null);
+  const didPollRef = React.useRef(false);
 
   // Derived state
   const isZeroState = messages.length === 0;
@@ -74,20 +82,55 @@ export function ProjectWorkspace({
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
-  const canRenderTool = Boolean(currentSpec && toolId && projectStatus === "READY");
+  const canRenderTool = Boolean(toolId && viewReady && dataReady && viewSpec);
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
     if (!toolId) return;
+    didPollRef.current = false;
+  }, [toolId]);
+
+  React.useEffect(() => {
+    if (!toolId) return;
+    if (didPollRef.current) return;
     
     // If already ready, don't poll
-    if (canRenderTool) return;
-    if (projectStatus === "FAILED") return;
-    if (lifecycleDone) return; // Stop polling if done (Authoritative)
+    if (canRenderTool) {
+      didPollRef.current = true;
+      return;
+    }
+    if (projectStatus === "FAILED") {
+      didPollRef.current = true;
+      return;
+    }
+    if (viewReady && dataReady) {
+      didPollRef.current = true;
+      return;
+    }
 
     const poll = async () => {
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
+            
+            // Hard stop condition per user mandate
+            if (res.data_ready === true && res.view_ready === true) {
+                 console.log("[UI] Data ready, stopping polling");
+                 setDataReady(true);
+                 setViewReady(true);
+                 if (res.data_snapshot) setDataSnapshot(res.data_snapshot);
+                 if (res.view_spec) setViewSpec(res.view_spec);
+                 
+                 // Fallback render logic
+                 if (!res.view_spec && res.data_snapshot) {
+                     setViewSpec({
+                         type: "debug",
+                         title: "Raw Tool Output",
+                         payload: res.data_snapshot
+                     } as any);
+                 }
+                 return;
+            }
+
             // Update local state from DB response
             if (res.status) setProjectStatus(res.status);
 
@@ -95,18 +138,25 @@ export function ProjectWorkspace({
                  setInitError(res.error);
             }
 
-            // AUTHORITATIVE LIFECYCLE SIGNAL
-            if (res.done === true) {
-                 setLifecycleDone(true);
+            if (res.data_ready === true && res.data_snapshot) {
+                 setDataReady(true);
+                 setDataSnapshot(res.data_snapshot);
+            }
+
+            if (res.view_ready === true && res.view_spec) {
+                 setViewReady(true);
+                 setViewSpec(res.view_spec);
+            }
+            
+            // Redundant check but keeping for safety if logic falls through
+            if (res.data_ready === true && res.view_ready === true) {
                  if (res.status === "FAILED") {
                      setInitError(res.error || "Tool initialization failed.");
                  }
-                 return; // Stop polling
+                 return;
             }
 
-            if (res.status === "READY") {
-                 // Terminal state: success
-            } else if (res.status === "FAILED") {
+            if (res.status === "FAILED") {
                  // Terminal state: failure
                  setInitError(res.error || "Tool initialization failed.");
             }
@@ -115,12 +165,9 @@ export function ProjectWorkspace({
         }
     };
 
-    const timer = setInterval(poll, 2000);
-    // Poll immediately once
+    didPollRef.current = true;
     void poll();
-    
-    return () => clearInterval(timer);
-  }, [toolId, canRenderTool, projectStatus, lifecycleDone]);
+  }, [toolId, canRenderTool, projectStatus, viewReady, dataReady]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -196,6 +243,10 @@ export function ProjectWorkspace({
     setIsExecuting(true);
     setBuildSteps(markFirstRunning(defaultBuildSteps()));
     setAuthExpired(false);
+    setViewReady(false);
+    setViewSpec(null);
+    setDataReady(false);
+    setDataSnapshot(null);
 
     try {
         const response = await sendChatMessage(
@@ -377,12 +428,8 @@ export function ProjectWorkspace({
             )}
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
-              {canRenderTool && toolId && currentSpec ? (
-                <ToolRenderer 
-                  toolId={toolId} 
-                  spec={currentSpec} 
-                  status={projectStatus}
-                />
+              {canRenderTool && viewSpec ? (
+                <ViewSpecRenderer view={viewSpec} dataSnapshot={dataSnapshot} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
                   {initError || projectStatus === "FAILED" ? (
@@ -392,17 +439,17 @@ export function ProjectWorkspace({
                   ) : projectStatus === "BUILDING" || projectStatus === "COMPILING" ? (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Building tool…
+                      Fetching data…
                     </div>
                   ) : projectStatus === "MATERIALIZED" ? (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Finalizing tool…
+                      Rendering output…
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Initializing…
+                      Fetching data…
                     </div>
                   )}
                 </div>
@@ -587,6 +634,48 @@ function formatDiff(diff: Record<string, any> | null) {
   return entries;
 }
 
+function ViewSpecRenderer({
+  view,
+  dataSnapshot,
+}: {
+  view: DefaultViewSpec;
+  dataSnapshot: Record<string, any> | null;
+}) {
+  const sections = Array.isArray(view.sections) ? view.sections : [];
+  const snapshotSources = dataSnapshot && typeof dataSnapshot === "object" ? dataSnapshot : {};
+  return (
+    <div className="flex h-full flex-col bg-background">
+      <div className="border-b border-border/60 px-6 py-4">
+        <div className="text-xs uppercase text-muted-foreground">Output</div>
+        <div className="text-lg font-semibold">{view.title || "Assemblr Tool Output"}</div>
+      </div>
+      <div className="flex-1 overflow-auto p-6 space-y-6">
+        {sections.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No output available.</div>
+        ) : (
+          sections.map((section, index) => (
+            <div key={`${section.title}-${index}`} className="rounded-lg border border-border/60 bg-background p-4">
+              <div className="text-sm font-medium">{section.title}</div>
+              <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                {Array.isArray(section.items) && section.items.length > 0 ? (
+                  section.items.map((item, itemIndex) => (
+                    <div key={`${item.source}-${itemIndex}`} className="flex items-center justify-between">
+                      <span>{item.source}</span>
+                      <span>{typeof item.count === "number" ? item.count : Array.isArray((snapshotSources as any)[item.source]) ? (snapshotSources as any)[item.source].length : 0}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div>No data returned.</div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function defaultBuildSteps(): BuildStep[] {
   return [
     { id: "intent", title: "Understanding intent", status: "pending", logs: [] },
@@ -596,8 +685,8 @@ function defaultBuildSteps(): BuildStep[] {
     { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
     { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
     { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
-    { id: "runtime", title: "Executing initial fetch", status: "pending", logs: [] },
-    { id: "views", title: "Rendering views", status: "pending", logs: [] },
+    { id: "runtime", title: "Fetching data", status: "pending", logs: [] },
+    { id: "views", title: "Rendering output", status: "pending", logs: [] },
   ];
 }
 

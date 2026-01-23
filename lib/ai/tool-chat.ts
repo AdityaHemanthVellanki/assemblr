@@ -19,8 +19,9 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
-import { materializeToolOutput, finalizeToolEnvironment } from "@/lib/toolos/materialization";
-import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
+import { materializeToolOutput, finalizeToolEnvironment, type SnapshotRecords } from "@/lib/toolos/materialization";
+import { buildDefaultViewSpec } from "@/lib/toolos/view-renderer";
+import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -278,6 +279,10 @@ export async function processToolChat(
     let finalStatus: "READY" | "FAILED" | null = null;
     let finalError: string | null = null;
     let finalEnvironment: any = null;
+    let finalViewSpec: Record<string, any> | null = null;
+    let finalDataSnapshot: SnapshotRecords | null = null;
+    let finalDataFetchedAt: string | null = null;
+    let didFinalizeExecution = false;
 
   try {
     await persistLifecycle();
@@ -293,8 +298,7 @@ export async function processToolChat(
       "design-views": "views",
       "validate-spec": "compile",
     };
-    const compilerResult = await runWithRetry(
-      () => ToolCompiler.run({
+    const compilerResult = await ToolCompiler.run({
         prompt,
         sessionId: builderSessionId,
         userId: userId, // Use authoritative userId
@@ -325,11 +329,7 @@ export async function processToolChat(
           }
           markStep(steps, stepId, "error", event.message);
         },
-      }),
-      3, // retries
-      30000, // timeout
-      1000 // backoff
-    );
+      });
 
     spec = canonicalizeToolSpec(compilerResult.spec);
     transition("INTENT_PARSED", "ToolSpec generated");
@@ -404,6 +404,7 @@ export async function processToolChat(
     }
     readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
     markStep(steps, "readiness", "success", "Data readiness checks complete");
+    console.log("[FINALIZE] All integrations completed for tool", input.toolId);
     markStep(steps, "runtime", "running", "Finalizing tool");
 
     try {
@@ -482,9 +483,7 @@ export async function processToolChat(
       const outputs: Array<{ action: any; output: any; error?: any }> = [];
       
       // Identify READ actions
-      const readActions = (spec.actions || []).filter(
-          (action) => action.type === "READ" || action.id.includes("list") || action.id.includes("search")
-      );
+      const readActions = (spec.actions || []).filter((action) => action.type === "READ");
       
       // Initial Fetch Priority
       if (spec.initialFetch?.actionId) {
@@ -547,17 +546,25 @@ export async function processToolChat(
         const success = matResult.status === "MATERIALIZED";
         if (success) {
             try {
-                // await (supabase.from("projects") as any)
-                //   .update({ status: "MATERIALIZED" })
-                //   .eq("id", toolId);
-                
                 finalStatus = "READY";
                 finalEnvironment = matResult.environment;
+                finalDataSnapshot = matResult.environment?.records ?? {};
+                finalDataFetchedAt = new Date().toISOString();
+                finalViewSpec = buildDefaultViewSpec(finalDataSnapshot);
+
+                await finalizeToolExecution({
+                  toolId,
+                  status: "READY",
+                  data_snapshot: finalDataSnapshot,
+                  view_spec: finalViewSpec,
+                  environment: finalEnvironment,
+                  data_fetched_at: finalDataFetchedAt,
+                });
+                didFinalizeExecution = true;
 
                 markStep(steps, "runtime", "success", "Environment READY");
                 console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
             } catch (err: any) {
-                // If the barrier fails, we must catch it and report
                 console.error(`[ToolRuntime] Barrier Failed:`, err);
                 markStep(steps, "runtime", "error", "Barrier Failed");
                 throw err;
@@ -625,14 +632,18 @@ export async function processToolChat(
     }
     throw err;
   } finally {
-    if (finalStatus) {
+    if (finalStatus && !didFinalizeExecution) {
       try {
-          await finalizeToolLifecycle({
-              toolId,
-              status: finalStatus,
-              errorMessage: finalError,
-              environment: finalEnvironment,
-              lifecycle_done: true
+          await finalizeToolExecution({
+            toolId,
+            status: finalStatus,
+            errorMessage: finalError,
+            environment: finalEnvironment,
+            view_spec: finalViewSpec,
+            view_ready: Boolean(finalViewSpec),
+            data_snapshot: finalDataSnapshot,
+            data_ready: finalDataSnapshot !== null,
+            data_fetched_at: finalDataFetchedAt,
           });
       } catch (e) {
            console.error("[ToolLifecycle] Finalization failed in finally block:", e);
@@ -789,8 +800,8 @@ function createBuildSteps(): BuildStep[] {
     { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
     { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
     { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
-    { id: "runtime", title: "Finalizing tool", status: "pending", logs: [] },
-    { id: "views", title: "Rendering views", status: "pending", logs: [] },
+    { id: "runtime", title: "Fetching data", status: "pending", logs: [] },
+    { id: "views", title: "Rendering output", status: "pending", logs: [] },
   ];
 }
 

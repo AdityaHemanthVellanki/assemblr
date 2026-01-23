@@ -15,8 +15,6 @@ export type ToolExecutionResult = {
   events: Array<{ type: string; payload: any }>;
 };
 
-import { executeWithRetry } from "@/lib/toolos/retry";
-
 export async function executeToolAction(params: {
   orgId: string;
   toolId: string;
@@ -109,11 +107,8 @@ export async function executeToolAction(params: {
       const tracer = new ExecutionTracer("run");
       
       console.log(`[Runtime] Executing capability ${action.capabilityId}...`);
-      // Wrap execution with retry logic
-      output = await executeWithRetry(() => executor.execute(input, context, tracer), {
-        maxRetries: 3,
-        initialDelayMs: 1000,
-      });
+      // EXECUTE ONCE - NO RETRY
+      output = await executor.execute(input, context, tracer);
 
       const recordCount = Array.isArray(output) ? output.length : (output ? 1 : 0);
       console.log(`[Runtime] Action ${action.id} COMPLETED. Records: ${recordCount}`);

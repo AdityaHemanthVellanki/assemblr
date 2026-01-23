@@ -722,12 +722,12 @@ export class MiniAppStore {
               res = { status: "success", rows: [] };
           }
       } else {
-          // Standard single call
-          try {
-              res = await this.integrations.call(actionId, args);
-          } catch (e) {
-              res = { status: "error", error: String(e) };
-          }
+        // Standard single call
+        try {
+          res = await this.integrations.call(actionId, args);
+        } catch (e) {
+          res = { status: "error", error: String(e) };
+        }
       }
 
       this.resultsByActionId[actionId] = res;
@@ -746,58 +746,10 @@ export class MiniAppStore {
         this.setState(patch);
         this.addTrace({ actionId, type: "integration", status: "success", message: `Integration success`, data: { rows: res.rows?.length } });
       } else {
-        // RECOVERY LOGIC (Self-Healing)
-        if (this.toolId && res.error) {
-            console.log("[MiniAppRuntime] Execution failed, attempting recovery...", actionId);
-            
-            const recoveryPatch: Record<string, any> = {
-                [`${actionId}.status`]: "recovering",
-                [`${actionId}.error`]: `Failed: ${res.error}. Attempting self-healing...`,
-            };
-            if (assignKey) {
-                recoveryPatch[`${assignKey}Status`] = "recovering";
-                recoveryPatch[`${assignKey}Error`] = `Failed: ${res.error}. Attempting self-healing...`;
-            }
-            this.setState(recoveryPatch);
-            this.addTrace({ actionId, type: "recovery", status: "started", message: "Self-healing triggered" });
-
-            try {
-                const recovery = await this.recoveryHandler({
-                    toolId: this.toolId,
-                    failedActionId: actionId,
-                    error: res.error,
-                    currentSpec: this.spec
-                });
-
-                if (recovery.success && recovery.newSpec) {
-                    console.log("[MiniAppRuntime] Recovery successful, applying patch...");
-                    this.updateSpec(recovery.newSpec as any);
-                    
-                    // RETRY: Re-dispatch the action (which now has a new definition)
-                    // We need to wait a tick? No, just dispatch.
-                    // But we are awaiting this function. Dispatch is async.
-                    // We want to return here and let the new dispatch handle it.
-                    // We also need to clear the "recovering" state? 
-                    // Dispatch will set it to "loading".
-                    this.addTrace({ actionId, type: "recovery", status: "success", message: "Retrying with new spec..." });
-                    
-                    // We invoke dispatch again. Note: Infinite loop risk if recovery fails to fix it.
-                    // Ideally we should track "retry count" in snapshot.
-                    // For now, we assume `recoverExecution` is smart enough or we rely on user patience.
-                    // A simple retry limit can be added to snapshot.runningActions?
-                    
-                    await this.dispatch(actionId, payload, { event: "recovery_retry", originId: "system", auto: true });
-                    return;
-                } else {
-                    throw new Error(recovery.error || "Recovery returned failure");
-                }
-            } catch (recErr) {
-                console.error("[MiniAppRuntime] Recovery failed", recErr);
-                this.addTrace({ actionId, type: "recovery", status: "error", message: String(recErr) });
-                // Fallthrough to standard error handling
-            }
-        }
-
+        // ERROR HANDLING (No Retry/Recovery)
+        // User Mandate: Remove all self-healing/retry logic. Fail fast.
+        console.error("[MiniAppRuntime] Execution failed", actionId, res.error);
+        
         const patch: Record<string, any> = {
           [`${actionId}.status`]: "error",
           [`${actionId}.error`]: res.error,
@@ -814,7 +766,6 @@ export class MiniAppStore {
         this.addTrace({ actionId, type: "integration", status: "error", message: res.error });
         // Non-Fatal Mode: Do not throw. Log error to UI state but keep runtime alive.
         this.setError(`Integration ${actionId} failed: ${res.error}`);
-        // throw new Error(res.error); // DISABLED for resilience
       }
 
       this.snapshot = {
@@ -932,25 +883,6 @@ function MiniAppRoot({
     return () => {
       const onUnload = runtimeSpec.lifecycle?.onUnload ?? [];
       for (const h of onUnload) store.dispatch(h.actionId, h.args ?? {}, { event: "onUnload" });
-    };
-  }, [runtimeSpec.lifecycle, store]);
-
-  // Global Lifecycle: onInterval
-  React.useEffect(() => {
-    const intervals: NodeJS.Timeout[] = [];
-    const onInterval = runtimeSpec.lifecycle?.onInterval ?? [];
-    
-    for (const h of onInterval) {
-      if (h.intervalMs && h.intervalMs > 0) {
-        const id = setInterval(() => {
-          store.dispatch(h.actionId, h.args ?? {}, { event: "onInterval" });
-        }, h.intervalMs);
-        intervals.push(id);
-      }
-    }
-
-    return () => {
-      intervals.forEach(clearInterval);
     };
   }, [runtimeSpec.lifecycle, store]);
 

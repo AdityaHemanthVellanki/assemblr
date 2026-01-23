@@ -385,14 +385,6 @@ export function ToolRenderer({
     // Stop fetching on hard error
     if (error) return;
 
-    if (authStatus === "unauthenticated") {
-      // Retry once after 5s if unauthenticated (e.g. session init)
-      const timer = setTimeout(() => {
-        void fetchResult();
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-
     // Fetch result once
     void fetchResult();
   }, [spec, authStatus, fetchResult, error]);

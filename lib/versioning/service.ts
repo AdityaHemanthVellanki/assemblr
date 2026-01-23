@@ -6,7 +6,7 @@ import { ToolVersion, VersionStatus, VersionValidationResult } from "@/lib/core/
 import { calculateDiff } from "./diff";
 import { CompiledIntent } from "@/lib/core/intent";
 import { createHash } from "crypto";
-import { finalizeToolLifecycle } from "@/lib/toolos/lifecycle";
+import { finalizeToolExecution } from "@/lib/toolos/lifecycle";
 
 export class VersioningService {
   
@@ -116,7 +116,7 @@ export class VersioningService {
           active_version_id: versionId,
       }).eq("id", toolId);
 
-      await finalizeToolLifecycle({ toolId, status: "ACTIVE" });
+      await finalizeToolExecution({ toolId, status: "READY", view_ready: false, data_ready: false });
 
       // 3. Update Version Status
       await (supabase.from("tool_versions") as any).update({ status: "READY" }).eq("id", versionId);
