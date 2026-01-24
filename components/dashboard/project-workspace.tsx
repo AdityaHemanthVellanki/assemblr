@@ -83,7 +83,12 @@ export function ProjectWorkspace({
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
-  const canRenderTool = Boolean(toolId && viewReady && dataReady && viewSpec && dataSnapshot);
+  const canRenderTool = Boolean(
+    toolId &&
+      viewReady &&
+      viewSpec &&
+      (viewSpec.decision?.kind !== "render" || dataSnapshot)
+  );
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
@@ -642,6 +647,37 @@ function ToolViewRenderer({
   const state = records.state ?? {};
   const views = Array.isArray(viewSpec.views) ? viewSpec.views : [];
   const answerContract = viewSpec.answer_contract;
+  const decision = viewSpec.decision;
+  if (decision?.kind === "ask") {
+    return (
+      <div className="flex h-full flex-col bg-background">
+        <div className="border-b border-border/60 px-6 py-4">
+          <div className="text-xs uppercase text-muted-foreground">Clarification</div>
+          <div className="text-lg font-semibold">Needs more detail</div>
+        </div>
+        <div className="flex-1 overflow-auto p-6">
+          <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
+            {decision.question ?? "Please clarify your request to continue."}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (decision?.kind === "explain") {
+    return (
+      <div className="flex h-full flex-col bg-background">
+        <div className="border-b border-border/60 px-6 py-4">
+          <div className="text-xs uppercase text-muted-foreground">Explanation</div>
+          <div className="text-lg font-semibold">No results</div>
+        </div>
+        <div className="flex-1 overflow-auto p-6">
+          <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
+            {decision.explanation ?? "No results found for the requested goal."}
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="border-b border-border/60 px-6 py-4">
@@ -649,6 +685,11 @@ function ToolViewRenderer({
         <div className="text-lg font-semibold">Result</div>
       </div>
       <div className="flex-1 overflow-auto p-6 space-y-6">
+        {decision?.partial && decision.explanation && (
+          <div className="rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
+            {decision.explanation}
+          </div>
+        )}
         {views.map((view) => {
           const data = resolveStatePath(state, view.source.statePath);
           const rows = normalizeRows(data);

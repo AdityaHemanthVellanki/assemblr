@@ -17,7 +17,7 @@ export function validateFetchedData(outputs: OutputEntry[], contract: AnswerCont
   const violations: Array<{ actionId: string; dropped: number }> = [];
   const next = outputs.map((entry) => {
     if (entry.action.integrationId !== "google") {
-      return { ...entry, output: [] };
+      return { ...entry, output: entry.output };
     }
     const normalized = normalizeRows(entry.output);
     const filtered = normalized.filter((row) => includesConstraint(row, value));

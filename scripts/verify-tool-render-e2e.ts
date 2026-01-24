@@ -78,35 +78,46 @@ async function runE2E() {
   if (!renderState) {
     throw new Error("Render state missing after finalize");
   }
-  if (renderState.data_ready !== true || renderState.view_ready !== true) {
-    throw new Error("Render state flags are not true");
+  if (renderState.view_ready !== true) {
+    throw new Error("Render state view_ready is not true");
   }
   const viewPayload = renderState.view_spec ?? null;
   const views = Array.isArray(viewPayload?.views) ? viewPayload.views : [];
-  if (views.length === 0) {
-    throw new Error("View spec missing after finalize");
-  }
-  if (!viewPayload?.goal_plan?.primary_goal) {
+  if (viewPayload?.decision?.kind !== "ask" && !viewPayload?.goal_plan?.primary_goal) {
     throw new Error("Goal plan missing after finalize");
   }
-  if (!viewPayload?.answer_contract) {
+  if (!viewPayload?.goal_validation) {
+    throw new Error("Goal validation missing after finalize");
+  }
+  if (!viewPayload?.decision) {
+    throw new Error("Decision missing after finalize");
+  }
+  if (viewPayload?.decision?.kind !== "ask" && !viewPayload?.answer_contract) {
     throw new Error("Answer contract missing after finalize");
   }
-  const googlePlan = (viewPayload?.query_plans ?? []).find((plan: any) => plan.integrationId === "google");
-  if (!googlePlan || !String(googlePlan.query?.q ?? "").includes("contexto")) {
-    throw new Error("Query plan missing semantic constraint");
+  if (viewPayload?.decision?.kind !== "ask") {
+    const googlePlan = (viewPayload?.query_plans ?? []).find((plan: any) => plan.integrationId === "google");
+    if (!googlePlan || !String(googlePlan.query?.q ?? "").includes("contexto")) {
+      throw new Error("Query plan missing semantic constraint");
+    }
   }
-  const failureView = views.find((view: any) => String(view?.source?.statePath ?? "").includes("derived.failure_incidents"));
-  if (!failureView) {
-    throw new Error("Failure incidents view missing");
+  if (viewPayload?.decision?.kind === "render") {
+    if (views.length === 0) {
+      throw new Error("View spec missing after finalize");
+    }
+    const failureView = views.find((view: any) => String(view?.source?.statePath ?? "").includes("derived.failure_incidents"));
+    if (!failureView) {
+      throw new Error("Failure incidents view missing");
+    }
+    const requiredFields = ["repo", "commitSha", "failureType", "failedAt", "emailCount"];
+    const missingFields = requiredFields.filter((field) => !failureView?.fields?.includes(field));
+    if (missingFields.length > 0) {
+      throw new Error(`Failure view missing fields: ${missingFields.join(", ")}`);
+    }
   }
-  const requiredFields = ["repo", "commitSha", "failureType", "failedAt", "emailCount"];
-  const missingFields = requiredFields.filter((field) => !failureView?.fields?.includes(field));
-  if (missingFields.length > 0) {
-    throw new Error(`Failure view missing fields: ${missingFields.join(", ")}`);
-  }
-  if (!projectRow || projectRow.data_ready !== true || projectRow.view_ready !== true) {
-    throw new Error("Project flags are not true");
+  const expectedDataReady = viewPayload.goal_validation.level === "satisfied";
+  if (!projectRow || projectRow.view_ready !== true || projectRow.data_ready !== expectedDataReady) {
+    throw new Error("Project flags are not consistent with goal validation");
   }
 
   const baseUrl = process.env.E2E_BASE_URL ?? "http://localhost:3000";
@@ -116,8 +127,11 @@ async function runE2E() {
   }
   const statusJson = await statusRes.json();
   console.log("Status Route Result", statusJson);
-  if (!statusJson?.data?.data_ready || !statusJson?.data?.view_ready) {
-    throw new Error("Status route did not return data_ready/view_ready true");
+  if (!statusJson?.data?.view_ready) {
+    throw new Error("Status route did not return view_ready true");
+  }
+  if (statusJson?.data?.data_ready !== expectedDataReady) {
+    throw new Error("Status route data_ready does not match goal validation");
   }
 
   const email = process.env.E2E_TEST_USER_EMAIL ?? "";
@@ -161,8 +175,10 @@ async function runE2E() {
   if (html.includes("Fetched Data")) {
     throw new Error("UI render shows fallback summary");
   }
-  if (!html.includes("Contexto Build Failures")) {
-    throw new Error("UI render does not show failure title");
+  if (viewPayload?.decision?.kind === "render") {
+    if (!html.includes("Contexto Build Failures")) {
+      throw new Error("UI render does not show failure title");
+    }
   }
 }
 

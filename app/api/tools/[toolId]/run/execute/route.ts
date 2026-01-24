@@ -6,6 +6,7 @@ import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
+import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents } from "@/lib/toolos/goal-validation";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult, buildSnapshotRecords } from "@/lib/toolos/materialization";
@@ -133,13 +134,6 @@ export async function POST(
             if (!spec.answer_contract) {
               throw new Error("Answer contract required but missing");
             }
-            if (!spec.views || spec.views.length === 0) {
-              throw new Error("View spec required but missing");
-            }
-            const invalidView = spec.views.find((view: any) => !Array.isArray(view.fields) || view.fields.length === 0);
-            if (invalidView) {
-              throw new Error("View spec required but invalid fields");
-            }
 
             const outputEntries = (spec?.actions ?? [])
               .filter((specAction: any) => specAction?.type === "READ")
@@ -150,21 +144,42 @@ export async function POST(
               .filter((entry: any) => entry.output !== undefined && entry.output !== null);
 
             const validation = validateFetchedData(outputEntries, spec.answer_contract);
+            const derivedOutput = validation.outputs.find((entry: any) => entry.action.id === "github.failure.incidents")?.output;
+            const goalEvidence = Array.isArray(derivedOutput) ? buildEvidenceFromDerivedIncidents(derivedOutput) : undefined;
+            const goalValidation = evaluateGoalSatisfaction({
+              prompt: spec.purpose,
+              goalPlan: spec.goal_plan,
+              evidence: goalEvidence,
+            });
+            const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
+
+            if (decision.kind === "render") {
+              if (!spec.views || spec.views.length === 0) {
+                throw new Error("View spec required but missing");
+              }
+              const invalidView = spec.views.find((view: any) => !Array.isArray(view.fields) || view.fields.length === 0);
+              if (invalidView) {
+                throw new Error("View spec required but invalid fields");
+              }
+            }
+
             const snapshotRecords = buildSnapshotRecords({
               spec,
               outputs: validation.outputs,
               previous: null,
             });
             const integrationData = snapshotRecords.integrations;
-            if (Object.keys(integrationData).length === 0) {
+            if (decision.kind === "render" && Object.keys(integrationData).length === 0) {
               throw new Error("Integration data empty — abort finalize");
             }
 
             const finalizedAt = new Date().toISOString();
             const snapshot = snapshotRecords;
             const viewSpec: ViewSpecPayload = {
-              views: spec.views,
+              views: decision.kind === "render" ? spec.views : [],
               goal_plan: spec.goal_plan,
+              goal_validation: goalValidation,
+              decision,
               answer_contract: spec.answer_contract,
               query_plans: spec.query_plans,
               tool_graph: spec.tool_graph,
@@ -177,14 +192,49 @@ export async function POST(
               schema: "public",
               client: "server",
             });
-            const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+            const expectedDataReady = goalValidation.level === "satisfied";
+            let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
               p_tool_id: toolId,
               p_org_id: ctx.orgId,
               p_integration_data: integrationData,
               p_snapshot: snapshot,
               p_view_spec: viewSpec,
+              p_data_ready: expectedDataReady,
+              p_view_ready: true,
               p_finalized_at: finalizedAt,
             });
+
+            if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+              const { error: upsertError } = await (statusSupabase as any)
+                .from("tool_render_state")
+                .upsert({
+                  tool_id: toolId,
+                  org_id: ctx.orgId,
+                  integration_data: integrationData ?? {},
+                  snapshot,
+                  view_spec: viewSpec,
+                  data_ready: expectedDataReady,
+                  view_ready: true,
+                  finalized_at: finalizedAt,
+                });
+              if (upsertError) {
+                finalizeError = upsertError;
+              } else {
+                const { error: projectUpdateError } = await (statusSupabase as any)
+                  .from("projects")
+                  .update({
+                    data_snapshot: integrationData ?? {},
+                    data_ready: expectedDataReady,
+                    view_spec: viewSpec,
+                    view_ready: true,
+                    status: expectedDataReady ? "READY" : "FAILED",
+                    finalized_at: finalizedAt,
+                    lifecycle_done: true,
+                  })
+                  .eq("id", toolId);
+                finalizeError = projectUpdateError ?? null;
+              }
+            }
 
             if (finalizeError) {
               throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
@@ -207,8 +257,11 @@ export async function POST(
             if (renderStateError || !renderState) {
               throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
             }
-            if (renderState.data_ready !== true || renderState.view_ready !== true) {
-              throw new Error("FINALIZE CLAIMED SUCCESS BUT FLAGS NOT TRUE IN tool_render_state");
+            if (renderState.view_ready !== true) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready NOT TRUE IN tool_render_state");
+            }
+            if (renderState.data_ready !== expectedDataReady) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready DOES NOT MATCH GOAL VALIDATION");
             }
 
             console.log("[FINALIZE] Integrations completed AND state persisted", renderState);

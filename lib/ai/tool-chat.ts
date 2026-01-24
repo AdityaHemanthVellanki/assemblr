@@ -21,6 +21,7 @@ import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } from "@/lib/toolos/materialization";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
+import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, type GoalEvidence } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -329,10 +330,18 @@ export async function processToolChat(
         },
       });
 
+    let goalPlanError: Error | null = null;
     spec = canonicalizeToolSpec(compilerResult.spec);
     spec = enforceViewSpecForPrompt(spec, input.userMessage);
-    spec = await applyGoalPlan(spec, input.userMessage);
-    spec = await applyAnswerContract(spec, input.userMessage);
+    try {
+      spec = await applyGoalPlan(spec, input.userMessage);
+    } catch (err) {
+      goalPlanError = err as Error;
+      appendStep(stepsById.get("compile"), `Goal plan unavailable: ${goalPlanError.message}`);
+    }
+    if (!goalPlanError) {
+      spec = await applyAnswerContract(spec, input.userMessage);
+    }
     transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
     const toolSystemValidation = validateToolSystem(spec);
@@ -471,6 +480,7 @@ export async function processToolChat(
     }
 
     let outputs: Array<{ action: any; output: any; error?: any }> = [];
+    let goalEvidence: GoalEvidence | null = null;
     
     const readActions = (spec.actions || []).filter((action) => action.type === "READ");
     const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
@@ -482,14 +492,24 @@ export async function processToolChat(
         }
     }
     
-    if (shouldUseGoalPlannerLoop(spec, input.userMessage)) {
-        outputs = await runPlannerExecutorLoop({
+    if (goalPlanError) {
+        outputs = [];
+        goalEvidence = {
+          failed_commits: 0,
+          failure_incidents: 0,
+          related_emails: 0,
+          total_emails: 0,
+        };
+    } else if (shouldUseGoalPlannerLoop(spec, input.userMessage)) {
+        const planResult = await runPlannerExecutorLoop({
           spec,
           compiledTool: compiledTool!,
           orgId: buildContext.orgId,
           toolId,
           userId,
         });
+        outputs = planResult.outputs;
+        goalEvidence = planResult.evidence;
     } else if (readActions.length > 0) {
         console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
         markStep(steps, "runtime", "running", "Executing actions...");
@@ -520,19 +540,8 @@ export async function processToolChat(
     }
 
       const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
-      if (successfulOutputs.length === 0) {
-        throw new Error("Integration data empty — abort finalize");
-      }
-      if (!spec.answer_contract) {
+      if (!spec.answer_contract && !goalPlanError) {
         throw new Error("Answer contract required but missing");
-      }
-
-      if (!spec.views || spec.views.length === 0) {
-        throw new Error("View spec required but missing");
-      }
-      const invalidView = spec.views.find((view) => !Array.isArray(view.fields) || view.fields.length === 0);
-      if (invalidView) {
-        throw new Error("View spec required but invalid fields");
       }
 
       const validation = validateFetchedData(
@@ -542,18 +551,47 @@ export async function processToolChat(
       if (validation.violations.length > 0) {
         console.warn("[AnswerContract] Dropped rows", validation.violations);
       }
+      if (!goalEvidence) {
+        const derivedOutput = validation.outputs.find((entry) => entry.action.id === "github.failure.incidents")?.output;
+        if (Array.isArray(derivedOutput)) {
+          goalEvidence = buildEvidenceFromDerivedIncidents(derivedOutput);
+        }
+      }
+      const goalValidation = evaluateGoalSatisfaction({
+        prompt: input.userMessage,
+        goalPlan: spec.goal_plan,
+        evidence: goalEvidence,
+      });
+      const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
+      console.log("[GoalValidation]", { goalValidation, decision });
+
+      if (decision.kind === "render") {
+        if (!spec.views || spec.views.length === 0) {
+          throw new Error("View spec required but missing");
+        }
+        const invalidView = spec.views.find((view) => !Array.isArray(view.fields) || view.fields.length === 0);
+        if (invalidView) {
+          throw new Error("View spec required but invalid fields");
+        }
+        if (successfulOutputs.length === 0) {
+          throw new Error("Integration data empty — abort finalize");
+        }
+      }
       const snapshotRecords = buildSnapshotRecords({
         spec,
         outputs: validation.outputs,
         previous: null,
       });
 
+
       const integrationResults = snapshotRecords.integrations;
       const finalizedAt = new Date().toISOString();
       const snapshot = snapshotRecords;
       const viewSpec: ViewSpecPayload = {
-        views: spec.views,
+        views: decision.kind === "render" ? spec.views : [],
         goal_plan: spec.goal_plan,
+        goal_validation: goalValidation,
+        decision,
         answer_contract: spec.answer_contract,
         query_plans: spec.query_plans,
         tool_graph: spec.tool_graph,
@@ -566,14 +604,49 @@ export async function processToolChat(
         schema: "public",
         client: "server",
       });
-      const { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+      const expectedDataReady = goalValidation.level === "satisfied";
+      let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
         p_tool_id: toolId,
         p_org_id: buildContext.orgId,
         p_integration_data: integrationResults,
         p_snapshot: snapshot,
         p_view_spec: viewSpec,
+        p_data_ready: expectedDataReady,
+        p_view_ready: true,
         p_finalized_at: finalizedAt,
       });
+
+      if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+        const { error: upsertError } = await (statusSupabase as any)
+          .from("tool_render_state")
+          .upsert({
+            tool_id: toolId,
+            org_id: buildContext.orgId,
+            integration_data: integrationResults ?? {},
+            snapshot,
+            view_spec: viewSpec,
+            data_ready: expectedDataReady,
+            view_ready: true,
+            finalized_at: finalizedAt,
+          });
+        if (upsertError) {
+          finalizeError = upsertError;
+        } else {
+          const { error: projectUpdateError } = await (statusSupabase as any)
+            .from("projects")
+            .update({
+              data_snapshot: integrationResults ?? {},
+              data_ready: expectedDataReady,
+              view_spec: viewSpec,
+              view_ready: true,
+              status: expectedDataReady ? "READY" : "FAILED",
+              finalized_at: finalizedAt,
+              lifecycle_done: true,
+            })
+            .eq("id", toolId);
+          finalizeError = projectUpdateError ?? null;
+        }
+      }
 
       if (finalizeError) {
         throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
@@ -596,8 +669,11 @@ export async function processToolChat(
       if (renderStateError || !renderState) {
         throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
       }
-      if (renderState.data_ready !== true || renderState.view_ready !== true) {
-        throw new Error("FINALIZE CLAIMED SUCCESS BUT FLAGS NOT TRUE IN tool_render_state");
+      if (renderState.view_ready !== true) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready NOT TRUE IN tool_render_state");
+      }
+      if (renderState.data_ready !== expectedDataReady) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready DOES NOT MATCH GOAL VALIDATION");
       }
 
       const { data: updatedTool, error: verifyError } = await (statusSupabase as any)
@@ -609,7 +685,7 @@ export async function processToolChat(
       if (verifyError) {
         throw new Error(`Finalize DB update failed: ${verifyError.message}`);
       }
-      if (!updatedTool || updatedTool.data_ready !== true || updatedTool.view_ready !== true) {
+      if (!updatedTool || updatedTool.view_ready !== true || updatedTool.data_ready !== expectedDataReady) {
         throw new Error("Finalize flags did NOT persist");
       }
 
@@ -1061,43 +1137,7 @@ async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
       continue;
     }
   }
-  console.warn("[GoalPlan] Falling back to deterministic goal plan");
-  return buildDeterministicGoalPlan(prompt);
-}
-
-function buildDeterministicGoalPlan(prompt: string): GoalPlan {
-  const normalized = prompt.toLowerCase();
-  const keyword = normalized.includes("contexto") ? "contexto" : "";
-  const primary_goal = normalized.includes("build")
-    ? `Investigate ${keyword ? `${keyword} ` : ""}build failures`
-    : "Understand user request";
-  return {
-    primary_goal,
-    sub_goals: [
-      "Identify build failures in GitHub",
-      "Identify failing commits",
-      "Find related emails",
-    ],
-    constraints: [
-      "Only failures",
-      keyword ? `Only ${keyword}-related` : "Only related",
-      "Must show exact commit",
-    ],
-    derived_entities: [
-      {
-        name: "FailureIncident",
-        description: "Build failures correlated with related emails",
-        fields: [
-          { name: "repo", type: "string" },
-          { name: "commitSha", type: "string" },
-          { name: "failureType", type: "string" },
-          { name: "failedAt", type: "string" },
-          { name: "emailCount", type: "number" },
-          { name: "emails", type: "array" },
-        ],
-      },
-    ],
-  };
+  throw new Error("Goal plan required but unavailable");
 }
 
 function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: GoalPlan): ToolSystemSpec {
@@ -1390,6 +1430,8 @@ async function runPlannerExecutorLoop(params: {
   }
 
   const emailsByFailure = new Map<string, Array<Record<string, any>>>();
+  let totalEmails = 0;
+  let relatedEmails = 0;
   if (failures.length > 0) {
     for (const failure of failures) {
       const query = keyword ? `${keyword} ${failure.commitSha}` : failure.commitSha;
@@ -1404,28 +1446,36 @@ async function runPlannerExecutorLoop(params: {
         recordRun: true,
       });
       const normalized = normalizeEmailRows(gmailResult.output);
+      totalEmails += normalized.length;
       const related = normalized.filter((email) =>
         matchesFailureEmail(email, failure, keyword)
       );
+      relatedEmails += related.length;
       emailsByFailure.set(failure.commitSha, related);
     }
   }
 
-  const incidents = failures
-    .map((failure) => {
-      const emails = emailsByFailure.get(failure.commitSha) ?? [];
-      return {
-        repo: failure.repo,
-        commitSha: failure.commitSha,
-        failureType: failure.failureType,
-        failedAt: failure.failedAt,
-        emailCount: emails.length,
-        emails,
-      };
-    })
-    .filter((incident) => incident.emailCount > 0);
+  const incidents = failures.map((failure) => {
+    const emails = emailsByFailure.get(failure.commitSha) ?? [];
+    return {
+      repo: failure.repo,
+      commitSha: failure.commitSha,
+      failureType: failure.failureType,
+      failedAt: failure.failedAt,
+      emailCount: emails.length,
+      emails,
+    };
+  });
 
-  return [{ action: derivedAction, output: incidents }];
+  return {
+    outputs: [{ action: derivedAction, output: incidents }],
+    evidence: {
+      failed_commits: failures.length,
+      failure_incidents: incidents.length,
+      related_emails: relatedEmails,
+      total_emails: totalEmails,
+    },
+  };
 }
 
 function findActionByCapability(spec: ToolSystemSpec, capabilityId: string) {

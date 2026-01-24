@@ -233,6 +233,33 @@ export const GoalPlanSchema = z.object({
 });
 export type GoalPlan = z.infer<typeof GoalPlanSchema>;
 
+export const AbsenceReasonSchema = z.enum([
+  "no_failed_builds",
+  "failed_builds_exist_no_notifications",
+  "emails_exist_not_related",
+  "integration_permission_missing",
+  "ambiguous_query",
+]);
+export type AbsenceReason = z.infer<typeof AbsenceReasonSchema>;
+
+export const GoalSatisfactionSchema = z.object({
+  level: z.enum(["satisfied", "partial", "unsatisfied"]),
+  satisfied: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  failure_reason: z.string().optional(),
+  missing_requirements: z.array(z.string()).optional(),
+  absence_reason: AbsenceReasonSchema.optional(),
+});
+export type GoalSatisfactionResult = z.infer<typeof GoalSatisfactionSchema>;
+
+export const DecisionSchema = z.object({
+  kind: z.enum(["render", "explain", "ask"]),
+  explanation: z.string().optional(),
+  question: z.string().optional(),
+  partial: z.boolean().optional(),
+});
+export type Decision = z.infer<typeof DecisionSchema>;
+
 export const IntegrationQueryPlanSchema = z.object({
   integrationId: IntegrationIdSchema,
   actionId: z.string().min(1),
@@ -266,6 +293,8 @@ export type ToolGraph = z.infer<typeof ToolGraphSchema>;
 export const ViewSpecPayloadSchema = z.object({
   views: z.array(ViewSpecSchema),
   goal_plan: GoalPlanSchema.optional(),
+  goal_validation: GoalSatisfactionSchema.optional(),
+  decision: DecisionSchema.optional(),
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),
