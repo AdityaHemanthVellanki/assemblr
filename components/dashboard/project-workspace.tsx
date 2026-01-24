@@ -16,6 +16,7 @@ import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
 import { safeFetch } from "@/lib/api/client";
+import Link from "next/link";
 
 interface ProjectWorkspaceProps {
   project?: {
@@ -648,6 +649,16 @@ function ToolViewRenderer({
   const views = Array.isArray(viewSpec.views) ? viewSpec.views : [];
   const answerContract = viewSpec.answer_contract;
   const decision = viewSpec.decision;
+  const slackStatus = viewSpec.integration_statuses?.slack;
+  const slackBanner =
+    slackStatus?.status === "reauth_required" ? (
+      <div className="rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
+        <div className="mb-3">Slack needs to be reconnected to continue.</div>
+        <Button asChild size="sm">
+          <Link href="/dashboard/integrations">Reconnect Slack</Link>
+        </Button>
+      </div>
+    ) : null;
   if (decision?.kind === "ask") {
     return (
       <div className="flex h-full flex-col bg-background">
@@ -656,6 +667,7 @@ function ToolViewRenderer({
           <div className="text-lg font-semibold">Needs more detail</div>
         </div>
         <div className="flex-1 overflow-auto p-6">
+          {slackBanner}
           <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
             {decision.question ?? "Please clarify your request to continue."}
           </div>
@@ -671,6 +683,7 @@ function ToolViewRenderer({
           <div className="text-lg font-semibold">No results</div>
         </div>
         <div className="flex-1 overflow-auto p-6">
+          {slackBanner}
           <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
             {decision.explanation ?? "No results found for the requested goal."}
           </div>
@@ -685,6 +698,7 @@ function ToolViewRenderer({
         <div className="text-lg font-semibold">Result</div>
       </div>
       <div className="flex-1 overflow-auto p-6 space-y-6">
+        {slackBanner}
         {decision?.partial && decision.explanation && (
           <div className="rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
             {decision.explanation}

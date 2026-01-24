@@ -6,7 +6,7 @@ import { isToolSystemSpec, type ToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
-import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents } from "@/lib/toolos/goal-validation";
+import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate } from "@/lib/toolos/goal-validation";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 import { materializeToolOutput, getLatestToolResult, buildSnapshotRecords } from "@/lib/toolos/materialization";
@@ -146,10 +146,16 @@ export async function POST(
             const validation = validateFetchedData(outputEntries, spec.answer_contract);
             const derivedOutput = validation.outputs.find((entry: any) => entry.action.id === "github.failure.incidents")?.output;
             const goalEvidence = Array.isArray(derivedOutput) ? buildEvidenceFromDerivedIncidents(derivedOutput) : undefined;
+            const relevance = evaluateRelevanceGate({
+              intentContract: spec.intent_contract,
+              outputs: validation.outputs.map((entry) => ({ output: entry.output })),
+            });
             const goalValidation = evaluateGoalSatisfaction({
               prompt: spec.purpose,
               goalPlan: spec.goal_plan,
+              intentContract: spec.intent_contract,
               evidence: goalEvidence,
+              relevance,
             });
             const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
 
@@ -178,6 +184,8 @@ export async function POST(
             const viewSpec: ViewSpecPayload = {
               views: decision.kind === "render" ? spec.views : [],
               goal_plan: spec.goal_plan,
+              intent_contract: spec.intent_contract,
+              semantic_plan: spec.semantic_plan,
               goal_validation: goalValidation,
               decision,
               answer_contract: spec.answer_contract,

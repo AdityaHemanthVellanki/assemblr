@@ -94,6 +94,14 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read"],
     supportedFields: [],
   },
+  {
+    id: "notion_block_children_list",
+    integrationId: "notion",
+    resource: "blocks",
+    allowedOperations: ["read"],
+    supportedFields: ["blockId"],
+    constraints: { requiredFilters: ["blockId"] },
+  },
 
   // Google
   {

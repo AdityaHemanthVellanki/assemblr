@@ -3,8 +3,9 @@ import "server-only";
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus } from "@/lib/toolos/spec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
+import { getIntegrationTokenStatus } from "@/lib/integrations/tokenRefresh";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
@@ -21,7 +22,7 @@ import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } from "@/lib/toolos/materialization";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
-import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, type GoalEvidence } from "@/lib/toolos/goal-validation";
+import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export interface ToolChatRequest {
@@ -330,16 +331,18 @@ export async function processToolChat(
         },
       });
 
-    let goalPlanError: Error | null = null;
+    let intentPlanError: Error | null = null;
     spec = canonicalizeToolSpec(compilerResult.spec);
     spec = enforceViewSpecForPrompt(spec, input.userMessage);
     try {
+      spec = await applyIntentContract(spec, input.userMessage);
+      spec = await applySemanticPlan(spec, input.userMessage);
       spec = await applyGoalPlan(spec, input.userMessage);
     } catch (err) {
-      goalPlanError = err as Error;
-      appendStep(stepsById.get("compile"), `Goal plan unavailable: ${goalPlanError.message}`);
+      intentPlanError = err as Error;
+      appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
     }
-    if (!goalPlanError) {
+    if (!intentPlanError) {
       spec = await applyAnswerContract(spec, input.userMessage);
     }
     transition("INTENT_PARSED", "ToolSpec generated");
@@ -481,6 +484,7 @@ export async function processToolChat(
 
     let outputs: Array<{ action: any; output: any; error?: any }> = [];
     let goalEvidence: GoalEvidence | null = null;
+    const integrationStatuses: Record<string, IntegrationStatus> = {};
     
     const readActions = (spec.actions || []).filter((action) => action.type === "READ");
     const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
@@ -492,7 +496,33 @@ export async function processToolChat(
         }
     }
     
-    if (goalPlanError) {
+    const slackRequired = isSlackRequired(input.userMessage, spec.intent_contract);
+    if (slackRequired) {
+        try {
+          const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
+          if (status.status !== "valid") {
+            integrationStatuses.slack = {
+              integration: "slack",
+              status: "reauth_required",
+              reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+              required: true,
+              userActionRequired: true,
+            };
+            await updateIntegrationConnectionStatus(buildContext.orgId, "slack", "reauth_required");
+          }
+        } catch (err) {
+          integrationStatuses.slack = {
+            integration: "slack",
+            status: "reauth_required",
+            reason: err instanceof Error ? err.message : "missing_credentials",
+            required: true,
+            userActionRequired: true,
+          };
+          await updateIntegrationConnectionStatus(buildContext.orgId, "slack", "reauth_required");
+        }
+    }
+
+    if (integrationStatuses.slack?.status === "reauth_required" && integrationStatuses.slack?.required) {
         outputs = [];
         goalEvidence = {
           failed_commits: 0,
@@ -500,13 +530,22 @@ export async function processToolChat(
           related_emails: 0,
           total_emails: 0,
         };
-    } else if (shouldUseGoalPlannerLoop(spec, input.userMessage)) {
-        const planResult = await runPlannerExecutorLoop({
+    } else if (intentPlanError) {
+        outputs = [];
+        goalEvidence = {
+          failed_commits: 0,
+          failure_incidents: 0,
+          related_emails: 0,
+          total_emails: 0,
+        };
+    } else if (shouldUseSemanticPlannerLoop(spec, input.userMessage)) {
+        const planResult = await runSemanticExecutorLoop({
           spec,
           compiledTool: compiledTool!,
           orgId: buildContext.orgId,
           toolId,
           userId,
+          prompt: input.userMessage,
         });
         outputs = planResult.outputs;
         goalEvidence = planResult.evidence;
@@ -521,6 +560,36 @@ export async function processToolChat(
                    plan && Object.keys(plan.query ?? {}).length > 0
                      ? plan.query
                      : { limit: spec.initialFetch?.limit ?? 10 };
+                 if (action.integrationId === "slack" && !slackRequired) {
+                    if (!integrationStatuses.slack) {
+                      try {
+                        const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
+                        if (status.status !== "valid") {
+                          integrationStatuses.slack = {
+                            integration: "slack",
+                            status: "reauth_required",
+                            reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+                            required: false,
+                            userActionRequired: true,
+                          };
+                        } else {
+                          integrationStatuses.slack = { integration: "slack", status: "ok", required: false };
+                        }
+                      } catch (err) {
+                        integrationStatuses.slack = {
+                          integration: "slack",
+                          status: "reauth_required",
+                          reason: err instanceof Error ? err.message : "missing_credentials",
+                          required: false,
+                          userActionRequired: true,
+                        };
+                      }
+                    }
+                    if (integrationStatuses.slack?.status === "reauth_required") {
+                      outputs.push({ action, output: null, error: { skipped: true, reason: "slack_reauth_required" } });
+                      continue;
+                    }
+                 }
                  const result = await executeToolAction({
                       orgId: buildContext.orgId,
                       toolId,
@@ -531,6 +600,19 @@ export async function processToolChat(
                       triggerId: "initial_run",
                       recordRun: true
                  });
+                 if (result.events?.length) {
+                   for (const event of result.events) {
+                     if (event.type === "integration_warning" && event.payload?.integration === "slack") {
+                       integrationStatuses.slack = {
+                         integration: "slack",
+                         status: "reauth_required",
+                         reason: event.payload?.reason ?? "token_expired_no_refresh",
+                         required: slackRequired,
+                         userActionRequired: true,
+                       };
+                     }
+                   }
+                 }
                  outputs.push({ action, output: result.output });
             } catch (err) {
                 console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
@@ -540,7 +622,7 @@ export async function processToolChat(
     }
 
       const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
-      if (!spec.answer_contract && !goalPlanError) {
+      if (!spec.answer_contract && !intentPlanError) {
         throw new Error("Answer contract required but missing");
       }
 
@@ -557,10 +639,17 @@ export async function processToolChat(
           goalEvidence = buildEvidenceFromDerivedIncidents(derivedOutput);
         }
       }
+      const relevance = evaluateRelevanceGate({
+        intentContract: spec.intent_contract,
+        outputs: validation.outputs.map((entry) => ({ output: entry.output })),
+      });
       const goalValidation = evaluateGoalSatisfaction({
         prompt: input.userMessage,
         goalPlan: spec.goal_plan,
+        intentContract: spec.intent_contract,
         evidence: goalEvidence,
+        relevance,
+        integrationStatuses,
       });
       const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
       console.log("[GoalValidation]", { goalValidation, decision });
@@ -590,8 +679,11 @@ export async function processToolChat(
       const viewSpec: ViewSpecPayload = {
         views: decision.kind === "render" ? spec.views : [],
         goal_plan: spec.goal_plan,
+        intent_contract: spec.intent_contract,
+        semantic_plan: spec.semantic_plan,
         goal_validation: goalValidation,
         decision,
+        integration_statuses: Object.keys(integrationStatuses).length > 0 ? integrationStatuses : undefined,
         answer_contract: spec.answer_contract,
         query_plans: spec.query_plans,
         tool_graph: spec.tool_graph,
@@ -1112,6 +1204,74 @@ async function applyGoalPlan(spec: ToolSystemSpec, prompt: string): Promise<Tool
   return { ...next, goal_plan: goalPlan };
 }
 
+async function applyIntentContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
+  const response = await azureOpenAIClient.chat.completions.create({
+    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    messages: [
+      {
+        role: "system",
+        content:
+          `Return JSON only: {"userGoal":string,"successCriteria":[string],"requiredEntities":{"integrations":[string],"objects":[string],"filters":[string]},"forbiddenOutputs":[string],"acceptableFallbacks":[string]}.`,
+      },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0,
+    max_tokens: 400,
+    response_format: { type: "json_object" },
+  });
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Intent contract required but invalid");
+  }
+  let parsed;
+  try {
+    parsed = IntentContractSchema.safeParse(JSON.parse(content));
+  } catch {
+    throw new Error("Intent contract required but invalid");
+  }
+  if (!parsed.success) {
+    throw new Error("Intent contract required but invalid");
+  }
+  const contract = parsed.data;
+  return { ...spec, intent_contract: contract };
+}
+
+async function applySemanticPlan(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
+  if (!spec.intent_contract) {
+    throw new Error("Semantic plan requires intent contract");
+  }
+  const response = await azureOpenAIClient.chat.completions.create({
+    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    messages: [
+      {
+        role: "system",
+        content:
+          `Return JSON only: {"steps":[{"id":string,"description":string,"capabilityId":string?,"requires":[string]}],"success_criteria":[string],"join_graph":[{"from":string,"to":string,"on":string}]}.`,
+      },
+      { role: "user", content: JSON.stringify({ prompt, intent: spec.intent_contract }) },
+    ],
+    temperature: 0,
+    max_tokens: 450,
+    response_format: { type: "json_object" },
+  });
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Semantic plan required but invalid");
+  }
+  let parsed;
+  try {
+    parsed = SemanticPlanSchema.safeParse(JSON.parse(content));
+  } catch {
+    throw new Error("Semantic plan required but invalid");
+  }
+  if (!parsed.success) {
+    throw new Error("Semantic plan required but invalid");
+  }
+  const plan = parsed.data;
+  const next = augmentSpecForIntent(spec, prompt, spec.intent_contract, plan);
+  return { ...next, semantic_plan: plan };
+}
+
 async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await azureOpenAIClient.chat.completions.create({
@@ -1190,6 +1350,70 @@ function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: 
   };
 }
 
+function augmentSpecForIntent(
+  spec: ToolSystemSpec,
+  prompt: string,
+  contract: IntentContract,
+  plan: SemanticPlan,
+): ToolSystemSpec {
+  const normalized = prompt.toLowerCase();
+  const wantsNotionTodos =
+    normalized.includes("notion") &&
+    (normalized.includes("todo") || normalized.includes("to-do") || normalized.includes("to do"));
+  if (!wantsNotionTodos) {
+    return { ...spec, intent_contract: contract, semantic_plan: plan };
+  }
+  const actions = ensureIntentActions(spec.actions);
+  const integrations = ensureGoalIntegrations(spec.integrations, actions);
+  const fields = [
+    { name: "task", type: "string" },
+    { name: "completed", type: "boolean" },
+    { name: "pageTitle", type: "string" },
+    { name: "pageId", type: "string" },
+  ];
+  const entities: ToolSystemSpec["entities"] = spec.entities.some((entity) => entity.name === "NotionTodo")
+    ? spec.entities
+    : [
+        ...spec.entities,
+        {
+          name: "NotionTodo",
+          sourceIntegration: "notion",
+          derived: true,
+          fields,
+          identifiers: ["task", "pageId"],
+          supportedActions: [],
+        },
+      ];
+  const derivedEntities: ToolSystemSpec["derived_entities"] = [
+    ...(spec.derived_entities ?? []),
+    {
+      name: "NotionTodo",
+      description: "Notion to-do tasks filtered by intent constraints",
+      fields,
+    },
+  ];
+  const views = [
+    {
+      id: "view.notion.todos",
+      name: "Notion To-dos",
+      type: "table" as const,
+      source: { entity: "NotionTodo", statePath: "derived.notion_todos" },
+      fields: ["task", "completed", "pageTitle"],
+      actions: ["notion.todos.derive"],
+    },
+  ];
+  return {
+    ...spec,
+    entities,
+    actions,
+    views,
+    integrations,
+    derived_entities: derivedEntities,
+    intent_contract: contract,
+    semantic_plan: plan,
+  };
+}
+
 function ensureGoalActions(actions: ToolSystemSpec["actions"]) {
   const next = [...actions];
   const ensure = (id: string, integrationId: IntegrationId, capabilityId: string, name: string) => {
@@ -1211,6 +1435,28 @@ function ensureGoalActions(actions: ToolSystemSpec["actions"]) {
   ensure("github.commit.status", "github", "github_commit_status_list", "List commit status");
   ensure("google.gmail.search", "google", "google_gmail_list", "Search Gmail");
   ensure("github.failure.incidents", "github", "github_commit_status_list", "Derive failure incidents");
+  return next;
+}
+
+function ensureIntentActions(actions: ToolSystemSpec["actions"]) {
+  const next = [...actions];
+  const ensure = (id: string, integrationId: IntegrationId, capabilityId: string, name: string) => {
+    if (next.some((action) => action.id === id)) return;
+    next.push({
+      id,
+      name,
+      description: name,
+      type: "READ",
+      integrationId,
+      capabilityId,
+      inputSchema: {},
+      outputSchema: {},
+      writesToState: false,
+    });
+  };
+  ensure("notion.pages.search", "notion", "notion_pages_search", "Search Notion pages");
+  ensure("notion.blocks.list", "notion", "notion_block_children_list", "List Notion blocks");
+  ensure("notion.todos.derive", "notion", "notion_block_children_list", "Derive Notion to-dos");
   return next;
 }
 
@@ -1336,10 +1582,26 @@ function buildToolGraphForContract(queryPlans: IntegrationQueryPlan[]): ToolGrap
   return { nodes: [...nodes, filterNode, viewNode], edges };
 }
 
-function shouldUseGoalPlannerLoop(spec: ToolSystemSpec, prompt: string) {
-  if (!spec.goal_plan) return false;
+function shouldUseSemanticPlannerLoop(spec: ToolSystemSpec, prompt: string) {
   const normalized = prompt.toLowerCase();
-  return normalized.includes("build") && normalized.includes("fail") && normalized.includes("commit");
+  return (
+    (spec.goal_plan && normalized.includes("build") && normalized.includes("fail") && normalized.includes("commit")) ||
+    (spec.intent_contract && normalized.includes("notion") && (normalized.includes("todo") || normalized.includes("to-do") || normalized.includes("to do")))
+  );
+}
+
+async function runSemanticExecutorLoop(params: {
+  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
+  orgId: string;
+  toolId: string;
+  userId?: string | null;
+  prompt: string;
+}) {
+  if (isNotionTodoPrompt(params.prompt)) {
+    return runNotionTodoLoop(params);
+  }
+  return runPlannerExecutorLoop(params);
 }
 
 async function runPlannerExecutorLoop(params: {
@@ -1348,6 +1610,7 @@ async function runPlannerExecutorLoop(params: {
   orgId: string;
   toolId: string;
   userId?: string | null;
+  prompt: string;
 }) {
   const { spec, compiledTool, orgId, toolId, userId } = params;
   const keyword = spec.answer_contract?.required_constraints?.[0]?.value?.toLowerCase() ?? "";
@@ -1476,6 +1739,139 @@ async function runPlannerExecutorLoop(params: {
       total_emails: totalEmails,
     },
   };
+}
+
+async function runNotionTodoLoop(params: {
+  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
+  orgId: string;
+  toolId: string;
+  userId?: string | null;
+  prompt: string;
+}) {
+  const { spec, compiledTool, orgId, toolId, userId, prompt } = params;
+  const pagesAction = findActionByCapability(spec, "notion_pages_search");
+  const blocksAction = findActionByCapability(spec, "notion_block_children_list");
+  const derivedAction = spec.actions.find((action) => action.id === "notion.todos.derive");
+  if (!pagesAction || !blocksAction || !derivedAction) {
+    throw new Error("Semantic planner missing Notion actions");
+  }
+  const keyword = extractNotionKeyword(prompt, spec.intent_contract);
+  const pagesResult = await executeToolAction({
+    orgId,
+    toolId,
+    compiledTool,
+    actionId: pagesAction.id,
+    input: { query: keyword },
+    userId,
+    triggerId: "semantic_loop",
+    recordRun: true,
+  });
+  const pages = Array.isArray(pagesResult.output) ? pagesResult.output : [];
+  const selectedPage = selectNotionPage(pages, keyword);
+  if (!selectedPage) {
+    return { outputs: [{ action: derivedAction, output: [] }], evidence: null };
+  }
+  const blocksResult = await executeToolAction({
+    orgId,
+    toolId,
+    compiledTool,
+    actionId: blocksAction.id,
+    input: { blockId: selectedPage.id },
+    userId,
+    triggerId: "semantic_loop",
+    recordRun: true,
+  });
+  const blocks = Array.isArray(blocksResult.output) ? blocksResult.output : [];
+  const pageTitle = extractNotionTitle(selectedPage) ?? "Untitled";
+  const todos = blocks
+    .filter((block) => block?.type === "to_do" || block?.type === "to_do")
+    .map((block) => ({
+      task: extractNotionTodoText(block),
+      completed: Boolean(block?.to_do?.checked),
+      pageTitle,
+      pageId: selectedPage.id,
+    }))
+    .filter((row) => row.task.length > 0);
+  return { outputs: [{ action: derivedAction, output: todos }], evidence: null };
+}
+
+function isNotionTodoPrompt(prompt: string) {
+  const normalized = prompt.toLowerCase();
+  return normalized.includes("notion") && (normalized.includes("todo") || normalized.includes("to-do") || normalized.includes("to do"));
+}
+
+function isSlackRequired(prompt: string, intent?: IntentContract) {
+  if (intent?.requiredEntities?.integrations?.some((id) => id.toLowerCase() === "slack")) return true;
+  const normalized = prompt.toLowerCase();
+  if (normalized.includes("slack")) return true;
+  if (normalized.includes("correlate") && normalized.includes("slack")) return true;
+  return false;
+}
+
+function extractNotionKeyword(prompt: string, intent?: IntentContract) {
+  if (intent?.requiredEntities?.filters?.length) {
+    const match = intent.requiredEntities.filters.join(" ").match(/title contains ['"](.+?)['"]/i);
+    if (match?.[1]) return match[1];
+  }
+  const quoted = prompt.match(/["“”']([^"“”']+)["“”']/);
+  if (quoted?.[1]) return quoted[1];
+  if (prompt.toLowerCase().includes("assemblr")) return "assemblr";
+  return prompt.split(" ").slice(0, 3).join(" ");
+}
+
+function selectNotionPage(pages: Array<any>, keyword: string) {
+  if (pages.length === 0) return null;
+  const normalized = keyword.toLowerCase();
+  let best = pages[0];
+  let bestScore = -1;
+  for (const page of pages) {
+    const title = extractNotionTitle(page)?.toLowerCase() ?? "";
+    let score = 0;
+    if (normalized && title.includes(normalized)) score += 2;
+    if (title) score += 1;
+    const edited = page?.last_edited_time ? Date.parse(page.last_edited_time) : 0;
+    score += edited ? edited / 1e13 : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      best = page;
+    }
+  }
+  return best;
+}
+
+function extractNotionTitle(page: any) {
+  const props = page?.properties ?? {};
+  for (const value of Object.values(props)) {
+    if (value && typeof value === "object" && (value as any).type === "title") {
+      const title = (value as any).title ?? [];
+      if (Array.isArray(title)) {
+        return title.map((t: any) => t?.plain_text ?? "").join("").trim();
+      }
+    }
+  }
+  if (typeof page?.title === "string") return page.title;
+  if (typeof page?.name === "string") return page.name;
+  return "";
+}
+
+function extractNotionTodoText(block: any) {
+  const rich = block?.to_do?.rich_text ?? [];
+  if (!Array.isArray(rich)) return "";
+  return rich.map((t: any) => t?.plain_text ?? "").join("").trim();
+}
+
+async function updateIntegrationConnectionStatus(orgId: string, integrationId: string, status: string) {
+  try {
+    const { createSupabaseAdminClient } = await import("@/lib/supabase/admin");
+    const admin = createSupabaseAdminClient();
+    await (admin.from("integration_connections") as any)
+      .update({ status })
+      .eq("org_id", orgId)
+      .eq("integration_id", integrationId);
+  } catch (err) {
+    console.error("[IntegrationStatus] Failed to update connection status", err);
+  }
 }
 
 function findActionByCapability(spec: ToolSystemSpec, capabilityId: string) {

@@ -16,6 +16,10 @@ const scenarios: Scenario[] = [
       "show mails about contexto wherever build failed and show that particular commit on github wherever it failed",
   },
   {
+    name: "notion_todos",
+    prompt: "show my assemblr to-dos from notion",
+  },
+  {
     name: "ambiguous_prompt",
     prompt: "show commits or emails about failures",
   },
@@ -63,8 +67,14 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
   if (!viewSpec.goal_validation || !viewSpec.decision) {
     throw new Error(`[${scenario.name}] Missing goal validation or decision`);
   }
+  if (viewSpec.decision.kind !== "ask" && (!viewSpec.intent_contract || !viewSpec.semantic_plan)) {
+    throw new Error(`[${scenario.name}] Missing intent contract or semantic plan`);
+  }
   const level = viewSpec.goal_validation.level;
   const decision = viewSpec.decision;
+  if (viewSpec.goal_validation.confidence < 0.8 && decision.kind === "render") {
+    throw new Error(`[${scenario.name}] Low confidence should not render`);
+  }
   if (level === "satisfied" && decision.kind !== "render") {
     throw new Error(`[${scenario.name}] Satisfied goal must render`);
   }

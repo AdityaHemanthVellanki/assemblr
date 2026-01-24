@@ -80,6 +80,29 @@ export class NotionRuntime implements IntegrationRuntime {
         }
     };
 
+    this.capabilities["notion_block_children_list"] = {
+        id: "notion_block_children_list",
+        integrationId: "notion",
+        paramsSchema: z.object({ blockId: z.string() }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const res = await fetch(`https://api.notion.com/v1/blocks/${params.blockId}/children?page_size=100`, {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json"
+                }
+            });
+            if (!res.ok) {
+                const errBody = await res.text();
+                throw new Error(`Notion API Error: ${res.statusText} - ${errBody}`);
+            }
+            const json = await res.json();
+            return json.results || [];
+        }
+    };
+
     this.capabilities["notion_page_create"] = {
         id: "notion_page_create",
         integrationId: "notion",

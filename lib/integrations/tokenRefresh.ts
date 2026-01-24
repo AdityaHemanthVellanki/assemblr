@@ -14,7 +14,12 @@ export class IntegrationAuthError extends Error {
   }
 }
 
-export async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
+type TokenStatus = {
+  status: "valid" | "expired" | "missing";
+  accessToken?: string;
+};
+
+async function loadIntegrationCredentials(orgId: string, integrationId: string) {
   let connection: any;
   let supabase: any;
   try {
@@ -58,6 +63,24 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
   }
 
   const credentials = decryptJson(encrypted) as any;
+  return { credentials, supabase };
+}
+
+export async function getIntegrationTokenStatus(orgId: string, integrationId: string): Promise<TokenStatus> {
+  const { credentials } = await loadIntegrationCredentials(orgId, integrationId);
+  const accessToken = credentials.access_token;
+  if (!accessToken) {
+    return { status: "missing" };
+  }
+  const expiresAt = credentials.expires_at;
+  if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
+    return { status: "expired", accessToken };
+  }
+  return { status: "valid", accessToken };
+}
+
+export async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
+  const { credentials, supabase } = await loadIntegrationCredentials(orgId, integrationId);
   
   const accessToken = credentials.access_token;
   const refreshToken = credentials.refresh_token;
@@ -65,18 +88,19 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
 
   // Check if expired or expiring in 5 minutes
   if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
+      const provider = OAUTH_PROVIDERS[integrationId];
+      if (!provider) throw new Error(`Unknown provider ${integrationId}`);
+
+      if (!provider.supportsRefreshToken) {
+          throw new IntegrationAuthError(integrationId, "token_expired_no_refresh", `Provider ${integrationId} does not support token refresh but token is expired.`);
+      }
+
       if (!refreshToken) {
           console.warn(`Token expired for ${integrationId} and no refresh token available`);
           throw new IntegrationAuthError(integrationId, "missing_credentials", `Access token expired for ${integrationId} and no refresh token available. Re-connection required.`);
       }
 
       console.log(`Refreshing token for ${integrationId}...`);
-      const provider = OAUTH_PROVIDERS[integrationId];
-      if (!provider) throw new Error(`Unknown provider ${integrationId}`);
-
-      if (!provider.supportsRefreshToken) {
-           throw new IntegrationAuthError(integrationId, "token_expired_no_refresh", `Provider ${integrationId} does not support token refresh but token is expired.`);
-      }
 
       const env = getServerEnv();
       // Dynamically access client ID/Secret based on integration ID

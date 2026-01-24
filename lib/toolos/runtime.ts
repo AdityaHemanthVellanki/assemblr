@@ -143,8 +143,26 @@ export async function executeToolAction(params: {
       
       return { state: {}, output, events: [] };
     } catch (err) {
+      const isAuthError = err instanceof IntegrationAuthError || (err as any).name === "IntegrationAuthError";
+      if (isAuthError && action.integrationId === "slack") {
+        const payload = {
+          integration: "slack",
+          status: "reauth_required",
+          reason: (err as any).reason ?? "token_expired_no_refresh",
+          userActionRequired: true,
+        };
+        if (run) {
+          runLogs.push({
+            id: `${action.id}:auth_required`,
+            timestamp: new Date().toISOString(),
+            status: "warning",
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await updateExecutionRun({ runId: run.id, status: "completed", logs: runLogs });
+        }
+        return { state: {}, output: null, events: [{ type: "integration_warning", payload }] };
+      }
       if (run) {
-        const isAuthError = err instanceof IntegrationAuthError || (err as any).name === "IntegrationAuthError";
         runLogs.push({
           id: `${action.id}:${isAuthError ? "auth_required" : "error"}`,
           timestamp: new Date().toISOString(),

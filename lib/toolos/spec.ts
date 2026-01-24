@@ -233,6 +233,32 @@ export const GoalPlanSchema = z.object({
 });
 export type GoalPlan = z.infer<typeof GoalPlanSchema>;
 
+export const IntentContractSchema = z.object({
+  userGoal: z.string().min(1),
+  successCriteria: z.array(z.string()).default([]),
+  requiredEntities: z.object({
+    integrations: z.array(z.string()).default([]),
+    objects: z.array(z.string()).default([]),
+    filters: z.array(z.string()).default([]),
+  }),
+  forbiddenOutputs: z.array(z.string()).default([]),
+  acceptableFallbacks: z.array(z.string()).default([]),
+});
+export type IntentContract = z.infer<typeof IntentContractSchema>;
+
+export const SemanticPlanStepSchema = z.object({
+  id: z.string().min(1),
+  description: z.string().min(1),
+  capabilityId: z.string().optional(),
+  requires: z.array(z.string()).default([]),
+});
+export const SemanticPlanSchema = z.object({
+  steps: z.array(SemanticPlanStepSchema).default([]),
+  success_criteria: z.array(z.string()).default([]),
+  join_graph: z.array(z.object({ from: z.string().min(1), to: z.string().min(1), on: z.string().min(1) })).default([]),
+});
+export type SemanticPlan = z.infer<typeof SemanticPlanSchema>;
+
 export const AbsenceReasonSchema = z.enum([
   "no_failed_builds",
   "failed_builds_exist_no_notifications",
@@ -259,6 +285,15 @@ export const DecisionSchema = z.object({
   partial: z.boolean().optional(),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
+
+export const IntegrationStatusSchema = z.object({
+  integration: z.string().min(1),
+  status: z.enum(["ok", "skipped", "reauth_required", "failed"]),
+  reason: z.string().optional(),
+  required: z.boolean().optional(),
+  userActionRequired: z.boolean().optional(),
+});
+export type IntegrationStatus = z.infer<typeof IntegrationStatusSchema>;
 
 export const IntegrationQueryPlanSchema = z.object({
   integrationId: IntegrationIdSchema,
@@ -293,8 +328,11 @@ export type ToolGraph = z.infer<typeof ToolGraphSchema>;
 export const ViewSpecPayloadSchema = z.object({
   views: z.array(ViewSpecSchema),
   goal_plan: GoalPlanSchema.optional(),
+  intent_contract: IntentContractSchema.optional(),
+  semantic_plan: SemanticPlanSchema.optional(),
   goal_validation: GoalSatisfactionSchema.optional(),
   decision: DecisionSchema.optional(),
+  integration_statuses: z.record(z.string(), IntegrationStatusSchema).optional(),
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),
@@ -379,6 +417,8 @@ export const ToolSystemSpecSchema = z.object({
   initialFetch: InitialFetchSchema.optional(),
   dataReadiness: DataReadinessGateSchema.optional(),
   goal_plan: GoalPlanSchema.optional(),
+  intent_contract: IntentContractSchema.optional(),
+  semantic_plan: SemanticPlanSchema.optional(),
   derived_entities: z.array(DerivedEntitySchema).default([]),
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
