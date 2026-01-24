@@ -2,7 +2,7 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat } from "@/lib/ai/tool-chat";
+import { processToolChat, detectIntegrations } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
@@ -14,7 +14,8 @@ export async function sendChatMessage(
   toolId: string | undefined,
   message: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
-  currentSpec: unknown | null
+  currentSpec: unknown | null,
+  requiredIntegrations?: string[]
 ) {
   // 1. Authenticate User
   const session = await getSessionOnce();
@@ -103,6 +104,25 @@ export async function sendChatMessage(
   const supabase = await createSupabaseServerClient();
   const connections = await loadIntegrationConnections({ supabase, orgId });
   const connectedIntegrationIds = connections.map((c) => c.integration_id);
+  const requestedIntegrations =
+    requiredIntegrations && requiredIntegrations.length > 0
+      ? requiredIntegrations
+      : detectIntegrations(message);
+  const allowedIntegrations = ["github", "slack", "notion", "linear", "google"];
+  const normalizedRequested = requestedIntegrations.filter((id) =>
+    allowedIntegrations.includes(id),
+  );
+  const missingIntegrations = normalizedRequested.filter(
+    (id) => !connectedIntegrationIds.includes(id),
+  );
+  if (missingIntegrations.length > 0) {
+    return {
+      requiresIntegrations: true,
+      missingIntegrations,
+      requiredIntegrations: normalizedRequested,
+      toolId: effectiveToolId,
+    };
+  }
 
   const response = await processToolChat({
     orgId,

@@ -5,22 +5,43 @@ import Link from "next/link";
 import { LazyMotion, m, useReducedMotion } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 
-const heroPanels = [
-  { id: "panel-1", title: "Incident Feed", subtitle: "Slack + GitHub", x: -220, y: -80 },
-  { id: "panel-2", title: "Latency Spike", subtitle: "Monitoring", x: 0, y: -130 },
-  { id: "panel-3", title: "Deploy Rollback", subtitle: "Runtime", x: 220, y: -80 },
-  { id: "panel-4", title: "Ops Timeline", subtitle: "Live View", x: -180, y: 80 },
-  { id: "panel-5", title: "Action Queue", subtitle: "Automation", x: 30, y: 110 },
-  { id: "panel-6", title: "Owners", subtitle: "On-call", x: 200, y: 70 },
+const heroFailedBuilds = [
+  {
+    repo: "assemblr-web",
+    commit: "a8f3c21",
+    reason: "Snapshot mismatch",
+    time: "Today 10:42",
+    owner: "Mira K.",
+  },
+  {
+    repo: "assemblr-core",
+    commit: "9b72f10",
+    reason: "Integration tests failing",
+    time: "Today 10:31",
+    owner: "Dylan P.",
+  },
+  {
+    repo: "assemblr-api",
+    commit: "3f1d0c9",
+    reason: "Build step timed out",
+    time: "Today 10:12",
+    owner: "Rae J.",
+  },
 ];
 
-const heroLines: Array<[string, string]> = [
-  ["panel-1", "panel-5"],
-  ["panel-2", "panel-4"],
-  ["panel-3", "panel-5"],
-  ["panel-1", "panel-4"],
-  ["panel-2", "panel-6"],
+const heroSlackDrafts = [
+  { owner: "Mira K.", channel: "#deploys", preview: "CI failed in assemblr-web. Snapshot mismatch in auth flow." },
+  { owner: "Dylan P.", channel: "#eng-platform", preview: "Integration tests failing in assemblr-core. Can you take a look?" },
+  { owner: "Rae J.", channel: "#on-call", preview: "assemblr-api build timed out. Need triage on build step." },
+];
+
+const heroSuggestions = [
+  "Group by failure type",
+  "Open related PRs",
+  "Create incident tracker",
+  "Escalate to on-call",
 ];
 
 const simulationSteps = [
@@ -149,72 +170,92 @@ const whyStatements = [
   "Built for enterprise-grade reliability",
 ];
 
-const floatTransition = {
-  duration: 8,
-  repeat: Infinity,
-  repeatType: "mirror" as const,
-  ease: "easeInOut",
-};
-
 function HeroCanvas() {
   const reduceMotion = useReducedMotion();
+  const fadeUp = (delay: number) => ({
+    initial: reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 },
+    animate: { opacity: 1, y: 0 },
+    transition: reduceMotion ? { duration: 0 } : { duration: 0.6, ease: "easeOut", delay },
+  });
   return (
-    <div className="relative mx-auto h-[360px] w-full max-w-5xl overflow-hidden rounded-[32px] border border-border/60 bg-muted/10 p-8">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.24),_transparent_50%),radial-gradient(circle_at_80%_20%,_rgba(59,130,246,0.18),_transparent_45%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.08)_1px,transparent_1px)] [background-size:32px_32px]" />
-      <svg className="absolute inset-0 h-full w-full">
-        {heroLines.map(([from, to], index) => {
-          const start = heroPanels.find((panel) => panel.id === from);
-          const end = heroPanels.find((panel) => panel.id === to);
-          if (!start || !end) return null;
-          return (
-            <m.line
-              key={`${from}-${to}`}
-              x1={`calc(50% + ${start.x + 80}px)`}
-              y1={`calc(50% + ${start.y + 40}px)`}
-              x2={`calc(50% + ${end.x + 80}px)`}
-              y2={`calc(50% + ${end.y + 40}px)`}
-              stroke="rgba(99,102,241,0.45)"
-              strokeWidth="1.2"
-              strokeDasharray="6 10"
-              animate={
-                reduceMotion
-                  ? undefined
-                  : { strokeDashoffset: [0, -40 - index * 6], opacity: [0.4, 0.7, 0.4] }
-              }
-              transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
-            />
-          );
-        })}
-      </svg>
-      {heroPanels.map((panel, index) => (
+    <div className="relative mx-auto w-full max-w-6xl overflow-hidden rounded-[32px] border border-border/60 bg-gradient-to-br from-slate-950/90 via-slate-900/90 to-slate-950/80 p-8 shadow-[0_30px_80px_rgba(6,10,25,0.45)]">
+      <div className="pointer-events-none absolute inset-0 rounded-[32px] ring-1 ring-white/5" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.55),_transparent_60%)]" />
+      <div className="relative space-y-4">
+        <div className="flex justify-end">
+          <m.div
+            className="max-w-xs rounded-2xl border border-border/60 bg-background/60 px-4 py-3 text-xs text-foreground/90 shadow-[0_12px_35px_rgba(6,10,25,0.45)] backdrop-blur-xl"
+            {...fadeUp(0)}
+          >
+            Investigate recent build failures and notify the right owners.
+          </m.div>
+        </div>
+        <m.div className="text-xs text-muted-foreground/70" {...fadeUp(0.1)}>
+          Done. Here’s what I found and assembled for you:
+        </m.div>
+
         <m.div
-          key={panel.id}
-          className="absolute left-1/2 top-1/2 w-44 rounded-2xl border border-border/60 bg-background/40 px-4 py-3 text-left text-xs text-muted-foreground backdrop-blur-xl shadow-[0_10px_40px_rgba(8,10,25,0.35)]"
-          style={{ transform: `translate3d(${panel.x}px, ${panel.y}px, 0)` }}
-          animate={
-            reduceMotion
-              ? undefined
-              : { y: [0, index % 2 === 0 ? -6 : 6, 0], opacity: [0.75, 1, 0.75] }
-          }
-          transition={floatTransition}
-          whileHover={{ scale: 1.04, boxShadow: "0 0 30px rgba(99,102,241,0.4)" }}
+          className="rounded-2xl border border-border/60 bg-background/50 p-4 text-xs shadow-[0_16px_45px_rgba(6,10,25,0.4)] backdrop-blur-xl"
+          {...fadeUp(0.2)}
         >
-          <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground/70">
-            {panel.subtitle}
+          <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-muted-foreground/70">
+            <span>Failed Builds</span>
+            <span className="text-muted-foreground/60">Live output</span>
           </div>
-          <div className="mt-1 text-sm font-semibold text-foreground/90">{panel.title}</div>
-          <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>Live</span>
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.9)]" />
+          <div className="mt-3 grid grid-cols-5 gap-3 border-b border-border/50 pb-2 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+            <span>Repo</span>
+            <span>Commit</span>
+            <span>Failure</span>
+            <span>Timestamp</span>
+            <span>Owner</span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {heroFailedBuilds.map((build) => (
+              <div key={`${build.repo}-${build.commit}`} className="grid grid-cols-5 gap-3 text-xs text-muted-foreground">
+                <span className="text-foreground/90">{build.repo}</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{build.commit}</span>
+                <span>{build.reason}</span>
+                <span>{build.time}</span>
+                <span className="text-foreground/80">{build.owner}</span>
+              </div>
+            ))}
           </div>
         </m.div>
-      ))}
-      <m.div
-        className="absolute right-10 top-8 h-24 w-24 rounded-full bg-gradient-to-br from-blue-500/40 via-indigo-500/10 to-transparent blur-2xl"
-        animate={reduceMotion ? undefined : { scale: [1, 1.2, 1], opacity: [0.6, 0.9, 0.6] }}
-        transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
-      />
+
+        <m.div
+          className="rounded-2xl border border-border/60 bg-background/45 p-4 text-xs shadow-[0_16px_45px_rgba(6,10,25,0.35)] backdrop-blur-xl"
+          {...fadeUp(0.35)}
+        >
+          <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-muted-foreground/70">
+            <span>Slack Notifications Drafted</span>
+            <span className="text-muted-foreground/60">Ready to send</span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {heroSlackDrafts.map((draft) => (
+              <div key={`${draft.owner}-${draft.channel}`} className="flex items-start justify-between gap-4 rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
+                <div className="space-y-1">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                    {draft.owner} · {draft.channel}
+                  </div>
+                  <div className="text-xs text-foreground/85">{draft.preview}</div>
+                </div>
+                <div className="mt-1 h-2 w-2 rounded-full bg-blue-400/70 shadow-[0_0_8px_rgba(96,165,250,0.6)]" />
+              </div>
+            ))}
+          </div>
+        </m.div>
+
+        <m.div className="flex flex-wrap gap-2 pt-2" {...fadeUp(0.5)}>
+          {heroSuggestions.map((chip) => (
+            <div
+              key={chip}
+              className="rounded-full border border-border/60 bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground"
+            >
+              {chip}
+            </div>
+          ))}
+        </m.div>
+      </div>
     </div>
   );
 }
@@ -437,6 +478,51 @@ function GlassCard({ className, children }: { className?: string; children: Reac
   );
 }
 
+function UseCaseCard({
+  id,
+  title,
+  description,
+  requiredIntegrations,
+  prompt,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  requiredIntegrations: string[];
+  prompt: string;
+}) {
+  const router = useRouter();
+  const click = React.useCallback(() => {
+    const params = new URLSearchParams();
+    params.set("prompt", prompt);
+    params.set("integrations", requiredIntegrations.join(","));
+    router.push(`/app/chat?${params.toString()}`);
+  }, [router, prompt, requiredIntegrations]);
+
+  return (
+    <button
+      type="button"
+      onClick={click}
+      className="rounded-2xl border border-border/60 bg-muted/10 p-5 text-left transition hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.35)]"
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-lg font-semibold text-foreground/90">{title}</div>
+        <div className="flex items-center gap-1">
+          {requiredIntegrations.map((id) => (
+            <span
+              key={`${id}-${title}`}
+              className="inline-flex items-center rounded-md border border-border/60 bg-background/50 px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              {id}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-2 text-sm text-muted-foreground">{description}</div>
+    </button>
+  );
+}
+
 export default function Home() {
   return (
     <LazyMotion features={() => import("framer-motion").then((mod) => mod.domAnimation)}>
@@ -466,6 +552,67 @@ export default function Home() {
               <Button asChild size="lg" variant="outline" className="rounded-full">
                 <Link href="/signup">Request access</Link>
               </Button>
+            </div>
+          </section>
+          
+          <section className="mx-auto max-w-6xl px-6 py-16">
+            <div className="mb-6 flex items-center justify-between">
+              <div className="space-y-2">
+                <h2 className="text-3xl font-semibold">Use Case Discovery</h2>
+                <p className="text-muted-foreground">
+                  Choose a real-world workflow. Assemblr will open Chat and run it instantly.
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/20 px-3 py-1.5 text-xs">
+                <span>Featured</span>
+                <span className="text-muted-foreground">Engineering</span>
+                <span className="text-muted-foreground">Design</span>
+                <span className="text-muted-foreground">Marketing</span>
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <UseCaseCard
+                id="daily-email-digest"
+                title="Daily Email Digest"
+                description="Summarize important emails received today and send a concise digest."
+                requiredIntegrations={["google"]}
+                prompt="Compile a summary of today's important emails and send a digest to me."
+              />
+              <UseCaseCard
+                id="weekly-goals-review"
+                title="Weekly Goals Review"
+                description="Review Linear issues and create a weekly summary in Notion."
+                requiredIntegrations={["linear", "notion"]}
+                prompt="Review all my Linear issues from this week and create a structured weekly summary in Notion."
+              />
+              <UseCaseCard
+                id="morning-meeting-briefing"
+                title="Morning Meeting Briefing"
+                description="Compile a briefing for today's meetings with prep suggestions."
+                requiredIntegrations={["google"]}
+                prompt="Create a concise daily briefing for today's meetings with prep suggestions, and highlight scheduling conflicts."
+              />
+              <UseCaseCard
+                id="incident-intel"
+                title="Incident Intelligence"
+                description="Detect recent GitHub build failures and coordinate Slack notifications."
+                requiredIntegrations={["github", "slack"]}
+                prompt="Find recent build failures on GitHub and draft Slack notifications to the relevant owners."
+              />
+              <UseCaseCard
+                id="weekly-changelog"
+                title="Weekly Changelog Generator"
+                description="Summarize merged PRs and changes across repos for the week."
+                requiredIntegrations={["github", "notion"]}
+                prompt="Review all merged PRs across our GitHub repos this week and generate a weekly changelog summary in Notion."
+              />
+              <UseCaseCard
+                id="linear-sprint-summary"
+                title="Linear Sprint Summary"
+                description="Summarize completed issues, blockers, and planned work."
+                requiredIntegrations={["linear", "slack"]}
+                prompt="Create a sprint summary from Linear including completed issues, blockers, and upcoming priorities, then share on Slack."
+              />
             </div>
           </section>
 

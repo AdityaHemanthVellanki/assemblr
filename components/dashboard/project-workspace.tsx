@@ -17,6 +17,8 @@ import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
 import { safeFetch } from "@/lib/api/client";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 
 interface ProjectWorkspaceProps {
   project?: {
@@ -40,12 +42,16 @@ interface ProjectWorkspaceProps {
     };
   }>;
   role: OrgRole;
+  initialPrompt?: string | null;
+  initialRequiredIntegrations?: string[] | null;
 }
 
 export function ProjectWorkspace({
   project,
   initialMessages,
   role,
+  initialPrompt,
+  initialRequiredIntegrations,
 }: ProjectWorkspaceProps) {
   // State
   const [inputValue, setInputValue] = React.useState("");
@@ -69,6 +75,15 @@ export function ProjectWorkspace({
   const [initError, setInitError] = React.useState<string | null>(
     project?.status === "FAILED" ? project?.error_message ?? "Tool initialization failed." : null
   );
+  const [integrationGateOpen, setIntegrationGateOpen] = React.useState(false);
+  const [missingIntegrations, setMissingIntegrations] = React.useState<string[]>([]);
+  const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
+  const [pendingRequiredIntegrations, setPendingRequiredIntegrations] = React.useState<string[]>([]);
+  const [pendingMessageAdded, setPendingMessageAdded] = React.useState(false);
+  const pendingRef = React.useRef(false);
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
@@ -236,86 +251,203 @@ export function ProjectWorkspace({
     [toolId, versions, loadVersions],
   );
 
-  const handleSubmit = async () => {
-    if (!inputValue.trim() || isExecuting) return;
+  const integrationById = React.useMemo(() => {
+    const map = new Map<string, (typeof INTEGRATIONS_UI)[number]>();
+    INTEGRATIONS_UI.forEach((integration) => {
+      map.set(integration.id, integration);
+    });
+    return map;
+  }, []);
 
-    const userMsg = { role: "user", content: inputValue };
-    const newHistory = [...messages, userMsg];
-    setMessages(newHistory);
-    setInputValue("");
-    setIsExecuting(true);
-    setBuildSteps(markFirstRunning(defaultBuildSteps()));
-    setAuthExpired(false);
-    setViewReady(false);
-    setViewSpec(null);
-    setDataReady(false);
-    setDataSnapshot(null);
-
+  const storePendingPrompt = React.useCallback((payload: {
+    prompt: string;
+    requiredIntegrations: string[];
+    messageAdded: boolean;
+  }) => {
     try {
+      localStorage.setItem("assemblr:pending_prompt", JSON.stringify(payload));
+    } catch {
+      return;
+    }
+  }, []);
+
+  const clearPendingPrompt = React.useCallback(() => {
+    try {
+      localStorage.removeItem("assemblr:pending_prompt");
+    } catch {
+      return;
+    }
+  }, []);
+
+  const executePrompt = React.useCallback(
+    async (
+      prompt: string,
+      options?: { requiredIntegrations?: string[] | null; skipUserMessage?: boolean },
+    ) => {
+      if (!prompt.trim() || isExecuting) return;
+
+      const shouldAddMessage = !options?.skipUserMessage;
+      const history = shouldAddMessage
+        ? [...messages, { role: "user", content: prompt }]
+        : messages;
+
+      if (shouldAddMessage) {
+        setMessages(history);
+      }
+      setInputValue("");
+      setIsExecuting(true);
+      setBuildSteps(markFirstRunning(defaultBuildSteps()));
+      setAuthExpired(false);
+      setViewReady(false);
+      setViewSpec(null);
+      setDataReady(false);
+      setDataSnapshot(null);
+
+      try {
         const response = await sendChatMessage(
-            toolId, 
-            inputValue, 
-            newHistory.map(m => ({ role: m.role, content: m.content })), 
-            currentSpec
+          toolId,
+          prompt,
+          history.map((m) => ({ role: m.role, content: m.content })),
+          currentSpec,
+          options?.requiredIntegrations ?? undefined,
         );
+        if ("requiresIntegrations" in response && response.requiresIntegrations) {
+          setIsExecuting(false);
+          setBuildSteps(defaultBuildSteps());
+          setIntegrationGateOpen(true);
+          setMissingIntegrations(response.missingIntegrations ?? []);
+          setPendingPrompt(prompt);
+          setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
+          setPendingMessageAdded(shouldAddMessage);
+          storePendingPrompt({
+            prompt,
+            requiredIntegrations: response.requiredIntegrations ?? [],
+            messageAdded: shouldAddMessage,
+          });
+          return;
+        }
         if ("requiresAuth" in response && response.requiresAuth) {
-            setAuthExpired(true);
-            setMessages(prev => [...prev, { role: "assistant", content: "Session expired — reauth required." }]);
-            setBuildSteps(markError(defaultBuildSteps(), "Session expired — reauth required."));
-            return;
+          setAuthExpired(true);
+          setMessages((prev) => [...prev, { role: "assistant", content: "Session expired — reauth required." }]);
+          setBuildSteps(markError(defaultBuildSteps(), "Session expired — reauth required."));
+          return;
         }
         if ("error" in response && response.error) {
-            throw new Error(response.error);
+          throw new Error(response.error);
         }
         const data = response as {
-            toolId?: string;
-            message: { content: string };
-            spec?: ToolSpec;
-            metadata?: Record<string, any>;
+          toolId?: string;
+          message: { content: string };
+          spec?: ToolSpec;
+          metadata?: Record<string, any>;
         };
 
-        // Update ID if created
         if (data.toolId && !toolId) {
-            setToolId(data.toolId);
+          setToolId(data.toolId);
         }
 
         const pipelineSteps = data.metadata?.build_steps as BuildStep[] | undefined;
         if (pipelineSteps && pipelineSteps.length > 0) {
-            setBuildSteps(pipelineSteps);
+          setBuildSteps(pipelineSteps);
         } else {
-            setBuildSteps(markAllSuccess(defaultBuildSteps()));
+          setBuildSteps(markAllSuccess(defaultBuildSteps()));
         }
 
-        // Update Spec
         if (data.spec) {
-            setCurrentSpec(data.spec as ToolSpec);
+          setCurrentSpec(data.spec as ToolSpec);
         }
 
-        // Add Assistant Message
-        const assistantMsg = { 
-            role: "assistant", 
-            content: data.message.content 
+        const assistantMsg = {
+          role: "assistant",
+          content: data.message.content,
         };
         const refinements = data.metadata?.refinements as string[] | undefined;
         if (refinements && refinements.length > 0) {
-            const refinementMsg = {
-                role: "assistant",
-                content: `Optional refinements:\n${refinements.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
-            };
-            setMessages(prev => [...prev, assistantMsg, refinementMsg]);
+          const refinementMsg = {
+            role: "assistant",
+            content: `Optional refinements:\n${refinements.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
+          };
+          setMessages((prev) => [...prev, assistantMsg, refinementMsg]);
         } else {
-            setMessages(prev => [...prev, assistantMsg]);
+          setMessages((prev) => [...prev, assistantMsg]);
         }
-
-    } catch (e) {
+      } catch (e) {
         console.error(e);
         const errorMsg = { role: "assistant", content: "Something went wrong. Please try again." };
-        setMessages(prev => [...prev, errorMsg]);
+        setMessages((prev) => [...prev, errorMsg]);
         setBuildSteps(markError(defaultBuildSteps(), e instanceof Error ? e.message : String(e)));
-    } finally {
+      } finally {
         setIsExecuting(false);
-    }
+      }
+    },
+    [
+      isExecuting,
+      messages,
+      toolId,
+      currentSpec,
+      storePendingPrompt,
+    ],
+  );
+
+  const handleSubmit = async () => {
+    if (!inputValue.trim() || isExecuting) return;
+    await executePrompt(inputValue);
   };
+
+  const handleConnectMissing = React.useCallback(() => {
+    if (!pendingPrompt || missingIntegrations.length === 0) return;
+    const integrationId = missingIntegrations[0];
+    storePendingPrompt({
+      prompt: pendingPrompt,
+      requiredIntegrations: pendingRequiredIntegrations,
+      messageAdded: pendingMessageAdded,
+    });
+    const params = new URLSearchParams();
+    params.set("provider", integrationId);
+    params.set("redirectPath", `${window.location.pathname}${window.location.search}`);
+    window.location.href = `/api/oauth/start?${params.toString()}`;
+  }, [
+    missingIntegrations,
+    pendingPrompt,
+    pendingRequiredIntegrations,
+    pendingMessageAdded,
+    storePendingPrompt,
+  ]);
+
+  React.useEffect(() => {
+    if (pendingRef.current) return;
+    if (!initialPrompt) return;
+    pendingRef.current = true;
+    void executePrompt(initialPrompt, {
+      requiredIntegrations: initialRequiredIntegrations ?? undefined,
+    });
+    if (pathname) router.replace(pathname);
+  }, [initialPrompt, initialRequiredIntegrations, executePrompt, pathname, router]);
+
+  React.useEffect(() => {
+    const connected = searchParams.get("integration_connected");
+    if (connected !== "true") return;
+    let pending: { prompt: string; requiredIntegrations: string[]; messageAdded: boolean } | null = null;
+    try {
+      const raw = localStorage.getItem("assemblr:pending_prompt");
+      if (raw) pending = JSON.parse(raw);
+    } catch {
+      pending = null;
+    }
+    if (pending?.prompt) {
+      clearPendingPrompt();
+      setIntegrationGateOpen(false);
+      setMissingIntegrations([]);
+      setPendingPrompt(null);
+      setPendingRequiredIntegrations([]);
+      setPendingMessageAdded(pending.messageAdded);
+      void executePrompt(pending.prompt, {
+        requiredIntegrations: pending.requiredIntegrations,
+        skipUserMessage: pending.messageAdded,
+      });
+    }
+    if (pathname) router.replace(pathname);
+  }, [searchParams, executePrompt, pathname, router, clearPendingPrompt]);
 
   React.useEffect(() => {
     if (isExecuting) return;
@@ -462,6 +594,49 @@ export function ProjectWorkspace({
           </div>
         )}
       </div>
+      <Dialog open={integrationGateOpen} onOpenChange={setIntegrationGateOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Connect integrations to continue</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm text-muted-foreground">
+            <div>
+              Assemblr needs the following integrations to run this request. Connect them to proceed.
+            </div>
+            <div className="space-y-2">
+              {missingIntegrations.map((integrationId) => {
+                const integration = integrationById.get(integrationId);
+                return (
+                  <div
+                    key={integrationId}
+                    className="flex items-center justify-between rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      {integration?.logoUrl ? (
+                        <img
+                          src={integration.logoUrl}
+                          alt={integration.name}
+                          className="h-5 w-5 rounded"
+                        />
+                      ) : null}
+                      <span className="text-foreground/90">{integration?.name ?? integrationId}</span>
+                    </div>
+                    <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      Required
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <Button
+              onClick={handleConnectMissing}
+              disabled={!pendingPrompt || missingIntegrations.length === 0}
+            >
+              Connect & Continue
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={showVersions} onOpenChange={setShowVersions}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>

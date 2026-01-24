@@ -986,10 +986,10 @@ function parseIntent(
   }
 }
 
-function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
+export function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
   const normalized = text.toLowerCase();
   const hits = new Set<ToolSystemSpec["integrations"][number]["id"]>();
-  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox")) hits.add("google");
+  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox") || normalized.includes("calendar")) hits.add("google");
   if (normalized.includes("github")) hits.add("github");
   if (normalized.includes("slack")) hits.add("slack");
   if (normalized.includes("notion")) hits.add("notion");
