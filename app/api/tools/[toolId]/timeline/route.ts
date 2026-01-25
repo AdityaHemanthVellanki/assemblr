@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess } from "@/lib/permissions";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { aggregateTimeline } from "@/lib/toolos/timeline-engine";
 import { isToolSystemSpec } from "@/lib/toolos/spec";

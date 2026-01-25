@@ -1,7 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { ApiError } from "@/lib/api/client";
-import { PermissionError } from "@/lib/auth/permissions.client";
+import { PermissionError } from "@/lib/permissions-shared";
 
 export type ApiResponse<T> = 
   | { ok: true; data: T }

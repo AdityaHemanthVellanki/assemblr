@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getRequestContext, requireOrgMember, requiresApproval, canCreateWorkflows, OrgRole } from "@/lib/auth/permissions.server";
+import { getRequestContext, requireOrgMember, requiresApproval, canCreateWorkflows, OrgRole } from "@/lib/permissions";
 import { createApprovalRequest, logAudit } from "@/lib/governance/store";
 
 export type WorkflowAction = {

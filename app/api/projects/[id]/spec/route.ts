@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   PermissionError,
   requireRole,
-} from "@/lib/auth/permissions.server";
+} from "@/lib/permissions";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";

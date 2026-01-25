@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { requireOrgMember } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";

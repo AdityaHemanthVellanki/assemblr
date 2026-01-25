@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
-import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess, canViewDashboards } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { loadMemory, type MemoryScope } from "@/lib/toolos/memory-store";
@@ -28,6 +28,17 @@ export default async function ProjectPage({
   await requireProjectOrgAccess(ctx, toolId);
 
   const supabase = await createSupabaseServerClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  let profile = null;
+  if (user) {
+    const { data } = await supabase
+      .from("profiles")
+      .select("name, avatar_url")
+      .eq("id", user.id)
+      .single();
+    profile = data;
+  }
 
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
@@ -141,6 +152,8 @@ export default async function ProjectPage({
 
   return (
     <ProjectWorkspace
+      user={user}
+      profile={profile}
       project={{
         id: projectRes.data.id,
         spec,

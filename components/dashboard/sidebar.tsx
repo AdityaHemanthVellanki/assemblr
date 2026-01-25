@@ -8,10 +8,9 @@ import { AlertTriangle, Search, Plus } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { APP_NAME } from "@/lib/branding";
-import { type OrgRole } from "@/lib/auth/permissions.client";
+import { type OrgRole } from "@/lib/permissions-shared";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar({
@@ -27,12 +26,6 @@ export function Sidebar({
   const [projects, setProjects] = React.useState<Array<{ id: string; name: string; updatedAt: string; isValidSpec: boolean; specError?: string | null }>>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(false);
   const [projectsError, setProjectsError] = React.useState<string | null>(null);
-  const [profileName, setProfileName] = React.useState<string>("");
-  const [profileAvatar, setProfileAvatar] = React.useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [nameInput, setNameInput] = React.useState("");
-  const [avatarPreview, setAvatarPreview] = React.useState<string | null>(null);
-  const [savingProfile, setSavingProfile] = React.useState(false);
 
   const loadProjects = React.useCallback(async () => {
     setProjectsLoading(true);
@@ -59,24 +52,9 @@ export function Sidebar({
     }
   }, []);
 
-  const loadProfile = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/profile");
-      if (!res.ok) return;
-      const json = await res.json();
-      setProfileName(json.name ?? "");
-      setProfileAvatar(json.avatar_url ?? null);
-      setNameInput(json.name ?? "");
-      setAvatarPreview(json.avatar_url ?? null);
-    } catch {
-      return;
-    }
-  }, []);
-
   React.useEffect(() => {
     void loadProjects();
-    void loadProfile();
-  }, [loadProjects, loadProfile]);
+  }, [loadProjects]);
 
   React.useEffect(() => {
     void loadProjects();
@@ -101,30 +79,6 @@ export function Sidebar({
       setProjectsError("Failed to create chat");
     }
   }, [router, loadProjects]);
-
-  const handleProfileSave = React.useCallback(async () => {
-    setSavingProfile(true);
-    try {
-      const res = await fetch("/api/profile", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: nameInput.trim(),
-          avatar_url: avatarPreview,
-        }),
-      });
-      if (!res.ok) {
-        throw new Error("Failed to save profile");
-      }
-      setProfileName(nameInput.trim());
-      setProfileAvatar(avatarPreview);
-      setSettingsOpen(false);
-    } catch {
-      return;
-    } finally {
-      setSavingProfile(false);
-    }
-  }, [nameInput, avatarPreview]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const visibleProjects = normalizedQuery
@@ -207,86 +161,6 @@ export function Sidebar({
           )}
          </div>
       </ScrollArea>
-
-      <div className="mt-auto border-t border-border p-4">
-        <button
-          type="button"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted/40 text-xs font-medium text-foreground"
-          aria-label={`Account settings (${_role})`}
-          onClick={() => setSettingsOpen(true)}
-        >
-          {profileAvatar ? (
-            <Image
-              src={profileAvatar}
-              alt={profileName}
-              width={36}
-              height={36}
-              className="h-full w-full rounded-full object-cover"
-            />
-          ) : (
-            <span>{profileName ? profileName[0]?.toUpperCase() : "A"}</span>
-          )}
-        </button>
-      </div>
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Account settings</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2 text-sm">
-              <div className="text-xs text-muted-foreground">Display name</div>
-              <Input value={nameInput} onChange={(e) => setNameInput(e.target.value)} />
-            </div>
-            <div className="space-y-2 text-sm">
-              <div className="text-xs text-muted-foreground">Profile picture</div>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    if (typeof reader.result === "string") {
-                      setAvatarPreview(reader.result);
-                    }
-                  };
-                  reader.readAsDataURL(file);
-                }}
-              />
-              {avatarPreview ? (
-                <Image
-                  src={avatarPreview}
-                  alt="Preview"
-                  width={64}
-                  height={64}
-                  className="h-16 w-16 rounded-full object-cover"
-                />
-              ) : null}
-            </div>
-            <div className="flex items-center justify-between gap-2 border-t pt-4">
-               <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleSignOut}
-                className="gap-2"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </Button>
-              <div className="flex gap-2">
-                <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
-                    Cancel
-                </Button>
-                <Button onClick={handleProfileSave} disabled={savingProfile}>
-                    {savingProfile ? "Saving…" : "Save"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </aside>
   );
 }

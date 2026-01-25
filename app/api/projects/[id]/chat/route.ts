@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
-import { PermissionError, requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { createSupabaseServerClient } from "@/lib/supabase/server";

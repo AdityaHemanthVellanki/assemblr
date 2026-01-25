@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { PermissionError, requireRole } from "@/lib/auth/permissions.server";
+import { PermissionError, requireRole } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 

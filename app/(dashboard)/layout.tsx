@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { DashboardShell } from "@/components/dashboard/shell";
-import { requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -18,19 +17,16 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  // 2. Check Org Membership (Uses cached session/context if optimized, or fetches)
-  // We keep the existing logic but ensure it doesn't trigger refresh loops.
-  // requireOrgMember should ideally use the session we just got, but changing signature is hard.
-  // We rely on getSessionOnce being cached.
-  let role: OrgRole;
-  try {
-    const { ctx } = await requireOrgMember();
-    role = ctx.org.role as OrgRole;
-  } catch (err) {
-      // If requireOrgMember fails (e.g. no org), handle it.
-      // But we know session exists.
-      throw err;
-  }
+  // 2. Check Org Membership
+  const { data: membership } = await supabase
+    .from("memberships")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  // Default to viewer if no membership found to allow shell rendering
+  // Ideally we would redirect to an onboarding flow if they have no org.
+  const role = (membership?.role as any) ?? "viewer";
 
   return <DashboardShell role={role}>{children}</DashboardShell>;
 }

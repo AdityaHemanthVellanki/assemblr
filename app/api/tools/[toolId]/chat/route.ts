@@ -4,7 +4,7 @@ import { z } from "zod";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
-import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 

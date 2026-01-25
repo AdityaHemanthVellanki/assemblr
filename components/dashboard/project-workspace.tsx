@@ -13,7 +13,7 @@ import { ToolSpec } from "@/lib/spec/toolSpec";
 import { type ViewSpecPayload } from "@/lib/toolos/spec";
 import Image from "next/image";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
-import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
+import { canEditProjects, type OrgRole } from "@/lib/permissions-shared";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { type ToolLifecycleState } from "@/lib/toolos/spec";
 import { safeFetch } from "@/lib/api/client";
@@ -21,7 +21,25 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 
+import { ProfileButton } from "@/components/profile/profile-button";
+
 interface ProjectWorkspaceProps {
+  user?: {
+    id: string;
+    email?: string | null;
+    user_metadata?: {
+      avatar_url?: string;
+      full_name?: string;
+    };
+    app_metadata?: {
+      provider?: string;
+      [key: string]: any;
+    };
+  } | null;
+  profile?: {
+    name?: string | null;
+    avatar_url?: string | null;
+  } | null;
   project?: {
     id: string;
     spec: ToolSpec | null;
@@ -53,6 +71,8 @@ interface ProjectWorkspaceProps {
 }
 
 export function ProjectWorkspace({
+  user,
+  profile,
   project,
   initialMessages,
   role,
@@ -623,48 +643,47 @@ export function ProjectWorkspace({
         </div>
       )}
       {/* Header */}
-      {!isZeroState && (
-        <header className="flex h-14 shrink-0 items-center justify-between px-6 border-b border-border/50 bg-background/50 backdrop-blur-sm z-10">
-          <div className="flex-1" />
-          <div className="font-semibold">{headerTitle}</div>
-          <div className="flex-1 flex justify-end items-center gap-4">
-            {toolId && shareScope !== "version" && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-2 text-muted-foreground hover:text-foreground"
-                onClick={() => {
-                  setShowVersions(true);
-                  void loadVersions();
-                }}
-              >
-                Versions
-              </Button>
-            )}
-            {!readOnly && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-2 text-muted-foreground hover:text-foreground"
-                onClick={() => setShowChat((prev) => !prev)}
-              >
-                {showChat ? "Hide chat" : "Show chat"}
-              </Button>
-            )}
-            {!readOnly && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-2 text-muted-foreground hover:text-foreground"
-                onClick={handleShare}
-              >
-                <Share className="h-4 w-4" />
-                Share
-              </Button>
-            )}
-          </div>
-        </header>
-      )}
+      <header className="flex h-14 shrink-0 items-center justify-between px-6 border-b border-border/50 bg-background/50 backdrop-blur-sm z-10">
+        <div className="flex-1" />
+        <div className="font-semibold">{headerTitle}</div>
+        <div className="flex-1 flex justify-end items-center gap-4">
+          {!isZeroState && toolId && shareScope !== "version" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setShowVersions(true);
+                void loadVersions();
+              }}
+            >
+              Versions
+            </Button>
+          )}
+          {!isZeroState && !readOnly && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={() => setShowChat((prev) => !prev)}
+            >
+              {showChat ? "Hide chat" : "Show chat"}
+            </Button>
+          )}
+          {!isZeroState && !readOnly && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              onClick={handleShare}
+            >
+              <Share className="h-4 w-4" />
+              Share
+            </Button>
+          )}
+          <ProfileButton initialUser={user} initialProfile={profile} />
+        </div>
+      </header>
 
       <div className="flex-1 overflow-hidden relative">
         {isZeroState ? (

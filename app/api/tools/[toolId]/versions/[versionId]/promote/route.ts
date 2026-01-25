@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { requireRole, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireRole, requireProjectOrgAccess } from "@/lib/permissions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { promoteToolVersion } from "@/lib/toolos/versioning";

@@ -54,4 +54,3 @@ export function roleLabel(role: OrgRole) {
   if (role === "editor") return "Editor";
   return "Viewer";
 }
-

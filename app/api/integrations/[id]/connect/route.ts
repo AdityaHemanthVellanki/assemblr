@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import crypto from "crypto";
 
-import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { requireOrgMember } from "@/lib/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 

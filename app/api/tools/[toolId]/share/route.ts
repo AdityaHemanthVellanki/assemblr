@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 
-import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 

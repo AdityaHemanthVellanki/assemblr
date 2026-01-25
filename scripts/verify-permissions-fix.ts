@@ -1,5 +1,5 @@
 
-import { requireOrgMember, OrgRole, getRequestContext } from "@/lib/auth/permissions.server";
+import { requireOrgMember, OrgRole, getRequestContext } from "@/lib/permissions";
 
 async function verifyPermissions() {
   console.log("Verifying permissions exports...");

@@ -5,7 +5,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
-import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
+import { requireOrgMemberOptional } from "@/lib/permissions";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
@@ -87,7 +87,6 @@ export async function sendChatMessage(
     if (!ctx) return { error: error?.message ?? "Unauthorized" };
     
     // Verify tool ownership/access
-    const supabase = await createSupabaseServerClient();
     const { data: project, error: loadError } = await supabase
         .from("projects")
         .select("org_id, spec")
@@ -103,7 +102,6 @@ export async function sendChatMessage(
   }
 
   // 3. Load Connections & Process Chat
-  const supabase = await createSupabaseServerClient();
   const connections = await loadIntegrationConnections({ supabase, orgId });
   const connectedIntegrationIds = connections.map((c) => c.integration_id);
   const integrationSelection = resolveIntegrationRequirements({

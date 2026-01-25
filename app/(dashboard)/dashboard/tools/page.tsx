@@ -15,7 +15,7 @@ import {
   PermissionError,
   requireOrgMember,
   OrgRole
-} from "@/lib/auth/permissions.server";
+} from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ToolsPage() {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { PermissionError, requireOrgMember, requireRole } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMember, requireRole } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createEmptyToolSpec, hasMinimalToolSpecFields, parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";

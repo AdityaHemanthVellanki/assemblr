@@ -5,7 +5,7 @@ import {
   canEditProjects,
   PermissionError,
   requireOrgMember,
-} from "@/lib/auth/permissions.server";
+} from "@/lib/permissions";
 import { buildQueryForView } from "@/lib/data/queryBuilder";
 import { getPostgresPool, runReadOnlyQuery } from "@/lib/data/postgres";
 import { getCachedSchema } from "@/lib/data/schema";

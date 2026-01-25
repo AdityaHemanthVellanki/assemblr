@@ -1,4 +1,4 @@
-import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { requireOrgMember } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { buildCompiledToolArtifact, isCompiledToolArtifact } from "@/lib/toolos/compiler";

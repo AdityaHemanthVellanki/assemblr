@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import {
   PermissionError,
   requireOrgMember,
-} from "@/lib/auth/permissions.server";
+} from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 

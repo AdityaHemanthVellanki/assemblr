@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { PermissionError, requireOrgMember, requireRole } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMember, requireRole } from "@/lib/permissions";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";

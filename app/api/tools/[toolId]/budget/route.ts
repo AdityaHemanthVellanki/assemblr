@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/permissions";
 import { getToolBudget, getToolBudgetUsage, updateToolBudget } from "@/lib/security/tool-budget";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 

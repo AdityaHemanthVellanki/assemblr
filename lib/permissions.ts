@@ -1,14 +1,13 @@
 import "server-only";
 
-import { cache } from "react";
-
 import { getRequestContext, getOptionalRequestContext, RequestContext } from "@/lib/api/context";
 import {
   ORG_ROLES,
   type OrgRole,
   PermissionError,
   roleLabel,
-} from "./permissions.client";
+} from "./permissions-shared";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 const ORG_ROLE_ORDER: Record<OrgRole, number> = {
   viewer: 0,
@@ -37,8 +36,6 @@ export async function requireRole(minRole: OrgRole) {
 
   return { ctx, role: userRole };
 }
-
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export async function requireProjectOrgAccess(
   ctx: SessionContext,
@@ -84,7 +81,7 @@ export {
   canApproveWorkflows,
   requiresApproval,
   roleLabel,
-} from "./permissions.client";
+} from "./permissions-shared";
 
 export type { OrgRole };
 export { getRequestContext };

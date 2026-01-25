@@ -6,6 +6,29 @@ import { LazyMotion, m, useReducedMotion } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
+import { createBrowserClient } from "@supabase/ssr";
+
+function EnterSystemButton({ children, className }: { children: React.ReactNode; className?: string }) {
+  const router = useRouter();
+  const handleEnter = React.useCallback(async () => {
+    const supabase = createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+    const { data } = await supabase.auth.getSession();
+    if (data.session) {
+      router.push("/app/chat");
+    } else {
+      router.push("/login");
+    }
+  }, [router]);
+
+  return (
+    <Button onClick={handleEnter} size="lg" className={`rounded-full ${className ?? ""}`}>
+      {children}
+    </Button>
+  );
+}
 
 const heroFailedBuilds = [
   {
@@ -543,13 +566,8 @@ export default function Home() {
               </p>
             </div>
             <HeroCanvas />
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <Button asChild size="lg" className="rounded-full">
-                <Link href="/app/chat">Enter the system</Link>
-              </Button>
-              <Button asChild size="lg" variant="outline" className="rounded-full">
-                <Link href="/signup">Request access</Link>
-              </Button>
+            <div className="flex justify-center pt-4">
+              <EnterSystemButton>Enter the system</EnterSystemButton>
             </div>
           </section>
           
@@ -665,13 +683,8 @@ export default function Home() {
                 <p className="text-sm text-muted-foreground">
                   Build the platform your teams run on — with Assemblr orchestrating data, logic, and UI.
                 </p>
-                <div className="flex flex-wrap justify-center gap-3">
-                  <Button asChild size="lg" className="rounded-full">
-                    <Link href="/app/chat">Launch Assemblr</Link>
-                  </Button>
-                  <Button asChild size="lg" variant="outline" className="rounded-full">
-                    <Link href="/signup">Talk to sales</Link>
-                  </Button>
+                <div className="flex justify-center pt-4">
+                  <EnterSystemButton>Launch Assemblr</EnterSystemButton>
                 </div>
               </div>
             </div>

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { requireOrgMember } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { getLatestToolResult } from "@/lib/toolos/materialization";

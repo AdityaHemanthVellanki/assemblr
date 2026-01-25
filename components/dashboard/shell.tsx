@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { Sidebar } from "@/components/dashboard/sidebar";
-import type { OrgRole } from "@/lib/auth/permissions.client";
+import type { OrgRole } from "@/lib/permissions-shared";
 
 export function DashboardShell({
   children,

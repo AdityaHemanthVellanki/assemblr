@@ -273,6 +273,37 @@ export type Database = {
         };
         Relationships: [];
       };
+      profiles: {
+        Row: {
+          id: string;
+          name: string | null;
+          avatar_url: string | null;
+          last_login_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: {
+          id: string;
+          name?: string | null;
+          avatar_url?: string | null;
+          last_login_at?: string | null;
+          updated_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          name?: string | null;
+          avatar_url?: string | null;
+          last_login_at?: string | null;
+          updated_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "profiles_id_fkey";
+            columns: ["id"];
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess } from "@/lib/permissions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec, type ViewSpecPayload } from "@/lib/toolos/spec";

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/permissions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";

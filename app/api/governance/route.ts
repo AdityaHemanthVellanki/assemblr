@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { requireOrgMember } from "@/lib/auth/permissions.server";
+import { requireOrgMember } from "@/lib/permissions";
 
 export async function GET(req: Request) {
   try {

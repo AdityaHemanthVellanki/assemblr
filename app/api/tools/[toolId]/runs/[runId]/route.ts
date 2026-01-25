@@ -1,4 +1,4 @@
-import { requireOrgMember, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
+import { requireOrgMember, requireProjectOrgAccess } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
