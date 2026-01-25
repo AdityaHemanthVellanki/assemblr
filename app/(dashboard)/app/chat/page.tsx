@@ -9,16 +9,6 @@ export default async function ChatPage({
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  let profile = null;
-  if (user) {
-    const { data } = await supabase
-      .from("profiles")
-      .select("name, avatar_url")
-      .eq("id", user.id)
-      .single();
-    profile = data;
-  }
-
   const resolvedSearchParams = await searchParams;
   const prompt =
     typeof resolvedSearchParams.prompt === "string"
@@ -37,8 +27,6 @@ export default async function ChatPage({
 
   return (
     <ProjectWorkspace
-      user={user}
-      profile={profile}
       project={null}
       initialMessages={[]}
       role="viewer"

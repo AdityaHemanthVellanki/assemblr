@@ -24,22 +24,6 @@ import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 import { ProfileButton } from "@/components/profile/profile-button";
 
 interface ProjectWorkspaceProps {
-  user?: {
-    id: string;
-    email?: string | null;
-    user_metadata?: {
-      avatar_url?: string;
-      full_name?: string;
-    };
-    app_metadata?: {
-      provider?: string;
-      [key: string]: any;
-    };
-  } | null;
-  profile?: {
-    name?: string | null;
-    avatar_url?: string | null;
-  } | null;
   project?: {
     id: string;
     spec: ToolSpec | null;
@@ -71,8 +55,6 @@ interface ProjectWorkspaceProps {
 }
 
 export function ProjectWorkspace({
-  user,
-  profile,
   project,
   initialMessages,
   role,
@@ -681,7 +663,7 @@ export function ProjectWorkspace({
               Share
             </Button>
           )}
-          <ProfileButton initialUser={user} initialProfile={profile} />
+          <ProfileButton />
         </div>
       </header>
 

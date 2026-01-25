@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { DashboardShell } from "@/components/dashboard/shell";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { ProfileProvider } from "@/components/profile/profile-provider";
 
 export const dynamic = "force-dynamic";
 
@@ -28,5 +29,9 @@ export default async function DashboardLayout({
   // Ideally we would redirect to an onboarding flow if they have no org.
   const role = (membership?.role as any) ?? "viewer";
 
-  return <DashboardShell role={role}>{children}</DashboardShell>;
+  return (
+    <ProfileProvider>
+      <DashboardShell role={role}>{children}</DashboardShell>
+    </ProfileProvider>
+  );
 }

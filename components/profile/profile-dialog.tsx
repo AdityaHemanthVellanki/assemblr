@@ -9,45 +9,46 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useProfile } from "@/components/profile/profile-provider";
 import { cn } from "@/lib/ui/cn";
 
 interface ProfileDialogProps {
-  user: {
-    id: string;
-    email?: string | null;
-    user_metadata?: {
-      avatar_url?: string;
-      full_name?: string;
-    };
-    app_metadata?: {
-      provider?: string;
-      [key: string]: any;
-    };
-  };
-  profile: {
-    name?: string | null;
-    avatar_url?: string | null;
-  } | null;
   onClose: () => void;
 }
 
-export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
+export function ProfileDialog({ onClose }: ProfileDialogProps) {
   const router = useRouter();
+  const { user, profile, setProfile } = useProfile();
+  
   const [isLoading, setIsLoading] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = React.useState(false);
-  const [name, setName] = React.useState(profile?.name || user.user_metadata?.full_name || "");
+  
+  // Initialize form state from context
+  const [name, setName] = React.useState(profile?.name || user?.user_metadata?.full_name || "");
+  const [avatarUrl, setAvatarUrl] = React.useState(profile?.avatar_url || user?.user_metadata?.avatar_url || null);
+  
   const [sharedCount, setSharedCount] = React.useState<number | null>(null);
-  const [avatarUrl, setAvatarUrl] = React.useState(profile?.avatar_url || user.user_metadata?.avatar_url || null);
   const [message, setMessage] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
   const [imageError, setImageError] = React.useState(false);
 
   const supabase = createSupabaseClient();
 
+  // Sync form state with profile context when it changes (e.g. first load)
+  React.useEffect(() => {
+    if (profile) {
+      setName(prev => prev === "" ? (profile.name || "") : prev);
+      setAvatarUrl(prev => prev === null ? (profile.avatar_url || null) : prev);
+    }
+  }, [profile]);
+
   React.useEffect(() => {
     // Fetch shared tools count
+    if (!user?.id) return;
+    
     async function fetchSharedCount() {
       try {
+        if (!user?.id) return;
         const { count, error } = await supabase
           .from("tool_shares")
           .select("*", { count: "exact", head: true })
@@ -61,11 +62,12 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
       }
     }
     fetchSharedCount();
-  }, [user.id, supabase]);
+  }, [user?.id, supabase]);
 
   const handleSignOut = async () => {
     setIsLoading(true);
     await supabase.auth.signOut();
+    setProfile(null); // Clear global state
     router.refresh();
     router.push("/");
   };
@@ -81,19 +83,14 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
     setMessage(null);
 
     try {
-      // 0. Verify Auth
-      const { 
-        data: { user: currentUser }, 
-        error: userError 
-      } = await supabase.auth.getUser();
-
-      if (userError || !currentUser || !currentUser.id) {
+      // 0. Verify Auth (using context user is faster, but let's double check active session)
+      if (!user || !user.id) {
         throw new Error("Cannot save profile: user.id is missing or user not authenticated");
       }
 
       // 1. Normalize Payload
       const payload = {
-        id: currentUser.id,
+        id: user.id,
         name: name?.trim() || null,
         avatar_url: avatarUrl || null,
         updated_at: new Date().toISOString(),
@@ -102,7 +99,6 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
       console.log("Saving profile payload:", payload);
 
       // 2. Update Profile Table
-      // Using upsert with explicit onConflict to handle both creation and updates safely
       const { error } = await supabase
         .from("profiles")
         .upsert(payload, { onConflict: "id" });
@@ -118,9 +114,9 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
         throw error;
       }
 
-      console.log("Save successful for user:", currentUser.id);
+      console.log("Save successful for user:", user.id);
 
-      // 3. Update Auth User Metadata (optional but good for consistency)
+      // 3. Update Auth User Metadata (optional)
       const { error: metadataError } = await supabase.auth.updateUser({
         data: { full_name: payload.name, avatar_url: payload.avatar_url || undefined }
       });
@@ -129,11 +125,19 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
         console.error("Auth metadata update error:", metadataError);
       }
 
+      // 4. Update Global State IMMEDIATELY
+      setProfile({
+        id: user.id,
+        email: user.email || null,
+        name: payload.name,
+        avatar_url: payload.avatar_url,
+      });
+
       setMessage({ type: "success", text: "Profile updated" });
       
-      // 4. Sync State & UI
+      // 5. Sync Server Components
       router.refresh(); 
-      // Note: We don't close the dialog automatically to allow user to see success message
+      
     } catch (err: any) {
       console.error("Failed to save profile", err);
       
@@ -145,7 +149,7 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
   };
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+    if (!e.target.files || e.target.files.length === 0 || !user?.id) return;
     
     const file = e.target.files[0];
     const fileExt = file.name.split('.').pop();
@@ -187,6 +191,8 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
       setIsUploadingAvatar(false);
     }
   };
+
+  if (!user) return null;
 
   return (
     <div className="space-y-6">

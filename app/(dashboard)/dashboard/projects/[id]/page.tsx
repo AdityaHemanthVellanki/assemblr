@@ -29,17 +29,6 @@ export default async function ProjectPage({
 
   const supabase = await createSupabaseServerClient();
 
-  const { data: { user } } = await supabase.auth.getUser();
-  let profile = null;
-  if (user) {
-    const { data } = await supabase
-      .from("profiles")
-      .select("name, avatar_url")
-      .eq("id", user.id)
-      .single();
-    profile = data;
-  }
-
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
@@ -152,8 +141,6 @@ export default async function ProjectPage({
 
   return (
     <ProjectWorkspace
-      user={user}
-      profile={profile}
       project={{
         id: projectRes.data.id,
         spec,
