@@ -4,8 +4,7 @@ import * as React from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { LogOut, User, Camera, Loader2, Check } from "lucide-react";
-import { createBrowserClient } from "@supabase/ssr";
-
+import { createSupabaseClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,16 +35,14 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = React.useState(false);
   const [name, setName] = React.useState(profile?.name || user.user_metadata?.full_name || "");
   const [sharedCount, setSharedCount] = React.useState<number | null>(null);
   const [avatarUrl, setAvatarUrl] = React.useState(profile?.avatar_url || user.user_metadata?.avatar_url || null);
   const [message, setMessage] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
   const [imageError, setImageError] = React.useState(false);
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = createSupabaseClient();
 
   React.useEffect(() => {
     // Fetch shared tools count
@@ -74,32 +71,74 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
   };
 
   const handleSave = async () => {
+    if (isSaving) return;
+    if (isUploadingAvatar) {
+      setMessage({ type: "error", text: "Please wait for the avatar upload to finish." });
+      return;
+    }
+
     setIsSaving(true);
     setMessage(null);
 
     try {
-      // 1. Update Profile Table
+      // 0. Verify Auth
+      const { 
+        data: { user: currentUser }, 
+        error: userError 
+      } = await supabase.auth.getUser();
+
+      if (userError || !currentUser || !currentUser.id) {
+        throw new Error("Cannot save profile: user.id is missing or user not authenticated");
+      }
+
+      // 1. Normalize Payload
+      const payload = {
+        id: currentUser.id,
+        name: name?.trim() || null,
+        avatar_url: avatarUrl || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      console.log("Saving profile payload:", payload);
+
+      // 2. Update Profile Table
+      // Using upsert with explicit onConflict to handle both creation and updates safely
       const { error } = await supabase
         .from("profiles")
-        .upsert({
-          id: user.id,
-          name: name,
-          avatar_url: avatarUrl,
-          updated_at: new Date().toISOString(),
+        .upsert(payload, { onConflict: "id" });
+
+      if (error) {
+        console.error("Supabase upsert error:", {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+          raw: error
         });
+        throw error;
+      }
 
-      if (error) throw error;
+      console.log("Save successful for user:", currentUser.id);
 
-      // 2. Update Auth User Metadata (optional but good for consistency)
-      await supabase.auth.updateUser({
-        data: { full_name: name, avatar_url: avatarUrl || undefined }
+      // 3. Update Auth User Metadata (optional but good for consistency)
+      const { error: metadataError } = await supabase.auth.updateUser({
+        data: { full_name: payload.name, avatar_url: payload.avatar_url || undefined }
       });
 
-      setMessage({ type: "success", text: "Profile updated successfully" });
-      router.refresh(); // Refresh to update UI elsewhere
-    } catch (err) {
+      if (metadataError) {
+        console.error("Auth metadata update error:", metadataError);
+      }
+
+      setMessage({ type: "success", text: "Profile updated" });
+      
+      // 4. Sync State & UI
+      router.refresh(); 
+      // Note: We don't close the dialog automatically to allow user to see success message
+    } catch (err: any) {
       console.error("Failed to save profile", err);
-      setMessage({ type: "error", text: "Failed to save profile" });
+      
+      const errorMessage = err?.message || "Failed to save profile";
+      setMessage({ type: "error", text: errorMessage });
     } finally {
       setIsSaving(false);
     }
@@ -113,7 +152,7 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
     // Deterministic path with timestamp to avoid caching issues
     const filePath = `${user.id}/${Date.now()}.${fileExt}`;
 
-    setIsSaving(true); // Show loading state during upload
+    setIsUploadingAvatar(true); // Show loading state during upload
     setMessage(null);
 
     try {
@@ -139,11 +178,13 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
       // specific error handling
       if (err.message?.includes("Bucket not found") || err.error === "Bucket not found") {
         setMessage({ type: "error", text: "System Error: 'avatars' storage bucket missing." });
+      } else if (err.message?.includes("row-level security") || err.code === "42501") {
+        setMessage({ type: "error", text: "Permission denied. You cannot upload here." });
       } else {
         setMessage({ type: "error", text: "Couldn't upload profile picture. Please try again." });
       }
     } finally {
-      setIsSaving(false);
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -183,7 +224,7 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
             accept="image/*" 
             className="hidden" 
             onChange={handleAvatarUpload}
-            disabled={isSaving}
+            disabled={isSaving || isUploadingAvatar}
           />
         </div>
 
@@ -232,8 +273,8 @@ export function ProfileDialog({ user, profile, onClose }: ProfileDialogProps) {
           {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogOut className="mr-2 h-4 w-4" />}
           Sign out
         </Button>
-        <Button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes"}
+        <Button onClick={handleSave} disabled={isSaving || isUploadingAvatar}>
+          {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : (isUploadingAvatar ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes")}
         </Button>
       </div>
     </div>

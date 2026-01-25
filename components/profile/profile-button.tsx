@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { createBrowserClient } from "@supabase/ssr";
-
+import { createSupabaseClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { ProfileDialog } from "@/components/profile/profile-dialog";
@@ -33,10 +32,7 @@ export function ProfileButton({ initialUser, initialProfile, className }: Profil
   const [user, setUser] = React.useState(initialUser || null);
   const [profile, setProfile] = React.useState(initialProfile || null);
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabase = createSupabaseClient();
 
   // If no initial data, fetch on mount (fallback)
   React.useEffect(() => {
