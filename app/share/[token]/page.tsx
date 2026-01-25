@@ -2,7 +2,6 @@ import { notFound, redirect } from "next/navigation";
 
 import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
 import { getServerEnv } from "@/lib/env";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 
@@ -12,20 +11,6 @@ export default async function SharedToolPage({
   params: Promise<{ token: string }>;
 }) {
   getServerEnv();
-  
-  // Optional: Check for user session if we want to show user context
-  const client = await createSupabaseServerClient();
-  const { data: { user } } = await client.auth.getUser();
-
-  let profile = null;
-  if (user) {
-    const { data } = await client
-      .from("profiles")
-      .select("name, avatar_url")
-      .eq("id", user.id)
-      .single();
-    profile = data;
-  }
   
   // We do NOT block access for unauthenticated users (Public Share)
   
@@ -105,8 +90,6 @@ export default async function SharedToolPage({
 
   return (
     <ProjectWorkspace
-      user={user}
-      profile={profile}
       project={{
         id: projectRes.data.id,
         status: projectRes.data.status,

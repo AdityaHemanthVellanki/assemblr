@@ -37,8 +37,8 @@ export function ProfileDialog({ onClose }: ProfileDialogProps) {
   // Sync form state with profile context when it changes (e.g. first load)
   React.useEffect(() => {
     if (profile) {
-      setName(prev => prev === "" ? (profile.name || "") : prev);
-      setAvatarUrl(prev => prev === null ? (profile.avatar_url || null) : prev);
+      setName((prev: string) => prev === "" ? (profile.name || "") : prev);
+      setAvatarUrl((prev: string | null) => prev === null ? (profile.avatar_url || null) : prev);
     }
   }, [profile]);
 
