@@ -4,6 +4,8 @@ import { PermissionError, requireOrgMember } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }

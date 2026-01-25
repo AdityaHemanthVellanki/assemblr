@@ -1,5 +1,4 @@
 
-
 import crypto from "crypto";
 
 import { getServerEnv } from "@/lib/env";
@@ -12,13 +11,23 @@ export type EncryptedJson = {
   ciphertext: string;
 };
 
-const KEY_MATERIAL = getServerEnv().DATA_ENCRYPTION_KEY;
-if (!KEY_MATERIAL) {
-  throw new Error("DATA_ENCRYPTION_KEY is required");
-}
-const ENCRYPTION_KEY = crypto.createHash("sha256").update(KEY_MATERIAL).digest();
-if (process.env.NODE_ENV !== "production") {
-  console.warn("Encryption key loaded. Changing DATA_ENCRYPTION_KEY will invalidate existing tokens.");
+let cachedEncryptionKey: Buffer | null = null;
+
+function getEncryptionKey(): Buffer {
+  if (cachedEncryptionKey) return cachedEncryptionKey;
+  
+  const KEY_MATERIAL = getServerEnv().DATA_ENCRYPTION_KEY;
+  if (!KEY_MATERIAL) {
+    throw new Error("DATA_ENCRYPTION_KEY is required");
+  }
+  
+  cachedEncryptionKey = crypto.createHash("sha256").update(KEY_MATERIAL).digest();
+  
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("Encryption key loaded. Changing DATA_ENCRYPTION_KEY will invalidate existing tokens.");
+  }
+  
+  return cachedEncryptionKey;
 }
 
 export class EncryptionKeyMismatchError extends Error {
@@ -30,8 +39,9 @@ export class EncryptionKeyMismatchError extends Error {
 }
 
 export function encryptJson(value: unknown): EncryptedJson {
+  const encryptionKey = getEncryptionKey();
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey, iv);
 
   const plaintext = Buffer.from(JSON.stringify(value), "utf8");
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
@@ -51,11 +61,12 @@ export function decryptJson<T>(enc: EncryptedJson): T {
     throw new Error("Unsupported encrypted payload");
   }
 
+  const encryptionKey = getEncryptionKey();
   const iv = Buffer.from(enc.iv, "base64");
   const tag = Buffer.from(enc.tag, "base64");
   const ciphertext = Buffer.from(enc.ciphertext, "base64");
 
-  const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey, iv);
   decipher.setAuthTag(tag);
 
   try {
