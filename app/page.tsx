@@ -479,13 +479,11 @@ function GlassCard({ className, children }: { className?: string; children: Reac
 }
 
 function UseCaseCard({
-  id,
   title,
   description,
   requiredIntegrations,
   prompt,
 }: {
-  id: string;
   title: string;
   description: string;
   requiredIntegrations: string[];
@@ -572,42 +570,36 @@ export default function Home() {
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <UseCaseCard
-                id="daily-email-digest"
                 title="Daily Email Digest"
                 description="Summarize important emails received today and send a concise digest."
                 requiredIntegrations={["google"]}
                 prompt="Compile a summary of today's important emails and send a digest to me."
               />
               <UseCaseCard
-                id="weekly-goals-review"
                 title="Weekly Goals Review"
                 description="Review Linear issues and create a weekly summary in Notion."
                 requiredIntegrations={["linear", "notion"]}
                 prompt="Review all my Linear issues from this week and create a structured weekly summary in Notion."
               />
               <UseCaseCard
-                id="morning-meeting-briefing"
                 title="Morning Meeting Briefing"
                 description="Compile a briefing for today's meetings with prep suggestions."
                 requiredIntegrations={["google"]}
                 prompt="Create a concise daily briefing for today's meetings with prep suggestions, and highlight scheduling conflicts."
               />
               <UseCaseCard
-                id="incident-intel"
                 title="Incident Intelligence"
                 description="Detect recent GitHub build failures and coordinate Slack notifications."
                 requiredIntegrations={["github", "slack"]}
                 prompt="Find recent build failures on GitHub and draft Slack notifications to the relevant owners."
               />
               <UseCaseCard
-                id="weekly-changelog"
                 title="Weekly Changelog Generator"
                 description="Summarize merged PRs and changes across repos for the week."
                 requiredIntegrations={["github", "notion"]}
                 prompt="Review all merged PRs across our GitHub repos this week and generate a weekly changelog summary in Notion."
               />
               <UseCaseCard
-                id="linear-sprint-summary"
                 title="Linear Sprint Summary"
                 description="Summarize completed issues, blockers, and planned work."
                 requiredIntegrations={["linear", "slack"]}

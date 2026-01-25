@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash } from "crypto";
-import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
+import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, TOOL_SPEC_VERSION, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { runUnderstandPurpose } from "@/lib/toolos/compiler/stages/understand-purpose";
@@ -295,6 +295,9 @@ function buildBaseSpec(prompt: string, toolId: string): ToolSystemSpec {
     id,
     name: "Tool",
     purpose: prompt,
+    spec_version: TOOL_SPEC_VERSION,
+    created_at: new Date().toISOString(),
+    source_prompt: prompt,
     entities: [],
     actionGraph: { nodes: [], edges: [] },
     state: { initial: {}, reducers: [], graph: { nodes: [], edges: [] } },

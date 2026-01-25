@@ -47,11 +47,19 @@ export async function PATCH(
 
   try {
     const incoming = bodyResult.data.spec;
-    const spec = isToolSystemSpec(incoming) ? incoming : parseToolSpec(incoming);
+    const parsed = isToolSystemSpec(incoming)
+      ? { ok: true as const, spec: incoming }
+      : parseToolSpec(incoming);
+    if (!parsed.ok) {
+      return NextResponse.json(
+        { error: "Spec failed validation" },
+        { status: 422 },
+      );
+    }
 
     const updatedRes = await supabase
       .from("projects")
-      .update({ spec: spec as any })
+      .update({ spec: parsed.spec as any })
       .eq("id", id)
       .eq("org_id", ctx.orgId)
       .select("id, name, spec, created_at, updated_at")

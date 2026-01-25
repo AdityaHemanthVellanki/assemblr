@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
+import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { createHash } from "crypto";
 
 type ToolVersionRow = {
@@ -48,19 +49,27 @@ export async function createToolVersion(params: {
   if (!params.toolId) throw new Error("Cannot create tool version: toolId is required");
 
   const supabase = createSupabaseAdminClient();
-  const diff = params.baseSpec ? diffSpecs(params.baseSpec, params.spec) : null;
+  const normalizedSpecResult = normalizeToolSpec(params.spec, {
+    sourcePrompt: (params.spec as any)?.source_prompt ?? params.spec.purpose,
+    enforceVersion: true,
+  });
+  if (!normalizedSpecResult.ok) {
+    throw new Error(`Cannot create tool version: ${normalizedSpecResult.error}`);
+  }
+  const normalizedSpec = normalizedSpecResult.spec;
+  const diff = params.baseSpec ? diffSpecs(params.baseSpec, normalizedSpec) : null;
   const buildHash =
     typeof (params.compiledTool as any)?.specHash === "string"
       ? (params.compiledTool as any).specHash
-      : createHash("sha256").update(JSON.stringify(params.spec)).digest("hex");
+      : createHash("sha256").update(JSON.stringify(normalizedSpec)).digest("hex");
 
   const payload: any = {
     tool_id: params.toolId,
     org_id: params.orgId,
     status: "draft",
-    name: params.spec.name,
-    purpose: params.spec.purpose,
-    tool_spec: params.spec,
+    name: normalizedSpec.name,
+    purpose: normalizedSpec.purpose,
+    tool_spec: normalizedSpec,
     build_hash: buildHash,
     diff,
     // created_by: params.userId ?? null, // REMOVED: Schema mismatch
@@ -90,13 +99,20 @@ export async function promoteToolVersion(params: { toolId: string; versionId: st
   if (error || !data) {
     throw new Error("Version not found");
   }
+  const normalizedSpecResult = normalizeToolSpec(data.tool_spec, {
+    sourcePrompt: (data.tool_spec as any)?.source_prompt ?? (data.tool_spec as any)?.purpose ?? "Tool",
+    enforceVersion: true,
+  });
+  if (!normalizedSpecResult.ok) {
+    throw new Error(`Cannot promote invalid tool spec: ${normalizedSpecResult.error}`);
+  }
   await (supabase.from("tool_versions") as any)
     .update({ status: "archived" })
     .eq("tool_id", params.toolId)
     .eq("status", "active")
     .neq("id", params.versionId);
   await (supabase.from("projects") as any).update({
-    spec: data.tool_spec,
+    spec: normalizedSpecResult.spec,
     active_version_id: params.versionId,
   }).eq("id", params.toolId);
   await (supabase.from("tool_versions") as any).update({ status: "active" }).eq("id", params.versionId);

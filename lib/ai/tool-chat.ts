@@ -3,7 +3,8 @@ import "server-only";
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus } from "@/lib/toolos/spec";
+import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { getIntegrationTokenStatus } from "@/lib/integrations/tokenRefresh";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -36,6 +37,7 @@ export interface ToolChatRequest {
   mode: "create" | "modify" | "chat";
   integrationMode?: "auto" | "manual";
   selectedIntegrationIds?: string[];
+  requiredIntegrationIds?: string[];
 }
 
 export interface ToolChatResponse {
@@ -43,6 +45,9 @@ export interface ToolChatResponse {
   message: { type: "text"; content: string };
   spec?: unknown;
   metadata?: Record<string, any>;
+  requiresIntegrations?: boolean;
+  missingIntegrations?: string[];
+  requiredIntegrations?: string[];
 }
 
 type BuildStep = {
@@ -267,6 +272,43 @@ export async function processToolChat(
     await lifecycleChain;
   };
   const prompt = input.userMessage;
+  const assumptionResolution = resolveAssumptions(prompt);
+  const resolvedPrompt = assumptionResolution.resolvedPrompt;
+  const assumptions = assumptionResolution.assumptions;
+  const completenessScore = assumptionResolution.completenessScore;
+  const integrationRequirement = resolveIntegrationRequirements({
+    prompt,
+    integrationMode: input.integrationMode,
+    selectedIntegrationIds: input.selectedIntegrationIds,
+    requiredIntegrationIds: input.requiredIntegrationIds,
+  });
+  if (integrationRequirement.mismatchMessage) {
+    return {
+      explanation: integrationRequirement.mismatchMessage,
+      message: { type: "text", content: integrationRequirement.mismatchMessage },
+      metadata: {
+        blocked: true,
+        integration_mode: input.integrationMode ?? "auto",
+      },
+    };
+  }
+  const missingIntegrations = integrationRequirement.requiredIntegrations.filter(
+    (id) => !input.connectedIntegrationIds.includes(id),
+  );
+  if (missingIntegrations.length > 0) {
+    return {
+      explanation: "Connect the required integrations to continue.",
+      message: { type: "text", content: "Connect the required integrations to continue." },
+      requiresIntegrations: true,
+      missingIntegrations,
+      requiredIntegrations: integrationRequirement.requiredIntegrations,
+      metadata: {
+        requiresIntegrations: true,
+        missingIntegrations,
+        requiredIntegrations: integrationRequirement.requiredIntegrations,
+      },
+    };
+  }
 
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
@@ -299,7 +341,7 @@ export async function processToolChat(
       "validate-spec": "compile",
     };
     const compilerResult = await ToolCompiler.run({
-        prompt,
+        prompt: resolvedPrompt,
         sessionId: builderSessionId,
         userId: userId, // Use authoritative userId
         orgId: buildContext.orgId, // Use authoritative orgId
@@ -333,17 +375,21 @@ export async function processToolChat(
 
     let intentPlanError: Error | null = null;
     spec = canonicalizeToolSpec(compilerResult.spec);
-    spec = enforceViewSpecForPrompt(spec, input.userMessage);
+    spec = enforceViewSpecForPrompt(spec, resolvedPrompt);
     try {
-      spec = await applyIntentContract(spec, input.userMessage);
-      spec = await applySemanticPlan(spec, input.userMessage);
-      spec = await applyGoalPlan(spec, input.userMessage);
+      spec = await applyIntentContract(spec, resolvedPrompt);
+      spec = await applySemanticPlan(spec, resolvedPrompt);
+      spec = await applyGoalPlan(spec, resolvedPrompt);
     } catch (err) {
       intentPlanError = err as Error;
       appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
     }
     if (!intentPlanError) {
-      spec = await applyAnswerContract(spec, input.userMessage);
+      spec = await applyAnswerContract(spec, resolvedPrompt);
+    }
+    if (assumptions.length > 0) {
+      const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
+      spec = { ...spec, clarifications: [...existing, ...assumptions] };
     }
     transition("INTENT_PARSED", "ToolSpec generated");
     markStep(steps, "compile", "running", "Validating spec and runtime wiring");
@@ -432,7 +478,20 @@ export async function processToolChat(
     }
 
     const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    const specValidation = ToolSystemSpecSchema.safeParse(spec);
+    const normalizedSpecResult = normalizeToolSpec(spec, {
+      sourcePrompt: input.userMessage,
+      enforceVersion: true,
+    });
+    if (!normalizedSpecResult.ok) {
+      console.error("[ToolSpecNormalizationFailed]", {
+        toolId,
+        error: normalizedSpecResult.error,
+      });
+      throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
+    }
+    const normalizedSpec = normalizedSpecResult.spec;
+    spec = normalizedSpec;
+    const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
     const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
     
     if (shouldPersistVersion) {
@@ -446,13 +505,14 @@ export async function processToolChat(
             tool_id: toolId,
             org_id: orgId,
             status: "active",
-            name: spec.name,
-            purpose: spec.purpose,
-            tool_spec: spec,
+            name: normalizedSpec.name,
+            purpose: normalizedSpec.purpose,
+            prompt_used: input.userMessage,
+            tool_spec: normalizedSpec,
             compiled_tool: compiled,
             intent_schema: {},
             diff: null,
-            build_hash: createHash('md5').update(JSON.stringify(spec)).digest('hex')
+            build_hash: createHash('md5').update(JSON.stringify(normalizedSpec)).digest('hex')
           })
           .select("id")
           .single();
@@ -464,8 +524,8 @@ export async function processToolChat(
         const { error: projectError } = await (supabase.from("projects") as any)
           .update({
             active_version_id: version.id,
-            spec,
-            name: spec.name,
+            spec: normalizedSpec,
+            name: normalizedSpec.name,
             status: "BUILDING",
             updated_at: new Date().toISOString()
           })
@@ -687,6 +747,7 @@ export async function processToolChat(
         answer_contract: spec.answer_contract,
         query_plans: spec.query_plans,
         tool_graph: spec.tool_graph,
+        assumptions: Array.isArray(spec.clarifications) ? spec.clarifications : undefined,
       };
 
       console.log("[FINALIZE] Writing flags to toolId:", toolId);
@@ -818,10 +879,11 @@ export async function processToolChat(
         }
       }
 
+    const assistantSummary = buildAssistantSummary(spec);
     return {
-      explanation: spec.purpose,
-      message: { type: "text", content: spec.purpose },
-      spec: { ...spec, clarifications: [], lifecycle_state: machine.state },
+      explanation: assistantSummary,
+      message: { type: "text", content: assistantSummary },
+      spec: { ...spec, lifecycle_state: machine.state },
       metadata: {
         tokens: runTokens,
         status: compilerResult.status,
@@ -829,6 +891,8 @@ export async function processToolChat(
         progress: compilerResult.progress,
         steps,
         build_logs: machine.logs,
+        assumptions,
+        completenessScore,
       },
     };
   } catch (err) {
@@ -874,10 +938,11 @@ export async function processToolChat(
     500,
     "Refinement suggestions timed out",
   ).catch(() => []);
+  const assistantSummary = buildAssistantSummary(spec);
   return {
-    explanation: spec.purpose,
-    message: { type: "text", content: spec.purpose },
-    spec: { ...spec, clarifications: [], lifecycle_state: machine.state },
+    explanation: assistantSummary,
+    message: { type: "text", content: assistantSummary },
+    spec: { ...spec, lifecycle_state: machine.state },
     metadata: {
       persist: true,
       build_steps: steps,
@@ -887,6 +952,8 @@ export async function processToolChat(
       state: machine.state,
       build_logs: machine.logs,
       active_version_id: activeVersionId,
+      assumptions,
+      completenessScore,
     },
   };
   });
@@ -915,6 +982,7 @@ export async function applyClarificationAnswer(
 async function generateIntent(
   prompt: string,
   onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
+  toolId?: string,
 ): Promise<ToolSystemSpec> {
   const requiredIntegrations = detectIntegrations(prompt);
   const enforcedPrompt = requiredIntegrations.length
@@ -933,7 +1001,7 @@ async function generateIntent(
   await onUsage?.(response.usage);
 
   const content = response.choices[0]?.message?.content;
-  const first = parseIntent(content);
+  const first = parseIntent(content, prompt, toolId);
   if (first.ok) {
     enforceRequiredIntegrations(first.value, requiredIntegrations);
     return first.value;
@@ -955,9 +1023,9 @@ async function generateIntent(
   await onUsage?.(retry.usage);
 
   const retryContent = retry.choices[0]?.message?.content;
-  const second = parseIntent(retryContent);
+  const second = parseIntent(retryContent, prompt, toolId);
   if (!second.ok) {
-    return buildFallbackToolSpec(prompt, requiredIntegrations);
+    throw new Error(`ToolSpec normalization failed: ${second.error}`);
   }
   enforceRequiredIntegrations(second.value, requiredIntegrations);
   return second.value;
@@ -965,26 +1033,25 @@ async function generateIntent(
 
 function parseIntent(
   content: string | null | undefined,
+  sourcePrompt: string,
+  toolId?: string,
 ): { ok: true; value: ToolSystemSpec } | { ok: false; error: string } {
   if (!content || typeof content !== "string") {
     return { ok: false, error: "empty response" };
   }
-  if (!content.trim().startsWith("{")) {
-    return { ok: false, error: "non-JSON response" };
+  const normalized = normalizeToolSpec(content, { sourcePrompt, enforceVersion: true });
+  if (!normalized.ok) {
+    console.error("[ToolSpecNormalizationFailed]", {
+      toolId: toolId ?? null,
+      error: normalized.error,
+      raw: content,
+    });
+    return { ok: false, error: normalized.error };
   }
-  try {
-    const parsed = JSON.parse(content);
-    const hydrated = {
-      ...parsed,
-      name: parsed?.name ?? parsed?.purpose ?? "Tool",
-    };
-    const validated = ToolSystemSpecSchema.parse(hydrated) as ToolSystemSpec;
-    return { ok: true, value: validated };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "invalid JSON";
-    return { ok: false, error: msg };
-  }
+  return { ok: true, value: normalized.spec };
 }
+
+export const SUPPORTED_INTEGRATIONS = ["google", "github", "slack", "notion", "linear"] as const;
 
 export function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
   const normalized = text.toLowerCase();
@@ -995,6 +1062,111 @@ export function detectIntegrations(text: string): Array<ToolSystemSpec["integrat
   if (normalized.includes("notion")) hits.add("notion");
   if (normalized.includes("linear")) hits.add("linear");
   return Array.from(hits);
+}
+
+export function resolveIntegrationRequirements(params: {
+  prompt: string;
+  integrationMode?: "auto" | "manual";
+  selectedIntegrationIds?: string[];
+  requiredIntegrationIds?: string[];
+}) {
+  const detected = (
+    params.requiredIntegrationIds && params.requiredIntegrationIds.length > 0
+      ? params.requiredIntegrationIds
+      : detectIntegrations(params.prompt)
+  ).filter(
+    (id): id is (typeof SUPPORTED_INTEGRATIONS)[number] =>
+      SUPPORTED_INTEGRATIONS.includes(id as (typeof SUPPORTED_INTEGRATIONS)[number]),
+  );
+  if (params.integrationMode === "manual") {
+    const selected = (params.selectedIntegrationIds ?? []).filter(
+      (id): id is (typeof SUPPORTED_INTEGRATIONS)[number] =>
+        SUPPORTED_INTEGRATIONS.includes(id as (typeof SUPPORTED_INTEGRATIONS)[number]),
+    );
+    if (selected.length === 0) {
+      return {
+        requiredIntegrations: [],
+        mismatchMessage: "Select integrations to continue.",
+      };
+    }
+    const unsupported = detected.filter((id) => !selected.includes(id));
+    if (unsupported.length > 0) {
+      return {
+        requiredIntegrations: selected,
+        mismatchMessage: "This integration doesn’t support this action. Try switching integrations.",
+      };
+    }
+    return { requiredIntegrations: selected };
+  }
+  return { requiredIntegrations: detected };
+}
+
+export function resolveAssumptions(prompt: string) {
+  const normalized = prompt.toLowerCase();
+  const assumptions: Array<{ field: string; reason: string; options?: string[] }> = [];
+  const hasTimeRange =
+    normalized.includes("today") ||
+    normalized.includes("yesterday") ||
+    normalized.includes("this week") ||
+    normalized.includes("last week") ||
+    normalized.includes("this month") ||
+    normalized.includes("last month") ||
+    normalized.includes("past") ||
+    normalized.includes("recent") ||
+    normalized.includes("last 7 days") ||
+    normalized.includes("last 30 days");
+  if (!hasTimeRange) {
+    assumptions.push({
+      field: "time_range",
+      reason: "Assumed the last 7 days.",
+      options: ["today", "last 7 days", "last 30 days"],
+    });
+  }
+  if (
+    normalized.includes("important") &&
+    (normalized.includes("email") || normalized.includes("inbox") || normalized.includes("mail"))
+  ) {
+    assumptions.push({
+      field: "importance_filter",
+      reason: "Assumed unread, flagged, or high-priority messages.",
+      options: ["unread", "flagged", "high-priority"],
+    });
+  }
+  if (normalized.includes("notify") && !normalized.includes("slack") && !normalized.includes("email")) {
+    assumptions.push({
+      field: "notification_channel",
+      reason: "Assumed Slack for team notifications.",
+      options: ["slack", "email"],
+    });
+  }
+  const missingSignals = assumptions.length;
+  const completenessScore = Math.max(0.4, 1 - missingSignals * 0.2);
+  const resolvedPrompt =
+    assumptions.length === 0
+      ? prompt
+      : `${prompt}\n\nAssumptions applied:\n${assumptions
+          .map((item) => `- ${item.field}: ${item.reason}`)
+          .join("\n")}`;
+  return { resolvedPrompt, assumptions, completenessScore };
+}
+
+function buildAssistantSummary(spec: ToolSystemSpec) {
+  const integrations = Array.from(
+    new Set([
+      ...(spec.integrations ?? []).map((i) => i.id),
+      ...(spec.actions ?? []).map((a) => a.integrationId).filter(Boolean),
+    ]),
+  );
+  const readActions = (spec.actions ?? []).filter((a) => a.type === "READ").length;
+  const writeActions = (spec.actions ?? []).filter((a) => a.type !== "READ").length;
+  const integrationText = integrations.length > 0 ? integrations.join(", ") : "your connected systems";
+  const actionText =
+    readActions > 0 && writeActions > 0
+      ? `pulls data and prepares ${writeActions} follow-up action${writeActions > 1 ? "s" : ""}`
+      : readActions > 0
+      ? "pulls the latest data"
+      : "prepares targeted actions";
+  return `I built an internal tool that connects to ${integrationText}, ${actionText}, and renders a live view you can refine. Review the output and adjust filters or triggers as needed.`;
 }
 
 function enforceRequiredIntegrations(
@@ -2351,6 +2523,9 @@ function buildFallbackToolSpec(
     id,
     name,
     purpose: prompt,
+    spec_version: TOOL_SPEC_VERSION,
+    created_at: new Date().toISOString(),
+    source_prompt: prompt,
     entities,
     stateGraph: {
       nodes: [

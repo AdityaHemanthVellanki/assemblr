@@ -3,7 +3,8 @@ export const PROJECT_STATUSES = [
   'DRAFT',
   'BUILDING',
   'READY',
-  'FAILED'
+  'FAILED',
+  'CORRUPTED'
 ] as const;
 
 export type ProjectStatus = typeof PROJECT_STATUSES[number];

@@ -3,7 +3,6 @@ import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { User } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/client";
-import { getSessionOnce } from "@/lib/auth/session.server";
 
 export interface ExecutionContext {
   requestId: string;
@@ -27,10 +26,9 @@ export const getRequestContext = cache(async (): Promise<ExecutionContext> => {
 
   const supabase = await createSupabaseServerClient();
   
-  const session = await getSessionOnce();
-  const user = session?.user ?? null;
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-  if (!user) {
+  if (authError || !user) {
       throw new ApiError("Unauthorized: No session found", 401);
   }
 
@@ -84,8 +82,7 @@ export const getOptionalRequestContext = cache(async (): Promise<{
   const startTime = Date.now();
   const supabase = await createSupabaseServerClient();
 
-  const session = await getSessionOnce();
-  const user = session?.user ?? null;
+  const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
     return { ctx: null, requiresAuth: true };

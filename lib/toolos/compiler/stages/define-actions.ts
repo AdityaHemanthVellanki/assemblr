@@ -27,6 +27,9 @@ Only use capabilities from:\n${capabilityCatalog}`,
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
+  if (content) {
+    console.log("[ToolCompilerLLMOutput]", { stage: "define-actions", content });
+  }
   if (!content) return { specPatch: { actions: buildFallbackActions(integrations) } };
   try {
     const json = JSON.parse(content);

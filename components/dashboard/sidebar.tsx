@@ -2,84 +2,134 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { 
-  Search, 
-  Plus, 
-  Zap, 
-  Mail, 
-  Calendar, 
-  FileText, 
-  Github, 
-  Slack,
-  Settings
-} from "lucide-react";
+import Image from "next/image";
+import { usePathname, useRouter } from "next/navigation";
+import { AlertTriangle, Search, Plus } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { APP_NAME } from "@/lib/branding";
-import { roleLabel, type OrgRole } from "@/lib/auth/permissions.client";
+import { type OrgRole } from "@/lib/auth/permissions.client";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-
-const TOOLS = [
-  { name: "Gmail", icon: Mail, id: "gmail" },
-  { name: "Google Sheets", icon: FileText, id: "sheets" },
-  { name: "Calendar", icon: Calendar, id: "calendar" },
-  { name: "Notion", icon: FileText, id: "notion" },
-  { name: "Slack", icon: Slack, id: "slack" },
-  { name: "GitHub", icon: Github, id: "github" },
-];
-
-const HISTORY = [
-  { label: "Sales Data Visualization", active: true },
-  { label: "Data Visualization Setup" },
-  { label: `${APP_NAME} Chart Demos` },
-  { label: "Stock Price Analysis" },
-  { label: "Revolutionizing Digital Experie..." },
-  { label: "Slack Capybara Prank" },
-];
-
-const PREVIOUS_HISTORY = [
-  { label: "Competitor Analysis" },
-  { label: "Q3 Roadmap Draft" },
-];
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 export function Sidebar({
   className,
-  role,
+  role: _role,
 }: {
   className?: string;
   role: OrgRole;
 }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const activeToolId = searchParams?.get("tool_context");
-   const [searchQuery, setSearchQuery] = React.useState("");
+  const pathname = usePathname();
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [projects, setProjects] = React.useState<Array<{ id: string; name: string; updatedAt: string; isValidSpec: boolean; specError?: string | null }>>([]);
+  const [projectsLoading, setProjectsLoading] = React.useState(false);
+  const [projectsError, setProjectsError] = React.useState<string | null>(null);
+  const [profileName, setProfileName] = React.useState<string>("");
+  const [profileAvatar, setProfileAvatar] = React.useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [nameInput, setNameInput] = React.useState("");
+  const [avatarPreview, setAvatarPreview] = React.useState<string | null>(null);
+  const [savingProfile, setSavingProfile] = React.useState(false);
 
-  const handleToolClick = (toolId: string) => {
-    // In a real app, this might use a Global Context or URL state
-    // For now, we use URL params to demonstrate "Injecting Context" to the page
-    const params = new URLSearchParams(searchParams?.toString() || "");
-    if (activeToolId === toolId) {
-        params.delete("tool_context");
-    } else {
-        params.set("tool_context", toolId);
+  const loadProjects = React.useCallback(async () => {
+    setProjectsLoading(true);
+    setProjectsError(null);
+    try {
+      const res = await fetch("/api/projects");
+      if (!res.ok) {
+        throw new Error("Failed to load chats");
+      }
+      const json = await res.json();
+      setProjects(
+        (json.projects ?? []).map((project: { id: string; name: string; updatedAt: string; isValidSpec?: boolean; specError?: string | null }) => ({
+          id: project.id,
+          name: project.name,
+          updatedAt: project.updatedAt,
+          isValidSpec: project.isValidSpec !== false,
+          specError: project.specError ?? null,
+        })),
+      );
+    } catch (err) {
+      setProjectsError(err instanceof Error ? err.message : "Failed to load chats");
+    } finally {
+      setProjectsLoading(false);
     }
-    // Push new params (shallow routing if supported, or just nav)
-    router.push(`?${params.toString()}`);
-  };
+  }, []);
+
+  const loadProfile = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/profile");
+      if (!res.ok) return;
+      const json = await res.json();
+      setProfileName(json.name ?? "");
+      setProfileAvatar(json.avatar_url ?? null);
+      setNameInput(json.name ?? "");
+      setAvatarPreview(json.avatar_url ?? null);
+    } catch {
+      return;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadProjects();
+    void loadProfile();
+  }, [loadProjects, loadProfile]);
+
+  React.useEffect(() => {
+    void loadProjects();
+  }, [pathname, loadProjects]);
+
+  const handleNewChat = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "New chat" }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to create chat");
+      }
+      const json = await res.json();
+      if (json.id) {
+        router.push(`/dashboard/projects/${json.id}`);
+        void loadProjects();
+      }
+    } catch {
+      setProjectsError("Failed to create chat");
+    }
+  }, [router, loadProjects]);
+
+  const handleProfileSave = React.useCallback(async () => {
+    setSavingProfile(true);
+    try {
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: nameInput.trim(),
+          avatar_url: avatarPreview,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to save profile");
+      }
+      setProfileName(nameInput.trim());
+      setProfileAvatar(avatarPreview);
+      setSettingsOpen(false);
+    } catch {
+      return;
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [nameInput, avatarPreview]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const visibleToday = normalizedQuery
-    ? HISTORY.filter((item) =>
-        item.label.toLowerCase().includes(normalizedQuery),
-      )
-    : HISTORY;
-  const visiblePrevious = normalizedQuery
-    ? PREVIOUS_HISTORY.filter((item) =>
-        item.label.toLowerCase().includes(normalizedQuery),
-      )
-    : PREVIOUS_HISTORY;
+  const visibleProjects = normalizedQuery
+    ? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
+    : projects;
 
   return (
     <aside
@@ -96,127 +146,147 @@ export function Sidebar({
       </div>
 
       <div className="flex flex-col gap-6 px-3 py-2">
-        {/* B. Global Search Input */}
         <div className="relative">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input 
-            placeholder="Search threads..." 
+            placeholder="Search chats..." 
             className="pl-8 h-9 bg-muted/50 border-none"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
 
-        {/* C. Primary Actions */}
         <div className="flex flex-col gap-1">
-            <Link
-                href="/app/chat"
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground text-muted-foreground"
+            <button
+              type="button"
+              onClick={handleNewChat}
+              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground text-muted-foreground"
             >
-                <Plus className="h-4 w-4" />
-                New Chat
-            </Link>
-            <Link
-                href="/dashboard/workflows"
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground text-muted-foreground"
-            >
-                <Zap className="h-4 w-4" />
-                Workflows
-            </Link>
-            <Link
-                href="/dashboard/integrations"
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground text-muted-foreground"
-            >
-                <div className="h-4 w-4 flex items-center justify-center">
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-4 w-4"
-                    >
-                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                    </svg>
-                </div>
-                Integrations
-            </Link>
+              <Plus className="h-4 w-4" />
+              New Chat
+            </button>
         </div>
 
       </div>
 
-      {/* E. Conversation History */}
       <ScrollArea className="flex-1 px-3">
          <div className="flex flex-col gap-2 py-2">
-            <div className="px-3 text-xs font-semibold text-muted-foreground">TODAY</div>
-            <div className="flex flex-col gap-1">
-                {visibleToday.map((item) => (
-                  <div
-                    key={item.label}
-                    className={cn(
-                      "truncate rounded-md px-3 py-2 text-sm",
-                      item.active
-                        ? "bg-accent text-accent-foreground font-medium"
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {item.label}
-                  </div>
-                ))}
-            </div>
-            
-            <div className="mt-4 px-3 text-xs font-semibold text-muted-foreground">PREVIOUS 7 DAYS</div>
-            <div className="flex flex-col gap-1">
-                 {visiblePrevious.map((item) => (
-                   <div
-                     key={item.label}
-                     className="truncate rounded-md px-3 py-2 text-sm text-muted-foreground"
-                   >
-                     {item.label}
-                   </div>
-                 ))}
-            </div>
+          {projectsLoading ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
+          ) : projectsError ? (
+            <div className="px-3 py-2 text-xs text-red-600">{projectsError}</div>
+          ) : visibleProjects.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">No chats yet.</div>
+          ) : (
+            visibleProjects.map((project) => {
+              const active = pathname?.includes(`/dashboard/projects/${project.id}`);
+              const isInvalid = !project.isValidSpec;
+              return (
+                <Link
+                  key={project.id}
+                  href={`/dashboard/projects/${project.id}`}
+                  className={cn(
+                    "truncate rounded-md px-3 py-2 text-sm transition flex items-center gap-2",
+                    active
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/40",
+                    isInvalid ? "opacity-50 pointer-events-none" : "",
+                  )}
+                  aria-disabled={isInvalid}
+                >
+                  <span className="truncate">{project.name}</span>
+                  {isInvalid ? (
+                    <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-500">
+                      <AlertTriangle className="h-3 w-3" />
+                      Failed
+                    </span>
+                  ) : null}
+                </Link>
+              );
+            })
+          )}
          </div>
-
-        {/* D. Tool Access (Moved below history) */}
-        <div className="flex flex-col gap-2 mt-6 mb-4">
-            <div className="px-3 text-xs font-semibold text-muted-foreground">TOOLS</div>
-            <div className="flex flex-col gap-1">
-                {TOOLS.map((tool) => {
-                    const isActive = activeToolId === tool.id;
-                    return (
-                        <button
-                            key={tool.id}
-                            onClick={() => handleToolClick(tool.id)}
-                            className={cn(
-                                "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-left transition-colors",
-                                isActive 
-                                    ? "bg-primary/10 text-primary" 
-                                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                            )}
-                        >
-                            <tool.icon className="h-4 w-4" />
-                            {tool.name}
-                        </button>
-                    );
-                })}
-            </div>
-        </div>
       </ScrollArea>
 
       <div className="mt-auto border-t border-border p-4">
-        <div className="flex items-center justify-between">
-            <div className="inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
-            {roleLabel(role)}
-            </div>
-            <Link href="/dashboard/settings">
-                <Settings className="h-4 w-4 text-muted-foreground hover:text-foreground" />
-            </Link>
-        </div>
+        <button
+          type="button"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted/40 text-xs font-medium text-foreground"
+          aria-label={`Account settings (${_role})`}
+          onClick={() => setSettingsOpen(true)}
+        >
+          {profileAvatar ? (
+            <Image
+              src={profileAvatar}
+              alt={profileName}
+              width={36}
+              height={36}
+              className="h-full w-full rounded-full object-cover"
+            />
+          ) : (
+            <span>{profileName ? profileName[0]?.toUpperCase() : "A"}</span>
+          )}
+        </button>
       </div>
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Account settings</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2 text-sm">
+              <div className="text-xs text-muted-foreground">Display name</div>
+              <Input value={nameInput} onChange={(e) => setNameInput(e.target.value)} />
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="text-xs text-muted-foreground">Profile picture</div>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    if (typeof reader.result === "string") {
+                      setAvatarPreview(reader.result);
+                    }
+                  };
+                  reader.readAsDataURL(file);
+                }}
+              />
+              {avatarPreview ? (
+                <Image
+                  src={avatarPreview}
+                  alt="Preview"
+                  width={64}
+                  height={64}
+                  className="h-16 w-16 rounded-full object-cover"
+                />
+              ) : null}
+            </div>
+            <div className="flex items-center justify-between gap-2 border-t pt-4">
+               <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleSignOut}
+                className="gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
+                    Cancel
+                </Button>
+                <Button onClick={handleProfileSave} disabled={savingProfile}>
+                    {savingProfile ? "Saving…" : "Save"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }

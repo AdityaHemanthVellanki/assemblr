@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ToolSpec } from "@/lib/spec/toolSpec";
+import { TOOL_SPEC_VERSION } from "@/lib/toolos/spec";
 import { ToolVersion, VersionStatus, VersionValidationResult } from "@/lib/core/versioning";
 import { calculateDiff } from "./diff";
 import { CompiledIntent } from "@/lib/core/intent";
@@ -23,6 +24,9 @@ export class VersioningService {
       id: toolId,
       name: "New Tool",
       purpose: "New Tool",
+      spec_version: TOOL_SPEC_VERSION,
+      created_at: new Date().toISOString(),
+      source_prompt: "New Tool",
       entities: [],
       stateGraph: { nodes: [], edges: [] },
       state: { initial: {}, reducers: [], graph: { nodes: [], edges: [] } },

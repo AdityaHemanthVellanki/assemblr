@@ -1,4 +1,5 @@
 import { z } from "zod";
+export const TOOL_SPEC_VERSION = 1;
 export const IntegrationIdSchema = z.enum(["google", "github", "slack", "notion", "linear"]);
 export type IntegrationId = z.infer<typeof IntegrationIdSchema>;
 
@@ -336,6 +337,7 @@ export const ViewSpecPayloadSchema = z.object({
   answer_contract: AnswerContractSchema.optional(),
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),
+  assumptions: z.array(ClarificationSchema).optional(),
 });
 export type ViewSpecPayload = z.infer<typeof ViewSpecPayloadSchema>;
 
@@ -397,6 +399,9 @@ export const ToolSystemSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   purpose: z.string().min(1),
+  spec_version: z.number().int().min(1).default(TOOL_SPEC_VERSION),
+  created_at: z.string().min(1).optional(),
+  source_prompt: z.string().min(1).optional(),
   entities: z.array(EntitySpecSchema),
   stateGraph: StateGraphSchema.optional(), // Deprecated
   actionGraph: ActionGraphSchema.optional(),

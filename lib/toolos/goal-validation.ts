@@ -81,13 +81,13 @@ export function evaluateGoalSatisfaction(params: ValidationInputs): GoalSatisfac
       absence_reason: "ambiguous_query",
     };
   }
-  if (isAmbiguousPrompt(params.prompt)) {
+  if (isContradictoryPrompt(params.prompt)) {
     return {
       level: "unsatisfied",
       satisfied: false,
-      confidence: 0.4,
-      failure_reason: "ambiguous_query",
-      missing_requirements: ["clarification"],
+      confidence: 0.55,
+      failure_reason: "contradictory_query",
+      missing_requirements: ["resolve_conflict"],
       absence_reason: "ambiguous_query",
     };
   }
@@ -131,15 +131,16 @@ export function decideRendering(params: {
   prompt: string;
   result: GoalSatisfactionResult;
 }): Decision {
-  if (params.result.absence_reason === "ambiguous_query") {
+  if (params.result.absence_reason === "ambiguous_query" && isContradictoryPrompt(params.prompt)) {
     return {
       kind: "ask",
       question: buildClarificationQuestion(params.prompt),
     };
   }
-  if (params.result.confidence < 0.8) {
+  if (params.result.confidence < 0.8 && params.result.absence_reason === "ambiguous_query") {
     return {
-      kind: "explain",
+      kind: "render",
+      partial: true,
       explanation: buildAbsenceExplanation(params.result),
     };
   }
@@ -154,7 +155,8 @@ export function decideRendering(params: {
     };
   }
   return {
-    kind: "explain",
+    kind: "render",
+    partial: true,
     explanation: buildAbsenceExplanation(params.result),
   };
 }
@@ -170,17 +172,17 @@ export function buildAbsenceExplanation(result: GoalSatisfactionResult): string 
     case "integration_permission_missing":
       return "Slack needs to be reconnected to continue. Click reconnect to re-authorize.";
     case "ambiguous_query":
-      return "The request is ambiguous. Provide a repo or time window to continue.";
+      return "Assumptions were applied to resolve missing detail. Adjust filters as needed.";
     default:
       return "No results were found for the requested goal.";
   }
 }
 
-export function isAmbiguousPrompt(prompt: string) {
+export function isContradictoryPrompt(prompt: string) {
   const normalized = prompt.toLowerCase();
-  if (normalized.includes(" or ")) return true;
-  if (normalized.includes("maybe")) return true;
-  return normalized.split(/\s+/).length < 4;
+  if (normalized.includes("but not") || normalized.includes("except not")) return true;
+  if (normalized.includes("both") && normalized.includes("but also not")) return true;
+  return false;
 }
 
 function requiresFailureCorrelation(prompt: string, goalPlan: GoalPlan) {

@@ -26,6 +26,9 @@ export async function runBuildWorkflows(
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
+  if (content) {
+    console.log("[ToolCompilerLLMOutput]", { stage: "build-workflows", content });
+  }
   if (!content) return { specPatch: { workflows: [], triggers: [] } };
   try {
     const json = JSON.parse(content);

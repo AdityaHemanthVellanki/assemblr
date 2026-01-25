@@ -32,6 +32,9 @@ Only include views that directly answer the user prompt. Do not include unrelate
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
+  if (content) {
+    console.log("[ToolCompilerLLMOutput]", { stage: "design-views", content });
+  }
   if (!content) {
     throw new Error("View spec required but model returned empty");
   }

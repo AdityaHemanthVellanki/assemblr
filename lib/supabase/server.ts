@@ -11,12 +11,22 @@ const getServerClient = cache(async (cookieStore?: any) => {
   const env = getServerEnv();
   const cStore = cookieStore || await cookies();
 
-  return createServerClient<Database>(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+  return createServerClient<Database>(env.SUPABASE_URL, env.SUPABASE_PUBLISHABLE_KEY, {
     cookies: {
       getAll() {
         return cStore.getAll();
       },
-      setAll() {},
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cStore.set(name, value, options)
+          )
+        } catch {
+          // The `setAll` method was called from a Server Component.
+          // This can be ignored if you have middleware refreshing
+          // user sessions.
+        }
+      },
     },
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Share, User } from "lucide-react";
+import { Loader2, Share } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,7 +10,8 @@ import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { type ViewSpec, type ViewSpecPayload } from "@/lib/toolos/spec";
+import { type ViewSpecPayload } from "@/lib/toolos/spec";
+import Image from "next/image";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
 import { canEditProjects, type OrgRole } from "@/lib/auth/permissions.client";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
@@ -24,6 +25,7 @@ interface ProjectWorkspaceProps {
   project?: {
     id: string;
     spec: ToolSpec | null;
+    spec_error?: string | null;
     lifecycle_state?: ToolLifecycleState | null;
     build_logs?: ToolBuildLog[] | null;
     status?: string | null;
@@ -44,6 +46,10 @@ interface ProjectWorkspaceProps {
   role: OrgRole;
   initialPrompt?: string | null;
   initialRequiredIntegrations?: string[] | null;
+  readOnly?: boolean;
+  shareOwnerName?: string | null;
+  shareScope?: "all" | "version";
+  shareVersionId?: string | null;
 }
 
 export function ProjectWorkspace({
@@ -52,6 +58,10 @@ export function ProjectWorkspace({
   role,
   initialPrompt,
   initialRequiredIntegrations,
+  readOnly,
+  shareOwnerName,
+  shareScope,
+  shareVersionId,
 }: ProjectWorkspaceProps) {
   // State
   const [inputValue, setInputValue] = React.useState("");
@@ -63,7 +73,7 @@ export function ProjectWorkspace({
   const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
   const [showBuildSteps, setShowBuildSteps] = React.useState(true);
-  const [showChat, setShowChat] = React.useState(true);
+  const [showChat, setShowChat] = React.useState(!readOnly);
   const [showVersions, setShowVersions] = React.useState(false);
   const [authExpired, setAuthExpired] = React.useState(false);
   const [versionsLoading, setVersionsLoading] = React.useState(false);
@@ -75,6 +85,9 @@ export function ProjectWorkspace({
   const [initError, setInitError] = React.useState<string | null>(
     project?.status === "FAILED" ? project?.error_message ?? "Tool initialization failed." : null
   );
+  const [specErrorState, setSpecErrorState] = React.useState<string | null>(
+    project?.spec_error ?? null
+  );
   const [integrationGateOpen, setIntegrationGateOpen] = React.useState(false);
   const [missingIntegrations, setMissingIntegrations] = React.useState<string[]>([]);
   const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
@@ -84,6 +97,15 @@ export function ProjectWorkspace({
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [integrationMode, setIntegrationMode] = React.useState<"auto" | "manual">("auto");
+  const [selectedIntegrationIds, setSelectedIntegrationIds] = React.useState<string[]>([]);
+  const [integrationPickerOpen, setIntegrationPickerOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
+  const [shareScopeState, setShareScopeState] = React.useState<"all" | "version">("all");
+  const [shareVersionSelection, setShareVersionSelection] = React.useState<string | null>(null);
+  const [shareUrl, setShareUrl] = React.useState<string | null>(null);
+  const [shareLoading, setShareLoading] = React.useState(false);
+  const [shareError, setShareError] = React.useState<string | null>(null);
 
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
@@ -194,19 +216,34 @@ export function ProjectWorkspace({
     (currentSpec as any)?.name ||
     "New Chat";
 
-  const handleShare = React.useCallback(async () => {
+  const handleShare = React.useCallback(() => {
+    if (!toolId) return;
+    setShareOpen(true);
+    setShareError(null);
+    setShareUrl(null);
+    setShareScopeState("all");
+    setShareVersionSelection(activeVersionId ?? null);
+  }, [toolId, activeVersionId]);
+
+  const generateShareLink = React.useCallback(async () => {
+    if (!toolId) return;
+    setShareLoading(true);
+    setShareError(null);
     try {
-      const url = window.location.href;
-      if (navigator.share) {
-        await navigator.share({ title: headerTitle, url });
-      } else if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(url);
-        alert("Link copied to clipboard");
-      }
-    } catch (e) {
-      console.error(e);
+      const payload = await safeFetch<{ url: string }>(`/api/tools/${toolId}/share`, {
+        method: "POST",
+        body: JSON.stringify({
+          scope: shareScopeState,
+          versionId: shareScopeState === "version" ? shareVersionSelection : null,
+        }),
+      });
+      setShareUrl(payload.url);
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : "Failed to create share link");
+    } finally {
+      setShareLoading(false);
     }
-  }, [headerTitle]);
+  }, [toolId, shareScopeState, shareVersionSelection]);
 
   const loadVersions = React.useCallback(async () => {
     if (!toolId) return;
@@ -222,13 +259,20 @@ export function ProjectWorkspace({
       if (!selectedVersionId && payload.versions?.[0]?.id) {
         setSelectedVersionId(payload.versions[0].id);
       }
+      return payload;
     } catch (err) {
       setVersionsError(err instanceof Error ? err.message : "Failed to load versions");
       setVersions([]);
+      return null;
     } finally {
       setVersionsLoading(false);
     }
   }, [toolId, selectedVersionId]);
+
+  React.useEffect(() => {
+    if (!shareOpen || !toolId) return;
+    void loadVersions();
+  }, [shareOpen, toolId, loadVersions]);
 
   const promoteVersion = React.useCallback(
     async (versionId: string) => {
@@ -240,6 +284,13 @@ export function ProjectWorkspace({
         const promoted = versions.find((v) => v.id === versionId);
         if (promoted?.tool_spec) {
           setCurrentSpec(promoted.tool_spec);
+          setSpecErrorState(null);
+        }
+        if (promoted?.view_spec) {
+          setViewSpec(promoted.view_spec);
+        }
+        if (promoted?.data_snapshot) {
+          setDataSnapshot(promoted.data_snapshot);
         }
         await loadVersions();
       } catch (err) {
@@ -251,6 +302,39 @@ export function ProjectWorkspace({
     [toolId, versions, loadVersions],
   );
 
+  const handleRollback = React.useCallback(async () => {
+    if (!toolId) return;
+    const payload = await loadVersions();
+    if (!payload || !payload.versions?.length) {
+      setVersionsError("No versions available for rollback");
+      return;
+    }
+    const target = payload.versions.find((version) => version.id !== payload.active_version_id);
+    if (!target) {
+      setVersionsError("No previous version available for rollback");
+      return;
+    }
+    await promoteVersion(target.id);
+  }, [toolId, loadVersions, promoteVersion]);
+
+  const handleDeleteTool = React.useCallback(async () => {
+    if (!toolId) return;
+    try {
+      const res = await fetch(`/api/projects/${toolId}`, { method: "DELETE" });
+      if (!res.ok) {
+        throw new Error("Failed to delete tool");
+      }
+      router.push("/app/chat");
+    } catch (err) {
+      setVersionsError(err instanceof Error ? err.message : "Failed to delete tool");
+    }
+  }, [toolId, router]);
+
+  const lastUserPrompt = React.useMemo(() => {
+    const last = [...messages].reverse().find((message) => message.role === "user");
+    return last?.content ?? null;
+  }, [messages]);
+
   const integrationById = React.useMemo(() => {
     const map = new Map<string, (typeof INTEGRATIONS_UI)[number]>();
     INTEGRATIONS_UI.forEach((integration) => {
@@ -258,6 +342,56 @@ export function ProjectWorkspace({
     });
     return map;
   }, []);
+
+  const integrationStorageKey = React.useMemo(
+    () => `assemblr:integration-mode:${toolId ?? "new"}`,
+    [toolId],
+  );
+
+  const selectedIntegrationStorageKey = React.useMemo(
+    () => `assemblr:integration-selected:${toolId ?? "new"}`,
+    [toolId],
+  );
+
+  React.useEffect(() => {
+    try {
+      const storedMode = localStorage.getItem(integrationStorageKey);
+      if (storedMode === "auto" || storedMode === "manual") {
+        setIntegrationMode(storedMode);
+      }
+      const storedSelected = localStorage.getItem(selectedIntegrationStorageKey);
+      if (storedSelected) {
+        const parsed = JSON.parse(storedSelected);
+        if (Array.isArray(parsed)) {
+          setSelectedIntegrationIds(parsed.filter((id) => typeof id === "string"));
+        }
+      }
+    } catch {
+      return;
+    }
+  }, [integrationStorageKey, selectedIntegrationStorageKey]);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(integrationStorageKey, integrationMode);
+      localStorage.setItem(selectedIntegrationStorageKey, JSON.stringify(selectedIntegrationIds));
+    } catch {
+      return;
+    }
+  }, [integrationMode, selectedIntegrationIds, integrationStorageKey, selectedIntegrationStorageKey]);
+
+  const toggleIntegration = React.useCallback((id: string) => {
+    setSelectedIntegrationIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  }, []);
+
+  React.useEffect(() => {
+    if (shareScope === "version" && shareVersionId) {
+      setSelectedVersionId(shareVersionId);
+      setActiveVersionId(shareVersionId);
+    }
+  }, [shareScope, shareVersionId]);
 
   const storePendingPrompt = React.useCallback((payload: {
     prompt: string;
@@ -284,7 +418,7 @@ export function ProjectWorkspace({
       prompt: string,
       options?: { requiredIntegrations?: string[] | null; skipUserMessage?: boolean },
     ) => {
-      if (!prompt.trim() || isExecuting) return;
+      if (!prompt.trim() || isExecuting || readOnly) return;
 
       const shouldAddMessage = !options?.skipUserMessage;
       const history = shouldAddMessage
@@ -310,7 +444,18 @@ export function ProjectWorkspace({
           history.map((m) => ({ role: m.role, content: m.content })),
           currentSpec,
           options?.requiredIntegrations ?? undefined,
+          integrationMode,
+          integrationMode === "manual" ? selectedIntegrationIds : undefined,
         );
+        if ("integrationMismatch" in response && response.integrationMismatch) {
+          setIsExecuting(false);
+          setBuildSteps(defaultBuildSteps());
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: response.message ?? "This integration doesn’t support this action. Try switching integrations." },
+          ]);
+          return;
+        }
         if ("requiresIntegrations" in response && response.requiresIntegrations) {
           setIsExecuting(false);
           setBuildSteps(defaultBuildSteps());
@@ -344,6 +489,9 @@ export function ProjectWorkspace({
 
         if (data.toolId && !toolId) {
           setToolId(data.toolId);
+          if (pathname === "/app/chat") {
+            router.replace(`/dashboard/projects/${data.toolId}`);
+          }
         }
 
         const pipelineSteps = data.metadata?.build_steps as BuildStep[] | undefined;
@@ -355,6 +503,7 @@ export function ProjectWorkspace({
 
         if (data.spec) {
           setCurrentSpec(data.spec as ToolSpec);
+          setSpecErrorState(null);
         }
 
         const assistantMsg = {
@@ -386,11 +535,16 @@ export function ProjectWorkspace({
       toolId,
       currentSpec,
       storePendingPrompt,
+      integrationMode,
+      selectedIntegrationIds,
+      readOnly,
+      pathname,
+      router,
     ],
   );
 
   const handleSubmit = async () => {
-    if (!inputValue.trim() || isExecuting) return;
+    if (!inputValue.trim() || isExecuting || readOnly) return;
     await executePrompt(inputValue);
   };
 
@@ -416,13 +570,14 @@ export function ProjectWorkspace({
 
   React.useEffect(() => {
     if (pendingRef.current) return;
+    if (readOnly) return;
     if (!initialPrompt) return;
     pendingRef.current = true;
     void executePrompt(initialPrompt, {
       requiredIntegrations: initialRequiredIntegrations ?? undefined,
     });
     if (pathname) router.replace(pathname);
-  }, [initialPrompt, initialRequiredIntegrations, executePrompt, pathname, router]);
+  }, [initialPrompt, initialRequiredIntegrations, executePrompt, pathname, router, readOnly]);
 
   React.useEffect(() => {
     const connected = searchParams.get("integration_connected");
@@ -462,13 +617,18 @@ export function ProjectWorkspace({
           Session expired — reauth required.
         </div>
       )}
+      {shareOwnerName && (
+        <div className="border-b border-border/60 bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
+          {shareOwnerName} shared this tool with you.
+        </div>
+      )}
       {/* Header */}
       {!isZeroState && (
         <header className="flex h-14 shrink-0 items-center justify-between px-6 border-b border-border/50 bg-background/50 backdrop-blur-sm z-10">
           <div className="flex-1" />
           <div className="font-semibold">{headerTitle}</div>
           <div className="flex-1 flex justify-end items-center gap-4">
-            {toolId && (
+            {toolId && shareScope !== "version" && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -481,26 +641,27 @@ export function ProjectWorkspace({
                 Versions
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-2 text-muted-foreground hover:text-foreground"
-              onClick={() => setShowChat((prev) => !prev)}
-            >
-              {showChat ? "Hide chat" : "Show chat"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-2 text-muted-foreground hover:text-foreground"
-              onClick={handleShare}
-            >
-              <Share className="h-4 w-4" />
-              Share
-            </Button>
-            <div className="h-8 w-8 rounded-full bg-accent flex items-center justify-center ring-2 ring-background">
-              <User className="h-4 w-4 text-muted-foreground" />
-            </div>
+            {!readOnly && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowChat((prev) => !prev)}
+              >
+                {showChat ? "Hide chat" : "Show chat"}
+              </Button>
+            )}
+            {!readOnly && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-2 text-muted-foreground hover:text-foreground"
+                onClick={handleShare}
+              >
+                <Share className="h-4 w-4" />
+                Share
+              </Button>
+            )}
           </div>
         </header>
       )}
@@ -551,19 +712,140 @@ export function ProjectWorkspace({
                 </ScrollArea>
 
                 <div className="p-4 border-t border-border/50 bg-background/80 backdrop-blur-md">
-                  <PromptBar
-                    value={inputValue}
-                    onChange={setInputValue}
-                    onSubmit={handleSubmit}
-                    className="shadow-lg"
-                    isLoading={isExecuting}
-                  />
+                  {readOnly ? (
+                    <div className="text-xs text-muted-foreground">Read-only view.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-muted-foreground">Integration mode</div>
+                        <div className="inline-flex items-center rounded-full border border-border/60 bg-muted/30 p-0.5 text-xs">
+                          <button
+                            type="button"
+                            className={`rounded-full px-3 py-1 ${integrationMode === "auto" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                            onClick={() => setIntegrationMode("auto")}
+                          >
+                            Auto
+                          </button>
+                          <button
+                            type="button"
+                            className={`rounded-full px-3 py-1 ${integrationMode === "manual" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                            onClick={() => setIntegrationMode("manual")}
+                          >
+                            Manual
+                          </button>
+                        </div>
+                      </div>
+                      {integrationMode === "manual" && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {selectedIntegrationIds.map((id) => {
+                            const integration = integrationById.get(id);
+                            return (
+                              <button
+                                key={id}
+                                type="button"
+                                onClick={() => toggleIntegration(id)}
+                                className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/20 px-2 py-1 text-xs text-muted-foreground"
+                              >
+                                {integration?.logoUrl ? (
+                                  <Image
+                                    src={integration.logoUrl}
+                                    alt={integration.name}
+                                    width={16}
+                                    height={16}
+                                    className="h-4 w-4 rounded"
+                                  />
+                                ) : null}
+                                <span>{integration?.name ?? id}</span>
+                              </button>
+                            );
+                          })}
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className="rounded-full border border-dashed border-border/60 px-2 py-1 text-xs text-muted-foreground hover:bg-muted/40"
+                              onClick={() => setIntegrationPickerOpen((prev) => !prev)}
+                            >
+                              Add integration
+                            </button>
+                            {integrationPickerOpen && (
+                              <div className="absolute bottom-full left-0 z-50 mb-2 w-48 rounded-md border border-border/60 bg-popover p-1 shadow-md">
+                                {INTEGRATIONS_UI.map((integration) => {
+                                  const isSelected = selectedIntegrationIds.includes(integration.id);
+                                  return (
+                                    <button
+                                      key={integration.id}
+                                      type="button"
+                                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-xs hover:bg-accent ${isSelected ? "bg-accent/50" : ""}`}
+                                      onClick={() => {
+                                        toggleIntegration(integration.id);
+                                        setIntegrationPickerOpen(false);
+                                      }}
+                                    >
+                                      <span>{integration.name}</span>
+                                      {isSelected ? <span>✓</span> : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      <PromptBar
+                        value={inputValue}
+                        onChange={setInputValue}
+                        onSubmit={handleSubmit}
+                        className="shadow-lg"
+                        isLoading={isExecuting}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
             <div className="flex h-full flex-1 flex-col bg-muted/5">
-              {canRenderTool && viewSpec ? (
+              {specErrorState || projectStatus === "CORRUPTED" ? (
+                <div className="flex h-full items-center justify-center px-6 text-sm">
+                  <div className="max-w-xl rounded-md border border-red-200 bg-red-50 p-6 text-red-700">
+                    <div className="text-base font-semibold">
+                      This tool failed to load due to an invalid spec.
+                    </div>
+                    <div className="mt-2 text-xs text-red-700/80">
+                      {specErrorState ?? "Tool spec is corrupted or out of date."}
+                    </div>
+                    {!readOnly && (
+                      <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <Button
+                          onClick={() => {
+                            if (lastUserPrompt) {
+                              void executePrompt(lastUserPrompt, { skipUserMessage: true });
+                            }
+                          }}
+                          disabled={!lastUserPrompt || isExecuting}
+                        >
+                          Retry regeneration
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={handleRollback}
+                          disabled={versionsLoading || promotingVersionId !== null}
+                        >
+                          Roll back to previous version
+                        </Button>
+                        <Button variant="destructive" onClick={handleDeleteTool}>
+                          Delete tool
+                        </Button>
+                      </div>
+                    )}
+                    {readOnly && (
+                      <div className="mt-4 text-xs text-red-700/80">
+                        Recovery actions are unavailable in read-only mode.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : canRenderTool && viewSpec ? (
                 <ToolViewRenderer viewSpec={viewSpec} dataSnapshot={dataSnapshot} />
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">
@@ -613,9 +895,11 @@ export function ProjectWorkspace({
                   >
                     <div className="flex items-center gap-2">
                       {integration?.logoUrl ? (
-                        <img
+                        <Image
                           src={integration.logoUrl}
                           alt={integration.name}
+                          width={20}
+                          height={20}
                           className="h-5 w-5 rounded"
                         />
                       ) : null}
@@ -634,6 +918,82 @@ export function ProjectWorkspace({
             >
               Connect & Continue
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Share tool</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm text-muted-foreground">
+            <div>Anyone with this link can access this tool.</div>
+            <div className="space-y-2">
+              <button
+                type="button"
+                className={`flex w-full items-center justify-between rounded-md border border-border/60 px-3 py-2 ${shareScopeState === "all" ? "bg-muted/30 text-foreground" : "bg-background"}`}
+                onClick={() => setShareScopeState("all")}
+              >
+                <span className="font-medium">Share entire tool</span>
+                {shareScopeState === "all" ? <span>Selected</span> : null}
+              </button>
+              <button
+                type="button"
+                className={`flex w-full items-center justify-between rounded-md border border-border/60 px-3 py-2 ${shareScopeState === "version" ? "bg-muted/30 text-foreground" : "bg-background"}`}
+                onClick={() => setShareScopeState("version")}
+              >
+                <span className="font-medium">Share a specific version</span>
+                {shareScopeState === "version" ? <span>Selected</span> : null}
+              </button>
+            </div>
+            {shareScopeState === "version" && (
+              <div className="space-y-2">
+                <div className="text-xs text-muted-foreground">Choose a version</div>
+                <div className="flex flex-col gap-2">
+                  {versions.map((version) => (
+                    <button
+                      key={version.id}
+                      type="button"
+                      className={`flex items-center justify-between rounded-md border border-border/60 px-3 py-2 text-xs ${shareVersionSelection === version.id ? "bg-muted/30 text-foreground" : "bg-background"}`}
+                      onClick={() => setShareVersionSelection(version.id)}
+                    >
+                      <span className="truncate">{version.prompt_used}</span>
+                      <span>{new Date(version.created_at).toLocaleDateString()}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {shareError ? (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600">
+                {shareError}
+              </div>
+            ) : null}
+            {shareUrl ? (
+              <div className="space-y-2">
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+                  {shareUrl}
+                </div>
+                <Button
+                  type="button"
+                  onClick={async () => {
+                    if (navigator.clipboard?.writeText) {
+                      await navigator.clipboard.writeText(shareUrl);
+                    }
+                  }}
+                >
+                  Copy link
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                onClick={generateShareLink}
+                disabled={shareLoading || (shareScopeState === "version" && !shareVersionSelection)}
+              >
+                {shareLoading ? "Generating…" : "Generate link"}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
@@ -706,7 +1066,7 @@ export function ProjectWorkspace({
               ) : (
                 <VersionDetails
                   version={versions.find((v) => v.id === selectedVersionId) ?? null}
-                  canPromote={canEditProjects(role)}
+                  canPromote={canEditProjects(role) && !readOnly}
                   isActive={activeVersionId === selectedVersionId}
                   promoting={promotingVersionId === selectedVersionId}
                   onPromote={promoteVersion}
@@ -731,7 +1091,9 @@ type VersionSummary = {
   triggers_count: number;
   breaking_change: boolean;
   diff: Record<string, any> | null;
-  tool_spec: ToolSpec;
+  tool_spec: ToolSpec | null;
+  view_spec?: ViewSpecPayload | null;
+  data_snapshot?: Record<string, any> | null;
 };
 
 function VersionDetails({
@@ -824,6 +1186,7 @@ function ToolViewRenderer({
   const views = Array.isArray(viewSpec.views) ? viewSpec.views : [];
   const answerContract = viewSpec.answer_contract;
   const decision = viewSpec.decision;
+  const assumptions = Array.isArray(viewSpec.assumptions) ? viewSpec.assumptions : [];
   const slackStatus = viewSpec.integration_statuses?.slack;
   const slackBanner =
     slackStatus?.status === "reauth_required" ? (
@@ -834,6 +1197,20 @@ function ToolViewRenderer({
         </Button>
       </div>
     ) : null;
+  const assumptionsBanner =
+    assumptions.length > 0 ? (
+      <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-4 text-sm">
+        <div className="mb-2 text-xs uppercase text-muted-foreground">Assumptions applied</div>
+        <div className="space-y-2">
+          {assumptions.map((assumption) => (
+            <div key={`${assumption.field}-${assumption.reason}`} className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">{assumption.field}</span>
+              <span>{assumption.reason}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : null;
   if (decision?.kind === "ask") {
     return (
       <div className="flex h-full flex-col bg-background">
@@ -841,8 +1218,9 @@ function ToolViewRenderer({
           <div className="text-xs uppercase text-muted-foreground">Clarification</div>
           <div className="text-lg font-semibold">Needs more detail</div>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto p-6 space-y-4">
           {slackBanner}
+          {assumptionsBanner}
           <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
             {decision.question ?? "Please clarify your request to continue."}
           </div>
@@ -857,8 +1235,9 @@ function ToolViewRenderer({
           <div className="text-xs uppercase text-muted-foreground">Explanation</div>
           <div className="text-lg font-semibold">No results</div>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto p-6 space-y-4">
           {slackBanner}
+          {assumptionsBanner}
           <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
             {decision.explanation ?? "No results found for the requested goal."}
           </div>
@@ -874,6 +1253,7 @@ function ToolViewRenderer({
       </div>
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {slackBanner}
+        {assumptionsBanner}
         {decision?.partial && decision.explanation && (
           <div className="rounded-lg border border-border/60 bg-background px-4 py-4 text-sm">
             {decision.explanation}

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { processToolChat } from "@/lib/ai/tool-chat";
+import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/auth/permissions.server";
 import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
@@ -101,6 +101,29 @@ export async function POST(
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
     const connectedIntegrationIds = connections.map((c) => c.integration_id);
+    const integrationSelection = resolveIntegrationRequirements({
+      prompt: userMessage,
+      integrationMode,
+      selectedIntegrationIds,
+    });
+    if (integrationSelection.mismatchMessage) {
+      await supabase.from("chat_messages").insert({
+        tool_id: toolId,
+        org_id: ctx.orgId,
+        role: "assistant",
+        content: integrationSelection.mismatchMessage,
+        metadata: null,
+      });
+      return jsonResponse({
+        integrationMismatch: true,
+        message: integrationSelection.mismatchMessage,
+        toolId,
+      });
+    }
+    const effectiveConnectedIntegrationIds =
+      integrationMode === "manual" && selectedIntegrationIds?.length
+        ? connectedIntegrationIds.filter((id) => selectedIntegrationIds.includes(id))
+        : connectedIntegrationIds;
 
     // 4. Call AI
     const result = await processToolChat({
@@ -109,7 +132,7 @@ export async function POST(
       currentSpec,
       messages: history,
       userMessage,
-      connectedIntegrationIds,
+      connectedIntegrationIds: effectiveConnectedIntegrationIds,
       mode,
       integrationMode,
       selectedIntegrationIds,
@@ -127,11 +150,13 @@ export async function POST(
       }
     }
 
+    const assistantContent =
+      typeof result.message?.content === "string" ? result.message.content : result.explanation;
     const { error: insertAiError } = await supabase.from("chat_messages").insert({
       tool_id: toolId,
       org_id: ctx.orgId,
       role: "assistant",
-      content: result.explanation,
+      content: assistantContent,
       metadata: result.metadata ?? null,
     });
     if (insertAiError) {

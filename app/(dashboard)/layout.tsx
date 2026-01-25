@@ -1,7 +1,7 @@
-import { getSessionOnce } from "@/lib/auth/session.server";
 import { redirect } from "next/navigation";
 import { DashboardShell } from "@/components/dashboard/shell";
 import { requireOrgMember, OrgRole } from "@/lib/auth/permissions.server";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +11,10 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   // 1. Check Session (Read-Only, Once)
-  const session = await getSessionOnce();
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
 
-  if (!session) {
+  if (!user) {
     redirect("/login");
   }
 

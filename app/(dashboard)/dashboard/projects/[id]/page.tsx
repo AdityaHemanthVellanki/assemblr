@@ -77,6 +77,7 @@ export default async function ProjectPage({
 
   // 3. Parse Spec
   let spec = null;
+  let specError: string | null = null;
   if (projectRes.data.spec) {
     try {
       if (projectRes.data.active_version_id) {
@@ -84,9 +85,19 @@ export default async function ProjectPage({
           .select("tool_spec")
           .eq("id", projectRes.data.active_version_id)
           .single();
-        spec = parseToolSpec(version?.tool_spec ?? projectRes.data.spec);
+        const parsed = parseToolSpec(version?.tool_spec ?? projectRes.data.spec);
+        if (parsed.ok) {
+          spec = parsed.spec;
+        } else {
+          specError = parsed.error;
+        }
       } else {
-        spec = parseToolSpec(projectRes.data.spec);
+        const parsed = parseToolSpec(projectRes.data.spec);
+        if (parsed.ok) {
+          spec = parsed.spec;
+        } else {
+          specError = parsed.error;
+        }
       }
     } catch (e) {
       console.error("Failed to parse project spec", e);
@@ -133,6 +144,7 @@ export default async function ProjectPage({
       project={{
         id: projectRes.data.id,
         spec,
+        spec_error: specError,
         lifecycle_state: normalizedLifecycle,
         build_logs: normalizedBuildLogs,
         status: projectRes.data.status,

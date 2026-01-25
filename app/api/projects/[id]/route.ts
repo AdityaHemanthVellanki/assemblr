@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { PermissionError, requireOrgMember } from "@/lib/auth/permissions.server";
+import { PermissionError, requireOrgMember, requireRole } from "@/lib/auth/permissions.server";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";
@@ -47,7 +47,7 @@ export async function GET(
   }
 
   const rawSpec = projectRes.data.spec;
-  const spec = isToolSystemSpec(rawSpec) ? rawSpec : parseToolSpec(rawSpec);
+  const parsed = isToolSystemSpec(rawSpec) ? { ok: true as const, spec: rawSpec } : parseToolSpec(rawSpec);
 
   return NextResponse.json({
     project: {
@@ -55,7 +55,39 @@ export async function GET(
       name: projectRes.data.name as string,
       createdAt: new Date(projectRes.data.created_at as string),
       updatedAt: new Date(projectRes.data.updated_at as string),
-      spec,
+      spec: parsed.ok ? parsed.spec : null,
+      spec_error: parsed.ok ? null : parsed.error,
     },
   });
+}
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  getServerEnv();
+
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
+  try {
+    ({ ctx } = await requireRole("editor"));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
+
+  const { id } = await params;
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("projects")
+    .delete()
+    .eq("id", id)
+    .eq("org_id", ctx.orgId);
+
+  if (error) {
+    return NextResponse.json({ error: "Failed to delete project" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
 }

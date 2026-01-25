@@ -2,12 +2,11 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat, detectIntegrations } from "@/lib/ai/tool-chat";
+import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/auth/permissions.server";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
-import { getSessionOnce } from "@/lib/auth/session.server";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 
 export async function sendChatMessage(
@@ -15,14 +14,17 @@ export async function sendChatMessage(
   message: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
   currentSpec: unknown | null,
-  requiredIntegrations?: string[]
+  requiredIntegrations?: string[],
+  integrationMode?: "auto" | "manual",
+  selectedIntegrationIds?: string[]
 ) {
   // 1. Authenticate User
-  const session = await getSessionOnce();
-  if (!session?.user) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
     return { error: "Unauthorized" };
   }
-  const userId = session.user.id;
+  const userId = user.id;
 
   let effectiveToolId = toolId;
   let effectiveSpec = currentSpec;
@@ -104,25 +106,37 @@ export async function sendChatMessage(
   const supabase = await createSupabaseServerClient();
   const connections = await loadIntegrationConnections({ supabase, orgId });
   const connectedIntegrationIds = connections.map((c) => c.integration_id);
-  const requestedIntegrations =
-    requiredIntegrations && requiredIntegrations.length > 0
-      ? requiredIntegrations
-      : detectIntegrations(message);
-  const allowedIntegrations = ["github", "slack", "notion", "linear", "google"];
-  const normalizedRequested = requestedIntegrations.filter((id) =>
-    allowedIntegrations.includes(id),
-  );
-  const missingIntegrations = normalizedRequested.filter(
-    (id) => !connectedIntegrationIds.includes(id),
-  );
-  if (missingIntegrations.length > 0) {
+  const integrationSelection = resolveIntegrationRequirements({
+    prompt: message,
+    integrationMode,
+    selectedIntegrationIds,
+    requiredIntegrationIds: requiredIntegrations,
+  });
+  await supabase.from("chat_messages").insert({
+    org_id: orgId,
+    tool_id: effectiveToolId,
+    role: "user",
+    content: message,
+    metadata: null,
+  });
+  if (integrationSelection.mismatchMessage) {
+    await supabase.from("chat_messages").insert({
+      org_id: orgId,
+      tool_id: effectiveToolId,
+      role: "assistant",
+      content: integrationSelection.mismatchMessage,
+      metadata: null,
+    });
     return {
-      requiresIntegrations: true,
-      missingIntegrations,
-      requiredIntegrations: normalizedRequested,
+      integrationMismatch: true,
+      message: integrationSelection.mismatchMessage,
       toolId: effectiveToolId,
     };
   }
+  const effectiveConnectedIntegrations =
+    integrationMode === "manual" && selectedIntegrationIds && selectedIntegrationIds.length > 0
+      ? connectedIntegrationIds.filter((id) => selectedIntegrationIds.includes(id))
+      : connectedIntegrationIds;
 
   const response = await processToolChat({
     orgId,
@@ -131,9 +145,11 @@ export async function sendChatMessage(
     currentSpec: effectiveSpec as any,
     messages: history,
     userMessage: message,
-    connectedIntegrationIds,
+    connectedIntegrationIds: effectiveConnectedIntegrations,
     mode: "create", 
-    integrationMode: "auto",
+    integrationMode: integrationMode ?? "auto",
+    selectedIntegrationIds,
+    requiredIntegrationIds: requiredIntegrations,
   });
 
   if (response.spec && isToolSystemSpec(response.spec) && response.metadata?.active_version_id) {
@@ -141,6 +157,16 @@ export async function sendChatMessage(
       .from("projects")
       .update({ spec: response.spec as any, active_version_id: response.metadata.active_version_id })
       .eq("id", effectiveToolId);
+  }
+
+  if (response.message?.content) {
+    await supabase.from("chat_messages").insert({
+      org_id: orgId,
+      tool_id: effectiveToolId,
+      role: "assistant",
+      content: response.message.content,
+      metadata: response.metadata ?? null,
+    });
   }
 
   return {

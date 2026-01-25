@@ -55,6 +55,9 @@ Only use integrations from this list: ${integrations.join(", ") || "google, slac
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
+  if (content) {
+    console.log("[ToolCompilerLLMOutput]", { stage: "extract-entities", content });
+  }
   if (!content) return { specPatch: { entities: [] } };
   try {
     const json = JSON.parse(content);

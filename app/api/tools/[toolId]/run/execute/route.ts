@@ -191,6 +191,7 @@ export async function POST(
               answer_contract: spec.answer_contract,
               query_plans: spec.query_plans,
               tool_graph: spec.tool_graph,
+              assumptions: Array.isArray(spec.clarifications) ? spec.clarifications : undefined,
             };
 
             console.log("[FINALIZE] Writing flags to toolId:", toolId);
@@ -242,6 +243,16 @@ export async function POST(
                   .eq("id", toolId);
                 finalizeError = projectUpdateError ?? null;
               }
+            }
+
+            if (project.active_version_id) {
+              await (supabase.from("tool_versions") as any)
+                .update({
+                  view_spec: viewSpec,
+                  data_snapshot: snapshot,
+                  runtime_config: (spec as any)?.runtime_config ?? null,
+                })
+                .eq("id", project.active_version_id);
             }
 
             if (finalizeError) {

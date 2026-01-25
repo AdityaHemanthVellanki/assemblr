@@ -2,16 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getBrowserSupabase } from "@/lib/supabase/browser";
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 export function LoadingAuthState() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let supabase: ReturnType<typeof getBrowserSupabase> | null = null;
+    let supabase: ReturnType<typeof createSupabaseClient> | null = null;
     try {
-      supabase = getBrowserSupabase();
+      supabase = createSupabaseClient();
     } catch (e) {
       console.error("Supabase initialization failed:", e);
       setTimeout(() => setError("Configuration error: Supabase environment variables missing."), 0);

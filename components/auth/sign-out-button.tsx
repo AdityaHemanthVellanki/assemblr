@@ -1,16 +1,16 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-
 import { Button } from "@/components/ui/button";
-import { safeFetch } from "@/lib/api/client";
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 export function SignOutButton() {
   const router = useRouter();
+  const supabase = createSupabaseClient();
 
   async function onSignOut() {
     try {
-      await safeFetch("/api/auth/logout", { method: "POST" });
+      await supabase.auth.signOut();
       router.push("/login");
       router.refresh();
     } catch (err) {

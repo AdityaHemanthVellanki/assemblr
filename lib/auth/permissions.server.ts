@@ -1,23 +1,12 @@
 import "server-only";
 
 import { cache } from "react";
-import { cookies } from "next/headers";
 
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getRequestContext, getOptionalRequestContext, RequestContext } from "@/lib/api/context";
 import {
   ORG_ROLES,
   type OrgRole,
   PermissionError,
-  canViewDashboards,
-  canEditProjects,
-  canGenerateSpec,
-  canManageDataSources,
-  canManageMembers,
-  canManageIntegrations,
-  canCreateWorkflows,
-  canApproveWorkflows,
-  requiresApproval,
   roleLabel,
 } from "./permissions.client";
 
@@ -29,18 +18,6 @@ const ORG_ROLE_ORDER: Record<OrgRole, number> = {
 
 export type SessionContext = RequestContext;
 
-// Deprecated: Use getRequestContext() directly
-export const getCurrentUser = cache(async () => {
-  const ctx = await getRequestContext();
-  return ctx.user;
-});
-
-// Deprecated: Use getRequestContext() directly
-export const getSessionContext = cache(async (): Promise<SessionContext> => {
-  return await getRequestContext();
-});
-
-// Deprecated: Use getRequestContext() directly
 export async function requireOrgMember() {
   const ctx = await getRequestContext();
   return { ctx, role: ctx.org.role as OrgRole };
@@ -107,7 +84,7 @@ export {
   canApproveWorkflows,
   requiresApproval,
   roleLabel,
-};
+} from "./permissions.client";
 
 export type { OrgRole };
 export { getRequestContext };

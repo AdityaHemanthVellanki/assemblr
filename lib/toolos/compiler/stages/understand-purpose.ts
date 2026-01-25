@@ -19,6 +19,9 @@ export async function runUnderstandPurpose(
   });
   await ctx.onUsage?.(response.usage);
   const content = response.choices[0]?.message?.content;
+  if (content) {
+    console.log("[ToolCompilerLLMOutput]", { stage: "understand-purpose", content });
+  }
   if (!content) {
     return { specPatch: { purpose: ctx.prompt, name: "Tool" } };
   }
