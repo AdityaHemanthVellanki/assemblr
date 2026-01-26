@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
@@ -753,7 +753,7 @@ export async function processToolChat(
       console.log("[FINALIZE] Writing flags to toolId:", toolId);
       console.error("[FINALIZE CONTEXT]", {
         toolId,
-        supabaseUrl: process.env.SUPABASE_URL ?? null,
+        supabaseUrl: getServerEnv().SUPABASE_URL ?? null,
         schema: "public",
         client: "server",
       });
@@ -816,7 +816,7 @@ export async function processToolChat(
         toolId,
         data: renderState ?? null,
         error: renderStateError ?? null,
-        supabaseUrl: process.env.SUPABASE_URL ?? null,
+        supabaseUrl: getServerEnv().SUPABASE_URL ?? null,
       });
 
       if (renderStateError || !renderState) {
@@ -988,8 +988,8 @@ async function generateIntent(
   const enforcedPrompt = requiredIntegrations.length
     ? `${prompt}\n\nYou MUST include these integrations as sections: ${requiredIntegrations.join(", ")}.`
     : prompt;
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME,
     messages: [
       { role: "system", content: INTENT_SYSTEM_PROMPT },
       { role: "user", content: enforcedPrompt },
@@ -1007,8 +1007,8 @@ async function generateIntent(
     return first.value;
   }
 
-  const retry = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const retry = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME,
     messages: [
       { role: "system", content: INTENT_SYSTEM_PROMPT },
       {
@@ -1377,8 +1377,8 @@ async function applyGoalPlan(spec: ToolSystemSpec, prompt: string): Promise<Tool
 }
 
 async function applyIntentContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",
@@ -1412,8 +1412,8 @@ async function applySemanticPlan(spec: ToolSystemSpec, prompt: string): Promise<
   if (!spec.intent_contract) {
     throw new Error("Semantic plan requires intent contract");
   }
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",
@@ -1446,8 +1446,8 @@ async function applySemanticPlan(spec: ToolSystemSpec, prompt: string): Promise<
 
 async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    const response = await getAzureOpenAIClient().chat.completions.create({
+      model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         {
           role: "system",
@@ -1660,8 +1660,8 @@ function ensureGoalViews(views: ToolSystemSpec["views"]): ToolSystemSpec["views"
 }
 
 async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",
@@ -2111,8 +2111,8 @@ async function runRefinementAgent(
   spec: ToolSystemSpec,
   onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void,
 ): Promise<string[]> {
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",

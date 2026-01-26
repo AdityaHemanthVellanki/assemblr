@@ -5,6 +5,8 @@ import { aggregateTimeline } from "@/lib/toolos/timeline-engine";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ toolId: string }> },

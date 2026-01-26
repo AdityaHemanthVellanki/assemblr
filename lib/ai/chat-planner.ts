@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { INTEGRATIONS } from "@/lib/integrations/capabilities";
 import { CHAT_PLANNER_PROMPT } from "@/lib/ai/prompts";
@@ -76,8 +76,8 @@ export async function planChatResponse(userMessage: string): Promise<ChatPlan> {
       return { intent: "integration_request", required_capabilities: [], requested_integration_ids: detected };
     }
 
-    const response = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    const response = await getAzureOpenAIClient().chat.completions.create({
+      model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: CHAT_PLANNER_PROMPT },
         { role: "user", content: userMessage },

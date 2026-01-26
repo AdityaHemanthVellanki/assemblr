@@ -6,6 +6,8 @@ import { requireOrgMember } from "@/lib/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: Request) {
   const env = getServerEnv();
   const url = new URL(req.url);

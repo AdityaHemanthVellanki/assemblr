@@ -11,6 +11,8 @@ import {
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     email: z.string().email().max(320),

@@ -4,6 +4,8 @@ import { PermissionError, requireOrgMember } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   getServerEnv();
   try {

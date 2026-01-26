@@ -9,34 +9,42 @@ import { AzureOpenAI } from "openai";
 // --------------------------------------------------------------------------
 const REQUIRED_API_VERSION = "2024-08-01-preview";
 
-const apiVersion = process.env.AZURE_OPENAI_API_VERSION;
+let cachedClient: AzureOpenAI | null = null;
 
-// 1. Strict Runtime Assertion (Fail Fast)
-if (apiVersion !== REQUIRED_API_VERSION) {
-  const msg = `
-❌ FATAL ERROR: Invalid Azure OpenAI API Version.
-   Current: "${apiVersion}"
-   Required: "${REQUIRED_API_VERSION}"
+export function getAzureOpenAIClient() {
+  if (cachedClient) return cachedClient;
 
-   The Azure OpenAI resource requires exactly "${REQUIRED_API_VERSION}".
-   Please update your environment variables (e.g. .env).
-`;
-  console.error(msg);
-  // In Development, we allow the app to start but log the error.
-  // In Production, we crash immediately.
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(msg);
+  const apiVersion = process.env.AZURE_OPENAI_API_VERSION;
+
+  // 1. Strict Runtime Assertion (Fail Fast)
+  if (apiVersion !== REQUIRED_API_VERSION) {
+    const msg = `
+  ❌ FATAL ERROR: Invalid Azure OpenAI API Version.
+     Current: "${apiVersion}"
+     Required: "${REQUIRED_API_VERSION}"
+  
+     The Azure OpenAI resource requires exactly "${REQUIRED_API_VERSION}".
+     Please update your environment variables (e.g. .env).
+  `;
+    console.error(msg);
+    // In Development, we allow the app to start but log the error.
+    // In Production, we crash immediately.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(msg);
+    }
   }
-}
 
-export const azureOpenAIClient = new AzureOpenAI({
-  apiKey: process.env.AZURE_OPENAI_API_KEY!,
-  endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-  apiVersion: REQUIRED_API_VERSION, // Force the correct version
-  // NOTE: Azure OpenAI deployment name MUST exactly match 
-  // the name shown in Azure Portal (case-sensitive).
-  deployment: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
-});
+  cachedClient = new AzureOpenAI({
+    apiKey: process.env.AZURE_OPENAI_API_KEY!,
+    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
+    apiVersion: REQUIRED_API_VERSION, // Force the correct version
+    // NOTE: Azure OpenAI deployment name MUST exactly match 
+    // the name shown in Azure Portal (case-sensitive).
+    deployment: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  });
+
+  return cachedClient;
+}
 
 /**
  * Diagnoses a 404 error from Azure OpenAI to distinguish between:
@@ -155,11 +163,11 @@ export async function validateAzureDeployment(strict: boolean = true) {
     apiVersion: currentApiVersion,
   });
 
-  console.log(`🔍 Validating Azure OpenAI Deployment: ${deploymentName} (API Version: ${apiVersion})`);
+  console.log(`🔍 Validating Azure OpenAI Deployment: ${deploymentName} (API Version: ${currentApiVersion})`);
 
   try {
     // Lightweight test request to verify deployment existence and chat capability
-    await azureOpenAIClient.chat.completions.create({
+    await getAzureOpenAIClient().chat.completions.create({
       model: deploymentName,
       messages: [{ role: "user", content: "Test" }],
       max_tokens: 1,

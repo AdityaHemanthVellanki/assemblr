@@ -4,6 +4,8 @@ import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/pe
 import { getToolBudget, getToolBudgetUsage, updateToolBudget } from "@/lib/security/tool-budget";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 const patchSchema = z.object({
   monthlyLimit: z.number().optional(),
   perRunLimit: z.number().optional(),

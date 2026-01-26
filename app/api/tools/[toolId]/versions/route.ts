@@ -6,6 +6,8 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec, type ViewSpecPayload } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 type VersionSummary = {
   id: string;
   status: string;

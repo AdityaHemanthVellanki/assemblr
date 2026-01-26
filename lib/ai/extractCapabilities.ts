@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { INTEGRATIONS, type Capability } from "@/lib/integrations/capabilities";
 import { getExtractCapabilitiesPrompt } from "@/lib/ai/prompts";
@@ -59,8 +59,8 @@ export async function extractCapabilities(prompt: string): Promise<CapabilityExt
 
   let response;
   try {
-    response = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    response = await getAzureOpenAIClient().chat.completions.create({
+      model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: getExtractCapabilitiesPrompt(capabilityEnum.options).trim() },
         { role: "user", content: prompt },

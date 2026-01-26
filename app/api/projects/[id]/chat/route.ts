@@ -7,6 +7,8 @@ import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationCo
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { errorResponse, handleApiError, jsonResponse } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z.object({
   message: z.string().min(1).max(5000),
   mode: z.enum(["create", "chat"]).optional().default("create"),

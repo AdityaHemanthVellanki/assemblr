@@ -8,6 +8,8 @@ import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ toolId: string; runId: string }> },

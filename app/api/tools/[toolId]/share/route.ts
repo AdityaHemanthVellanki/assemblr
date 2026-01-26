@@ -5,6 +5,8 @@ import { PermissionError, requireOrgMember, requireProjectOrgAccess } from "@/li
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ toolId: string }> },

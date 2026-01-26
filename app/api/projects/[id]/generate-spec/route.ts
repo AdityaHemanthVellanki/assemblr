@@ -10,6 +10,8 @@ import { getServerEnv } from "@/lib/env";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     prompt: z.string().min(1).max(800),

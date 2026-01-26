@@ -3,6 +3,8 @@ import { requireOrgMember } from "@/lib/permissions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
+export const dynamic = "force-dynamic";
+
 export async function POST() {
   try {
     const { ctx } = await requireOrgMember();

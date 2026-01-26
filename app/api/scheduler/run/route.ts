@@ -3,6 +3,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { scheduleMetricExecution } from "@/lib/execution/scheduler";
 import { getServerEnv } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(req: Request) {
   // Validate Authorization (e.g., cron secret)
   const authHeader = req.headers.get("Authorization");

@@ -35,7 +35,7 @@ function loadEnv() {
 async function main() {
   loadEnv();
   
-  const { azureOpenAIClient, validateAzureDeployment } = await import("../lib/ai/azureOpenAI");
+  const { getAzureOpenAIClient, validateAzureDeployment } = await import("../lib/ai/azureOpenAI");
 
   console.log("🔍 Verifying Azure OpenAI Configuration...");
   
@@ -53,6 +53,7 @@ async function main() {
     // 2. Runtime Verification
     // Ensure the client itself is configured correctly (double check internal state if possible)
     // @ts-ignore
+    const azureOpenAIClient = getAzureOpenAIClient();
     const clientVersion = azureOpenAIClient._client?.apiVersion || azureOpenAIClient.apiVersion;
     if (clientVersion !== "2024-08-01-preview") {
         console.error(`❌ Client Instantiation Failed!`);

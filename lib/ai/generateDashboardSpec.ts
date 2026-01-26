@@ -28,13 +28,13 @@ export function parseAndValidateDashboardSpecFromJsonText(jsonText: string) {
 }
 
 async function defaultLlm(input: { system: string; user: string }) {
-  const { azureOpenAIClient } = await import("./azureOpenAI");
+  const { getAzureOpenAIClient } = await import("./azureOpenAI");
   const { getServerEnv } = await import("@/lib/env");
   getServerEnv();
 
   try {
-    const res = await azureOpenAIClient.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+    const res = await getAzureOpenAIClient().chat.completions.create({
+      model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
       temperature: 0.2,
       max_tokens: 900,
       response_format: { type: "json_object" },

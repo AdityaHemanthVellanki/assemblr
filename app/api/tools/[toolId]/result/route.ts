@@ -3,6 +3,7 @@ import { jsonResponse, errorResponse } from "@/lib/api/response";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(
   request: Request,

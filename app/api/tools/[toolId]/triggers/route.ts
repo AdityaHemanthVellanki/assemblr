@@ -9,6 +9,8 @@ import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 const patchSchema = z.object({
   triggerId: z.string().min(1),
   enabled: z.boolean().optional(),

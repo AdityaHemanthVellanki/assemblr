@@ -3,6 +3,8 @@ import { globalEventLoop } from "@/lib/scheduler/loop";
 import { getServerEnv } from "@/lib/env";
 import { requireOrgMember } from "@/lib/permissions";
 
+export const dynamic = "force-dynamic";
+
 // This endpoint allows forcing a tick or managing the loop status
 // In a serverless environment (Vercel), "Long Running" loop is hard.
 // Usually we use Vercel Cron to hit an endpoint like this.

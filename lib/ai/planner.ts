@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { CAPABILITY_REGISTRY } from "@/lib/capabilities/registry";
 import { DiscoveredSchema } from "@/lib/schema/types";
@@ -216,7 +216,7 @@ export async function compileIntent(
       content: m.content
     }));
 
-    const response = await azureOpenAIClient.chat.completions.create({
+    const response = await getAzureOpenAIClient().chat.completions.create({
       messages: [
         { role: "system", content: prompt },
         ...contextMessages,

@@ -8,6 +8,8 @@ import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permiss
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 const chatSchema = z.object({
   message: z.string(),
   mode: z.enum(["create", "modify", "chat"]).default("chat"),

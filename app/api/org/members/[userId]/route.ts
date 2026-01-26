@@ -15,6 +15,8 @@ const patchSchema = z
   })
   .strict();
 
+export const dynamic = "force-dynamic";
+
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ userId: string }> },

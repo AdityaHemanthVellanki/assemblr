@@ -5,6 +5,8 @@ import crypto from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     token: z.string().min(16),

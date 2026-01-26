@@ -1,4 +1,5 @@
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getServerEnv } from "@/lib/env";
 import { ViewSpec } from "@/lib/toolos/spec";
 import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/compiler/tool-compiler";
 
@@ -8,8 +9,8 @@ export async function runDesignViews(
   if (ctx.spec.entities.length === 0) {
     throw new Error("View spec required but no entities found");
   }
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",

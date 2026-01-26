@@ -8,6 +8,8 @@ import {
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     dataSourceId: z.string().min(1).nullable(),

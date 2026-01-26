@@ -10,6 +10,8 @@ import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     spec: z.unknown(),

@@ -9,6 +9,8 @@ import { encryptJson } from "@/lib/security/encryption";
 import { fetchAndPersistSchemas } from "@/lib/schema/store";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }

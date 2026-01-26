@@ -5,6 +5,8 @@ import { getServerEnv } from "@/lib/env";
 import { createEmptyToolSpec, hasMinimalToolSpecFields, parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   getServerEnv();
 

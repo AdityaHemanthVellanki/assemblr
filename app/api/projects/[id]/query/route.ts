@@ -15,6 +15,8 @@ import { decryptJson, type EncryptedJson } from "@/lib/security/encryption";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z
   .object({
     viewId: z.string().min(1),

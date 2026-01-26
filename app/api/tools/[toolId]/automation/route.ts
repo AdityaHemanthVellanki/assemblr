@@ -6,6 +6,8 @@ import { saveMemory, loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z.object({
   paused: z.boolean().optional(),
 });

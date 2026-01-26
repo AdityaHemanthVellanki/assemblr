@@ -6,6 +6,8 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { promoteToolVersion } from "@/lib/toolos/versioning";
 import { handleApiError } from "@/lib/api/response";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ toolId: string; versionId: string }> },

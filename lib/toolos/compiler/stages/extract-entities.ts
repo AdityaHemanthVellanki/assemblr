@@ -1,4 +1,5 @@
-import { azureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
+import { getServerEnv } from "@/lib/env";
 import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/compiler/tool-compiler";
 
 export async function runExtractEntities(
@@ -38,8 +39,8 @@ export async function runExtractEntities(
   const integrations = Array.from(
     new Set(ctx.spec.integrations.map((i) => i.id)),
   );
-  const response = await azureOpenAIClient.chat.completions.create({
-    model: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
+  const response = await getAzureOpenAIClient().chat.completions.create({
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",

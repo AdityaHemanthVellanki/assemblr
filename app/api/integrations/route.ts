@@ -7,6 +7,8 @@ import { INTEGRATIONS_UI, getIntegrationUIConfig } from "@/lib/integrations/regi
 import { encryptJson } from "@/lib/security/encryption";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   getServerEnv();
 

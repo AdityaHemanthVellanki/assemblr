@@ -74,6 +74,8 @@ export async function GET() {
   return NextResponse.json({ dataSources });
 }
 
+export const dynamic = "force-dynamic";
+
 export async function POST(req: Request) {
   getServerEnv();
 
