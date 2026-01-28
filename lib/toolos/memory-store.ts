@@ -10,6 +10,7 @@ import {
   MemoryWriteParams,
 } from "@/lib/toolos/memory/memory-adapter";
 import { createSupabaseMemoryAdapter, ensureSupabaseMemoryTables } from "@/lib/toolos/memory/supabase-memory";
+import { createEphemeralMemoryAdapter } from "@/lib/toolos/memory/ephemeral-memory";
 
 export type { MemoryScope } from "@/lib/toolos/memory/memory-adapter";
 
@@ -70,25 +71,39 @@ let adapterPromise: Promise<MemoryAdapter> | null = null;
 let adapterFactoryOverride: (() => Promise<MemoryAdapter>) | null = null;
 let bootstrapPromise: Promise<void> | null = null;
 
-function startMemoryBootstrapCheck() {
+// LAZY initialization - never run at top level
+async function ensureMemoryStoreInitialized() {
   if (bootstrapPromise) return bootstrapPromise;
+  
+  // Check env vars gracefully - do not throw
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
-    throw new Error("Supabase env missing for memory persistence");
+    console.warn("Supabase env missing for memory persistence - disabling persistence");
+    return; // Don't bootstrap, just return
   }
+
   bootstrapPromise = (async () => {
-    await ensureSupabaseMemoryTables();
+    try {
+      await ensureSupabaseMemoryTables();
+    } catch (err) {
+      console.warn("Failed to ensure Supabase memory tables:", err);
+      // Don't crash, just log. Persistence might fail later but build/start proceeds.
+    }
   })();
   return bootstrapPromise;
 }
 
-void startMemoryBootstrapCheck();
-
 async function createDefaultAdapter(): Promise<MemoryAdapter> {
-  await startMemoryBootstrapCheck();
+  await ensureMemoryStoreInitialized();
+  
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
+    console.warn("Using ephemeral memory adapter (Supabase env missing)");
+    return createEphemeralMemoryAdapter();
+  }
+  
   return createSupabaseMemoryAdapter();
 }
 
-async function getAdapter() {
+async function getAdapter(): Promise<MemoryAdapter> {
   if (!adapterPromise) {
     adapterPromise = (adapterFactoryOverride ?? createDefaultAdapter)();
   }
@@ -103,11 +118,13 @@ export function setMemoryAdapterFactory(factory: (() => Promise<MemoryAdapter>) 
 export async function loadMemory(params: MemoryReadParams) {
   const { scope, namespace, key } = params;
   const adapter = await getAdapter();
+  
   return await adapter.get({ scope: normalizeScope(scope), namespace, key });
 }
 
 export async function saveMemory(params: MemoryWriteParams) {
   const adapter = await getAdapter();
+  
   try {
     const normalizedScope = normalizeScope(params.scope);
     await adapter.set({ ...params, scope: normalizedScope });
@@ -120,6 +137,7 @@ export async function saveMemory(params: MemoryWriteParams) {
 
 export async function deleteMemory(params: MemoryDeleteParams) {
   const adapter = await getAdapter();
+
   try {
     const normalizedScope = normalizeScope(params.scope);
     await adapter.delete({ ...params, scope: normalizedScope });
