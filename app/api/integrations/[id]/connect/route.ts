@@ -15,9 +15,14 @@ export async function POST(
   const env = getServerEnv();
   const { id: providerId } = await params;
   
-  // We can optionally read body for redirectPath override, but default is /dashboard/integrations
-  // const body = await req.json().catch(() => ({}));
-  const redirectPath = "/dashboard/integrations";
+  const body = await req.json().catch(() => ({}));
+  let redirectPath = body.redirectPath || "/dashboard/integrations";
+  const resumeId = body.resumeId;
+
+  if (resumeId) {
+    const separator = redirectPath.includes("?") ? "&" : "?";
+    redirectPath = `${redirectPath}${separator}resumeId=${resumeId}`;
+  }
 
   if (!providerId || !OAUTH_PROVIDERS[providerId]) {
     return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
@@ -73,6 +78,7 @@ export async function POST(
     orgId: ctx.orgId,
     providerId,
     redirectPath,
+    resumeId,
   });
 
   // 4. Store State in Cookie (HTTP Only, Secure)

@@ -12,6 +12,8 @@ import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 import { safeFetch, ApiError } from "@/lib/api/client";
 
+import { saveResumeContext, getResumeContext } from "@/app/actions/oauth";
+
 type IntegrationCTA = {
   id: string;
   name?: string;
@@ -145,22 +147,44 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     }
 
     if (params.get("integration_connected") === "true") {
+      const resumeId = params.get("resumeId");
+
       // Clear the param to prevent re-submission on refresh
       const newUrl = window.location.pathname;
       window.history.replaceState({}, "", newUrl);
 
-      const savedInput = sessionStorage.getItem("chatInput");
-      if (savedInput) {
-        // Retrieve stored mode/selection to ensure we respect Manual mode settings
-        // even if React state hasn't hydrated them yet.
-        const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
-        const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
-        let storedIds: string[] = [];
-        try {
-          if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
-        } catch {}
+      if (resumeId) {
+        getResumeContext(resumeId).then((context) => {
+          if (context && context.originalPrompt) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", type: "text", content: "Integration connected. Resuming tool assembly..." },
+            ]);
 
-        submitMessage(savedInput, storedMode || "auto", storedIds);
+            const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
+            const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
+            let storedIds: string[] = [];
+            try {
+              if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
+            } catch {}
+
+            submitMessage(context.originalPrompt, storedMode || "auto", storedIds);
+          }
+        });
+      } else {
+        const savedInput = sessionStorage.getItem("chatInput");
+        if (savedInput) {
+          // Retrieve stored mode/selection to ensure we respect Manual mode settings
+          // even if React state hasn't hydrated them yet.
+          const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
+          const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
+          let storedIds: string[] = [];
+          try {
+            if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
+          } catch {}
+
+          submitMessage(savedInput, storedMode || "auto", storedIds);
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -305,7 +329,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     return `/api/oauth/start?${params.toString()}`;
   }
 
-  function handleActionClick(cta: IntegrationCTA) {
+  async function handleActionClick(cta: IntegrationCTA) {
     if (cta.action === "ui:select_integration") {
       if (!selectedIntegrationIds.includes(cta.id)) {
         setSelectedIntegrationIds((prev) => [...prev, cta.id]);
@@ -316,8 +340,49 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         ...prev,
         [cta.id]: "connecting",
       }));
-      // Phase 1: Always Hosted OAuth -> Immediate Redirect
-      window.location.href = getConnectUrl(cta.id);
+
+      try {
+        // 1. Capture context and save to server
+        // Find the last user message to use as the original prompt
+        const lastUserMessage = [...messages].reverse().find((m) => m.role === "user" && m.type === "text");
+        const promptContent = lastUserMessage && lastUserMessage.type === "text" ? lastUserMessage.content : "";
+
+        const resumeId = await saveResumeContext({
+          toolId: toolId,
+          originalPrompt: promptContent,
+          blockedIntegration: cta.id,
+          returnPath: window.location.pathname,
+        });
+
+        // 2. Initiate connection via API (which returns the Auth URL with state)
+        const res = await fetch(`/api/integrations/${cta.id}/connect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            redirectPath: window.location.pathname,
+            resumeId: resumeId,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to initiate connection");
+        }
+
+        const data = await res.json();
+
+        // 3. Redirect to OAuth provider
+        if (data.redirectUrl) {
+          window.location.href = data.redirectUrl;
+        } else {
+          throw new Error("No redirect URL returned");
+        }
+      } catch (err) {
+        console.error("Connection failed", err);
+        setIntegrationStatuses((prev) => ({
+          ...prev,
+          [cta.id]: "error",
+        }));
+      }
     }
   }
 

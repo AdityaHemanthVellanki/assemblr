@@ -8,6 +8,7 @@ import { encryptJson } from "@/lib/security/encryption";
 
 import { fetchAndPersistSchemas } from "@/lib/schema/store";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
+import { getResumeContext } from "@/app/actions/oauth";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,7 @@ export async function GET(
     return redirectWithError("State cookie missing or expired");
   }
 
-  let storedState: { state: string; orgId: string; providerId: string; redirectPath: string };
+  let storedState: { state: string; orgId: string; providerId: string; redirectPath: string; resumeId?: string };
   try {
     storedState = JSON.parse(storedStateRaw);
   } catch {
@@ -387,7 +388,27 @@ export async function GET(
     }
 
     // 5. Redirect
-    const successUrl = new URL(storedState.redirectPath, env.APP_BASE_URL);
+    let redirectPath = storedState.redirectPath;
+
+    // Resume Logic: If resumeId is present, try to load context to get the precise return path
+    if (storedState.resumeId) {
+      try {
+        const resumeContext = await getResumeContext(storedState.resumeId);
+        if (resumeContext) {
+          redirectPath = resumeContext.returnPath;
+          // Ensure resumeId is passed to the frontend
+          const sep = redirectPath.includes("?") ? "&" : "?";
+          if (!redirectPath.includes("resumeId=")) {
+             redirectPath = `${redirectPath}${sep}resumeId=${storedState.resumeId}`;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load resume context in callback", err);
+        // Fallback to storedState.redirectPath
+      }
+    }
+
+    const successUrl = new URL(redirectPath, env.APP_BASE_URL);
     successUrl.searchParams.set("integration_connected", "true");
     return NextResponse.redirect(successUrl);
 

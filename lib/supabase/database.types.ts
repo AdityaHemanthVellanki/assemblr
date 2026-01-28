@@ -12,6 +12,73 @@ export type Database = {
       org_role: "owner" | "editor" | "viewer";
     };
     Tables: {
+      oauth_resume_contexts: {
+        Row: {
+          id: string;
+          user_id: string;
+          org_id: string;
+          project_id: string | null;
+          chat_id: string | null;
+          tool_id: string | null;
+          original_prompt: string | null;
+          pending_integrations: string[] | null;
+          blocked_integration: string | null;
+          orchestration_state: Json | null;
+          return_path: string;
+          created_at: string;
+          expires_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          org_id: string;
+          project_id?: string | null;
+          chat_id?: string | null;
+          tool_id?: string | null;
+          original_prompt?: string | null;
+          pending_integrations?: string[] | null;
+          blocked_integration?: string | null;
+          orchestration_state?: Json | null;
+          return_path: string;
+          created_at?: string;
+          expires_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          org_id?: string;
+          project_id?: string | null;
+          chat_id?: string | null;
+          tool_id?: string | null;
+          original_prompt?: string | null;
+          pending_integrations?: string[] | null;
+          blocked_integration?: string | null;
+          orchestration_state?: Json | null;
+          return_path?: string;
+          created_at?: string;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "oauth_resume_contexts_org_id_fkey";
+            columns: ["org_id"];
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "oauth_resume_contexts_project_id_fkey";
+            columns: ["project_id"];
+            referencedRelation: "projects";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "oauth_resume_contexts_user_id_fkey";
+            columns: ["user_id"];
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       chat_messages: {
         Row: {
           id: string;
