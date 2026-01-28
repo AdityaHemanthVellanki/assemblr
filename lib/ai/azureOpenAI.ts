@@ -37,7 +37,7 @@ export function getAzureOpenAIClient() {
   cachedClient = new AzureOpenAI({
     apiKey: process.env.AZURE_OPENAI_API_KEY!,
     endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: REQUIRED_API_VERSION, // Force the correct version
+    apiVersion: apiVersion!, // Use the validated env var
     // NOTE: Azure OpenAI deployment name MUST exactly match 
     // the name shown in Azure Portal (case-sensitive).
     deployment: process.env.AZURE_OPENAI_DEPLOYMENT_NAME!,
