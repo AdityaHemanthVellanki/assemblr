@@ -392,6 +392,10 @@ export type Database = {
         Args: { p_org_id: string; p_email: string };
         Returns: boolean;
       };
+      delete_project_cascade: {
+        Args: { p_project_id: string; p_org_id: string };
+        Returns: undefined;
+      };
     };
     CompositeTypes: Record<string, never>;
   };

@@ -2,11 +2,13 @@
 
 import * as React from "react";
 import Image from "next/image";
+import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { safeFetch } from "@/lib/api/client";
+import { startOAuthFlow } from "@/app/actions/oauth";
 
 // --- Types mirroring backend types ---
 
@@ -146,6 +148,7 @@ export default function IntegrationsPage() {
   const [formError, setFormError] = React.useState<string | null>(null);
   const [disconnectMode, setDisconnectMode] = React.useState(false);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
+  const [isConnecting, setIsConnecting] = React.useState(false);
   const [origin, setOrigin] = React.useState("");
 
   React.useEffect(() => {
@@ -209,21 +212,21 @@ export default function IntegrationsPage() {
         try {
             // Set local loading state (optimistic)
             setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
+            setIsConnecting(true);
             
-            const payload = await safeFetch<{ redirectUrl?: string }>(`/api/integrations/${integrationId}/connect`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" }
+            const oauthUrl = await startOAuthFlow({
+                providerId: integrationId,
+                currentPath: window.location.pathname + window.location.search,
+                integrationMode: "manual", // Default for global page
+                // No chat/tool context
             });
             
-            if (payload.redirectUrl) {
-                window.location.href = payload.redirectUrl;
-                return;
-            } else {
-                throw new Error("No redirect URL returned");
-            }
+            window.location.href = oauthUrl;
+            return;
         } catch (e) {
             console.error("Connect failed", e);
             setPageError(e instanceof Error ? e.message : String(e));
+            setIsConnecting(false);
             // Revert status
             await load(); // Refresh to get true status
             return;
@@ -289,7 +292,13 @@ export default function IntegrationsPage() {
 
       // If OAuth, redirect to start flow
       if (active.connectionMode === "oauth") {
-         window.location.href = `/api/oauth/start?provider=${active.id}`;
+         setIsConnecting(true);
+         const oauthUrl = await startOAuthFlow({
+            providerId: active.id,
+            currentPath: window.location.pathname + window.location.search,
+            integrationMode: "manual",
+         });
+         window.location.href = oauthUrl;
          return; // Don't close modal or reload, we are leaving
       }
 
@@ -298,6 +307,7 @@ export default function IntegrationsPage() {
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
+      setIsConnecting(false);
     }
   }, [active, closeModal, formValues, load]);
 
@@ -331,6 +341,15 @@ export default function IntegrationsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
         <p className="text-muted-foreground">Connect your tools to power real, live dashboards</p>
       </div>
+
+      {isConnecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-lg font-medium">Connecting integration... you’ll be returned automatically.</p>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="w-full sm:max-w-sm">

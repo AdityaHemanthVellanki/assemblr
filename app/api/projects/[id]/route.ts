@@ -63,6 +63,66 @@ export async function GET(
   });
 }
 
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  getServerEnv();
+
+  let ctx: Awaited<ReturnType<typeof requireRole>>["ctx"];
+  try {
+    ({ ctx } = await requireRole("editor"));
+  } catch (err) {
+    if (err instanceof PermissionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
+
+  const { id } = await params;
+  const json = await req.json().catch(() => null);
+
+  if (!json || typeof json !== "object" || !("name" in json) || typeof json.name !== "string") {
+    return NextResponse.json({ error: "Invalid request body: 'name' string required" }, { status: 400 });
+  }
+
+  const name = json.name.trim();
+  if (!name) {
+    return NextResponse.json({ error: "Name cannot be empty" }, { status: 400 });
+  }
+
+  if (name.length > 80) {
+    return NextResponse.json({ error: "Name too long (max 80 chars)" }, { status: 400 });
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("projects")
+    .update({ name, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("org_id", ctx.orgId)
+    .select("id, name, updated_at")
+    .single();
+
+  if (error) {
+    console.error("update project failed", {
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      projectId: id,
+      message: error.message,
+    });
+    return NextResponse.json({ error: "Failed to update project" }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    project: {
+      id: data.id,
+      name: data.name,
+      updatedAt: data.updated_at,
+    },
+  });
+}
+
 export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -81,13 +141,29 @@ export async function DELETE(
 
   const { id } = await params;
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase
-    .from("projects")
-    .delete()
-    .eq("id", id)
-    .eq("org_id", ctx.orgId);
+  
+  // Use RPC for safe cascade delete
+  const { error } = await supabase.rpc("delete_project_cascade", {
+    p_project_id: id,
+    p_org_id: ctx.orgId,
+  });
 
   if (error) {
+    console.error("delete project failed", {
+      userId: ctx.userId,
+      orgId: ctx.orgId,
+      projectId: id,
+      message: error.message,
+    });
+    
+    // Handle specific errors
+    if (error.message.includes("Permission denied")) {
+      return NextResponse.json({ error: "Permission denied" }, { status: 403 });
+    }
+    if (error.message.includes("Project not found")) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+    
     return NextResponse.json({ error: "Failed to delete project" }, { status: 500 });
   }
 

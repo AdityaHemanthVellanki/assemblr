@@ -28,9 +28,13 @@ export async function requireOrgMemberOptional() {
 
 export async function requireRole(minRole: OrgRole) {
   const ctx = await getRequestContext();
-  const userRole = ctx.org.role as OrgRole;
+  const rawRole = ctx.org.role;
+  const userRole = (typeof rawRole === 'string' ? rawRole.toLowerCase() : rawRole) as OrgRole;
   
-  if ((ORG_ROLE_ORDER[userRole] ?? -1) < ORG_ROLE_ORDER[minRole]) {
+  const userLevel = ORG_ROLE_ORDER[userRole] ?? -1;
+  const minLevel = ORG_ROLE_ORDER[minRole];
+
+  if (userLevel < minLevel) {
     throw new PermissionError(`Requires ${roleLabel(minRole)} role`, 403);
   }
 

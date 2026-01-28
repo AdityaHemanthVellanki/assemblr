@@ -12,7 +12,7 @@ import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 import { safeFetch, ApiError } from "@/lib/api/client";
 
-import { saveResumeContext, getResumeContext } from "@/app/actions/oauth";
+import { getResumeContext, startOAuthFlow } from "@/app/actions/oauth";
 
 type IntegrationCTA = {
   id: string;
@@ -105,6 +105,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [isModeOpen, setIsModeOpen] = React.useState(false);
   const [isSelectorOpen, setIsSelectorOpen] = React.useState(false);
   const [requestMode, setRequestMode] = React.useState<"create" | "chat">("create");
+  const [isConnecting, setIsConnecting] = React.useState(false);
 
   React.useEffect(() => {
     let mounted = true;
@@ -319,15 +320,6 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
     await submitMessage(input);
   }
 
-  function getConnectUrl(integrationId: string) {
-    const params = new URLSearchParams();
-    params.set("provider", integrationId);
-    params.set("source", "chat");
-    if (pathname) {
-      params.set("redirectPath", pathname);
-    }
-    return `/api/oauth/start?${params.toString()}`;
-  }
 
   async function handleActionClick(cta: IntegrationCTA) {
     if (cta.action === "ui:select_integration") {
@@ -340,48 +332,33 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         ...prev,
         [cta.id]: "connecting",
       }));
+      setIsConnecting(true);
 
       try {
-        // 1. Capture context and save to server
+        // 1. Capture context and use startOAuthFlow
         // Find the last user message to use as the original prompt
         const lastUserMessage = [...messages].reverse().find((m) => m.role === "user" && m.type === "text");
         const promptContent = lastUserMessage && lastUserMessage.type === "text" ? lastUserMessage.content : "";
 
-        const resumeId = await saveResumeContext({
+        const oauthUrl = await startOAuthFlow({
+          providerId: cta.id,
+          chatId: toolId, // toolId is used as chat identifier in this context
           toolId: toolId,
-          originalPrompt: promptContent,
-          blockedIntegration: cta.id,
-          returnPath: window.location.pathname,
+          currentPath: window.location.pathname + window.location.search,
+          prompt: promptContent,
+          integrationMode: integrationMode,
+          blockedIntegration: cta.id
         });
 
-        // 2. Initiate connection via API (which returns the Auth URL with state)
-        const res = await fetch(`/api/integrations/${cta.id}/connect`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            redirectPath: window.location.pathname,
-            resumeId: resumeId,
-          }),
-        });
+        window.location.href = oauthUrl;
 
-        if (!res.ok) {
-          throw new Error("Failed to initiate connection");
-        }
-
-        const data = await res.json();
-
-        // 3. Redirect to OAuth provider
-        if (data.redirectUrl) {
-          window.location.href = data.redirectUrl;
-        } else {
-          throw new Error("No redirect URL returned");
-        }
       } catch (err) {
         console.error("Connection failed", err);
         setIntegrationStatuses((prev) => ({
           ...prev,
           [cta.id]: "error",
         }));
+        setIsConnecting(false);
       }
     }
   }
@@ -410,6 +387,14 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
 
   return (
     <div className="flex h-full flex-col border-r bg-muted/10">
+      {isConnecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-lg font-medium">Connecting integration... you’ll be returned automatically.</p>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between border-b p-4">
         <div className="flex items-center gap-3">
           <h2 className="font-semibold">Assemblr AI</h2>

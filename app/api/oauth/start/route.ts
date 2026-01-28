@@ -13,6 +13,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
   const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
+  const resumeId = url.searchParams.get("resumeId");
 
   // Helper to redirect with error
   const redirectWithError = (msg: string) => {
@@ -81,6 +82,7 @@ export async function GET(req: Request) {
     orgId: ctx.orgId,
     providerId,
     redirectPath,
+    resumeId,
   });
 
   // 4. Store State in Cookie (HTTP Only, Secure)

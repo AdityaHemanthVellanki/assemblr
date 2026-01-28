@@ -9,6 +9,7 @@ import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
 import { sendChatMessage } from "@/app/actions/chat";
+import { startOAuthFlow } from "@/app/actions/oauth";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { type ViewSpecPayload } from "@/lib/toolos/spec";
 import Image from "next/image";
@@ -108,6 +109,7 @@ export function ProjectWorkspace({
   const [shareUrl, setShareUrl] = React.useState<string | null>(null);
   const [shareLoading, setShareLoading] = React.useState(false);
   const [shareError, setShareError] = React.useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = React.useState(false);
 
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
@@ -550,24 +552,46 @@ export function ProjectWorkspace({
     await executePrompt(inputValue);
   };
 
-  const handleConnectMissing = React.useCallback(() => {
+  const handleConnectMissing = React.useCallback(async () => {
     if (!pendingPrompt || missingIntegrations.length === 0) return;
     const integrationId = missingIntegrations[0];
+    
+    setIsConnecting(true);
+    
     storePendingPrompt({
       prompt: pendingPrompt,
       requiredIntegrations: pendingRequiredIntegrations,
       messageAdded: pendingMessageAdded,
     });
-    const params = new URLSearchParams();
-    params.set("provider", integrationId);
-    params.set("redirectPath", `${window.location.pathname}${window.location.search}`);
-    window.location.href = `/api/oauth/start?${params.toString()}`;
+    
+    try {
+      const oauthUrl = await startOAuthFlow({
+        providerId: integrationId,
+        projectId: project?.id,
+        chatId: toolId,
+        toolId: toolId,
+        currentPath: window.location.pathname + window.location.search,
+        prompt: pendingPrompt,
+        integrationMode: integrationMode,
+        pendingIntegrations: pendingRequiredIntegrations,
+        blockedIntegration: integrationId
+      });
+
+      window.location.href = oauthUrl;
+    } catch (err) {
+      console.error("Failed to start OAuth flow", err);
+      setIsConnecting(false);
+      // Optionally show an error message or toast here
+    }
   }, [
     missingIntegrations,
     pendingPrompt,
     pendingRequiredIntegrations,
     pendingMessageAdded,
     storePendingPrompt,
+    project?.id,
+    toolId,
+    integrationMode
   ]);
 
   React.useEffect(() => {
@@ -614,6 +638,14 @@ export function ProjectWorkspace({
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
+      {isConnecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-lg font-medium">Connecting integration... you’ll be returned automatically.</p>
+          </div>
+        </div>
+      )}
       {authExpired && (
         <div className="border-b border-red-500/40 bg-red-500/10 px-6 py-2 text-xs text-red-700">
           Session expired — reauth required.

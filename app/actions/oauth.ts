@@ -87,3 +87,52 @@ export async function getResumeContext(id: string) {
     returnPath: data.return_path,
   };
 }
+
+export async function startOAuthFlow(payload: {
+  providerId: string;
+  projectId?: string;
+  chatId?: string;
+  toolId?: string;
+  currentPath: string;
+  prompt?: string;
+  integrationMode: "auto" | "manual";
+  pendingIntegrations?: string[];
+  blockedIntegration?: string;
+}) {
+  const { 
+    providerId, 
+    projectId, 
+    chatId, 
+    toolId, 
+    currentPath, 
+    prompt, 
+    integrationMode,
+    pendingIntegrations,
+    blockedIntegration
+  } = payload;
+
+  // 1. Create Resume Context
+  const resumeId = await saveResumeContext({
+    projectId,
+    chatId,
+    toolId,
+    returnPath: currentPath,
+    originalPrompt: prompt,
+    pendingIntegrations,
+    blockedIntegration,
+    orchestrationState: {
+      mode: integrationMode,
+      timestamp: Date.now()
+    }
+  });
+
+  // 2. Construct OAuth URL
+  // We point to the start endpoint which handles the redirect logic
+  // We pass resumeId so it gets embedded in the state
+  const params = new URLSearchParams();
+  params.set("provider", providerId);
+  params.set("redirectPath", currentPath);
+  params.set("resumeId", resumeId);
+
+  return `/api/oauth/start?${params.toString()}`;
+}
