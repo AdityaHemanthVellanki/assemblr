@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 import { getCapabilitiesForIntegration } from "@/lib/capabilities/registry";

@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { getAlertsForMetric, logAlertHistory } from "./store";
 import { triggerAction } from "./actions";

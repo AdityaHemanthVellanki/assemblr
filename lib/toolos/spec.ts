@@ -441,3 +441,29 @@ export type ToolSystemSpec = z.infer<typeof ToolSystemSpecSchema>;
 export function isToolSystemSpec(value: unknown): value is ToolSystemSpec {
   return ToolSystemSpecSchema.safeParse(value).success;
 }
+
+export function createEmptyToolSpec(): ToolSystemSpec {
+  return {
+    id: crypto.randomUUID(),
+    name: "New Tool",
+    purpose: "To be defined",
+    spec_version: TOOL_SPEC_VERSION,
+    entities: [],
+    state: {
+      initial: {},
+      reducers: [],
+      graph: { nodes: [], edges: [] },
+    },
+    actions: [],
+    workflows: [],
+    triggers: [],
+    views: [],
+    permissions: { roles: [], grants: [] },
+    integrations: [],
+    memory: {
+      tool: { namespace: "default", retentionDays: 30, schema: {} },
+      user: { namespace: "default", retentionDays: 30, schema: {} },
+    },
+    lifecycle_state: "DRAFT",
+  };
+}

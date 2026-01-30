@@ -3,7 +3,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline } from "@/lib/ai/tool-chat";
-import { isToolSystemSpec } from "@/lib/toolos/spec";
+import { isToolSystemSpec, createEmptyToolSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/permissions";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
@@ -18,7 +18,8 @@ export async function sendChatMessage(
   currentSpec: unknown | null,
   requiredIntegrations?: string[],
   integrationMode?: "auto" | "manual",
-  selectedIntegrationIds?: string[]
+  selectedIntegrationIds?: string[],
+  options?: { forceRetry?: boolean }
 ) {
   // 1. Authenticate User
   const supabase = await createSupabaseServerClient();
@@ -49,7 +50,7 @@ export async function sendChatMessage(
           org_id: orgId,
           name: "New Tool",
           status: "DRAFT",
-          spec: {}
+          spec: createEmptyToolSpec()
       };
       
       // FAIL-FAST GUARD
@@ -134,6 +135,7 @@ export async function sendChatMessage(
     };
   }
 
+  let execution = null;
   let existingExecution = null;
   try {
     const promptHash = computePromptHash(effectiveToolId, message);
@@ -142,7 +144,35 @@ export async function sendChatMessage(
     return { error: err?.message ?? "Execution persistence failed" };
   }
   if (existingExecution) {
-    if (existingExecution.status === "created") {
+    if (options?.forceRetry) {
+       console.log(`[Chat] Forcing retry for execution ${existingExecution.id}`);
+       
+       // 1. Reset Execution State
+       await updateExecution(existingExecution.id, {
+         status: "created",
+         error: null,
+         lockToken: null,
+         lockAcquiredAt: null,
+         toolVersionId: null,
+       });
+       
+       // 2. Reset Tool State (Archive Active Version)
+       // This allows the compiler to run again instead of redirecting to runtime
+       const adminSupabase = createSupabaseAdminClient();
+       
+       // Get current active version to archive it? 
+       // For now, just unlinking it from the project is enough to trigger recompilation.
+       // The compiler will create a NEW version and promote it.
+       await (adminSupabase.from("projects") as any).update({ 
+            active_version_id: null,
+            status: "DRAFT", // Reset to DRAFT to allow compiler to run
+            compiled_at: null // Clear legacy flag too
+        }).eq("id", effectiveToolId);
+
+       // Update local reference to fall through to "created" handling below
+       existingExecution.status = "created"; 
+       execution = existingExecution;
+    } else if (existingExecution.status === "created") {
       execution = existingExecution;
     } else {
       if (existingExecution.status === "awaiting_integration") {
@@ -190,7 +220,6 @@ export async function sendChatMessage(
     return { error: "Failed to save message" };
   }
 
-  let execution = null;
   try {
     execution = await createExecution({
       orgId,
@@ -214,7 +243,7 @@ export async function sendChatMessage(
     userId,
     executionId: execution.id,
     connectedIntegrationIds,
-    mode: !toolId ? "create" as const : "execute" as const,
+    mode: !toolId ? "create" as const : "runtime" as const,
   };
 
   let result;
@@ -223,7 +252,25 @@ export async function sendChatMessage(
   switch (execution.status) {
     case "created":
       // Only "created" executions go to compiler
-      result = await runCompilerPipeline(input);
+      try {
+        result = await runCompilerPipeline(input);
+      } catch (err: any) {
+        console.error("[CompilerPipeline] Critical Failure:", err);
+        // User-friendly error reporting instead of 500
+        return {
+            explanation: "Could not generate a runnable tool from this request.",
+            message: { 
+                type: "text", 
+                content: `I encountered a problem while building your tool.\n\n**Error:** ${err.message}\n\nPlease try again with a more specific request.` 
+            },
+            metadata: { 
+                status: "failed",
+                error: true,
+                originalError: err.message
+            },
+            toolId: effectiveToolId
+        };
+      }
       break;
     case "compiled":
     case "executing":
@@ -231,7 +278,24 @@ export async function sendChatMessage(
     case "failed":
     case "awaiting_integration":
       // "compiled", "executing", or "completed" go to runtime
-      result = await runToolRuntimePipeline(input);
+      try {
+        result = await runToolRuntimePipeline(input);
+      } catch (err: any) {
+        console.error("[RuntimePipeline] Critical Failure:", err);
+        return {
+            explanation: "Runtime execution failed.",
+            message: { 
+                type: "text", 
+                content: `I encountered a problem while running your tool.\n\n**Error:** ${err.message}` 
+            },
+            metadata: { 
+                status: "failed",
+                error: true,
+                originalError: err.message
+            },
+            toolId: effectiveToolId
+        };
+      }
       break;
     default:
       throw new Error(`Invalid execution status: ${execution.status}`);

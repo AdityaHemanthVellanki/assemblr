@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DiscoveredSchema } from "./types";

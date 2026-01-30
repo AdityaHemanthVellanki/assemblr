@@ -130,7 +130,11 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
       if (!res.ok) {
           const errText = await res.text();
           console.error("Token refresh failed", errText);
-          throw new Error(`Failed to refresh token for ${integrationId}: ${res.statusText}`);
+          throw new IntegrationAuthError(
+            integrationId,
+            "refresh_failed",
+            `Failed to refresh token for ${integrationId}: ${res.statusText}`,
+          );
       }
 
       const newTokens = await res.json();

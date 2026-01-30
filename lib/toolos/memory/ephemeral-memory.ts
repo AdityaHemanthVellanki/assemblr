@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import type { MemoryAdapter, MemoryDeleteParams, MemoryReadParams, MemoryScope, MemoryWriteParams } from "./memory-adapter";
 

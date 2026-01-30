@@ -17,7 +17,7 @@ export async function runDefineActions(
       {
         role: "system",
         content:
-          `Return JSON: {"actions":[{"id":string,"name":string,"description":string,"integrationId":string,"capabilityId":string,"inputSchema":object,"outputSchema":object}]}.
+          `Return JSON: {"actions":[{"id":string,"name":string,"description":string,"integrationId":"google" | "slack" | "github" | "linear" | "notion","capabilityId":string,"inputSchema":object,"outputSchema":object}]}.
 Only use capabilities from:\n${capabilityCatalog}`,
       },
       { role: "user", content: ctx.prompt },

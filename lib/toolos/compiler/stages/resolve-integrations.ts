@@ -7,7 +7,7 @@ export async function runResolveIntegrations(
 ): Promise<ToolCompilerStageResult> {
   const detected = new Set<IntegrationId>();
   const prompt = ctx.prompt.toLowerCase();
-  if (prompt.includes("google") || prompt.includes("gmail") || prompt.includes("drive")) detected.add("google");
+  if (prompt.includes("google") || prompt.includes("gmail") || prompt.includes("drive") || prompt.includes("email") || prompt.includes("inbox")) detected.add("google");
   if (prompt.includes("github")) detected.add("github");
   if (prompt.includes("slack")) detected.add("slack");
   if (prompt.includes("notion")) detected.add("notion");

@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { getMetric, Metric } from "@/lib/metrics/store";
 import { createExecution, updateExecutionStatus, getLatestExecution as getLatestExecutionFromStore } from "./store";

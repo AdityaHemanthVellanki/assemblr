@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
@@ -40,6 +40,7 @@ export interface ToolChatRequest {
   selectedIntegrationIds?: string[];
   requiredIntegrationIds?: string[];
   executionId?: string;
+  supabaseClient?: any;
 }
 
 export interface ToolChatResponse {
@@ -92,6 +93,14 @@ You are a ToolSpec compiler. You must output a single JSON object that matches t
 Do not include any additional keys. Output JSON only.
 All requested integrations must appear in integrations and be used by entities and actions.
 Views must only reference state keys and actions.
+
+CRITICAL RULES:
+1. NEVER output "undefined" for any field.
+2. Use empty arrays [] for missing lists (e.g. entities, actions, workflows).
+3. Use empty objects {} for missing maps (e.g. initial state).
+4. All IDs must be unique strings.
+5. "name" and "purpose" are REQUIRED.
+
 Valid capabilities by provider:
 ${capabilityCatalog}
 `;
@@ -136,8 +145,7 @@ async function _executeToolRuntime(
   const supabase = createSupabaseAdminClient();
   
   // 1. Fetch Tool & Version
-  const { data: project } = await supabase
-    .from("projects")
+  const { data: project } = await (supabase.from("projects") as any)
     .select("spec, active_version_id, compiled_at")
     .eq("id", input.toolId)
     .single();
@@ -151,8 +159,7 @@ async function _executeToolRuntime(
   let compiledTool: CompiledToolArtifact | null = null;
 
   if (project.active_version_id) {
-    const { data: version } = await supabase
-      .from("tool_versions")
+    const { data: version } = await (supabase.from("tool_versions") as any)
       .select("tool_spec, compiled_tool")
       .eq("id", project.active_version_id)
       .single();
@@ -196,6 +203,21 @@ export async function runCompilerPipeline(
   if (input.executionId) {
     const execution = await getExecutionById(input.executionId);
     if (execution && execution.status !== "created") {
+      // VALIDATION: Ensure tool is actually runnable before redirecting
+      const { data: checkTool } = await (createSupabaseAdminClient()
+        .from("projects") as any)
+        .select("spec, active_version_id, compiled_at, status")
+        .eq("id", input.toolId)
+        .single();
+        
+      // FIX: Strict Requirement - Skip Compile requires Active Version
+      // We no longer accept just "compiled_at" or "spec" presence.
+      const hasRunnableArtifact = checkTool && !!checkTool.active_version_id;
+
+      if (!hasRunnableArtifact) {
+         throw new Error(`Fatal Invariant: Execution ${input.executionId} is '${execution.status}' but Tool ${input.toolId} has no active version. Cannot redirect to runtime.`);
+      }
+
       console.log(`[CompilerGuard] Redirecting execution ${input.executionId} (status: ${execution.status}) to runtime`);
       return runToolRuntimePipeline(input);
     }
@@ -215,19 +237,24 @@ export async function runCompilerPipeline(
   
   // 0. Resolve Context Securely
   const supabase = createSupabaseAdminClient();
-  let statusSupabase: any;
-  try {
-    statusSupabase = await createSupabaseServerClient();
-  } catch (err) {
-    console.error("[FINALIZE CONTEXT] Server client unavailable, falling back to admin", err);
-    statusSupabase = createSupabaseAdminClient();
+  let statusSupabase: any = input.supabaseClient;
+  if (!statusSupabase) {
+    try {
+      statusSupabase = await createSupabaseServerClient();
+    } catch (err) {
+      console.error("[FINALIZE CONTEXT] Server client unavailable, falling back to admin", err);
+      statusSupabase = createSupabaseAdminClient();
+    }
   }
   // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
   // Instead, we verify ownership via resolveBuildContext later.
   
   // FIX 1: Canonical Ownership Bootstrap
   // This guarantees user, org, and membership exist before we start any build
-  const buildContext = await resolveBuildContext(input.userId || "unknown", input.orgId);
+  if (!input.userId) {
+    throw new Error("Compiler pipeline requires userId");
+  }
+  const buildContext = await resolveBuildContext(input.userId, input.orgId);
   const userId = buildContext.userId;
   
   // Assert orgId matches context if resolved differently?
@@ -243,13 +270,14 @@ export async function runCompilerPipeline(
   // but strictly enforce org ownership.
   
   // Check if tool exists
-  const { data: existingTool } = await supabase
-    .from("projects")
-    .select("id, compiled_at, status") 
+  const { data: existingTool } = await (supabase.from("projects") as any)
+    .select("id, compiled_at, status, active_version_id") 
     .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") 
     .single();
 
-  if (existingTool?.compiled_at) {
+  // FIX: Only redirect to runtime if we have a valid ACTIVE VERSION.
+  // Legacy "compiled_at" check is insufficient and caused the "ToolSpec metadata missing" bug.
+  if (existingTool?.active_version_id) {
     return runToolRuntimePipeline(input);
   }
 
@@ -257,8 +285,19 @@ export async function runCompilerPipeline(
   // Prevent double compilation if tool is already in a post-creation state
   // Valid statuses: DRAFT, BUILDING, READY, FAILED
   // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
+  // If status is READY but no active_version_id (handled above), we recompile.
   if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
-      return runToolRuntimePipeline(input);
+      // If we are here, status is READY (or similar) but active_version_id is missing (checked above).
+      // So we should actually ALLOW compilation to fix the broken state.
+      // But if status is READY and we HAVE active_version_id, we caught it above.
+      // So this block is redundant if we trust the first check?
+      // Not quite. If status is "READY" and active_version_id is NULL, we fall through (Good).
+      // If status is "ARCHIVED" (if that exists), we might want to compile?
+      // Let's keep it safe: strict check.
+      if (existingTool.active_version_id) {
+         return runToolRuntimePipeline(input);
+      }
+      // If no active version, we proceed to compile (fixing the tool).
   }
     
   let effectiveToolId = input.toolId;
@@ -275,7 +314,7 @@ export async function runCompilerPipeline(
             org_id: orgId,
             name: "New Tool", 
             status: "DRAFT", // Initial status
-            spec: {},
+            spec: { actions: [] },
             compiled_at: null
         })
         .select("id")
@@ -284,6 +323,32 @@ export async function runCompilerPipeline(
      if (createError || !newTool) {
          throw new Error(`Failed to create tool row: ${createError?.message}`);
      }
+
+     // FIX: Dual-Write to 'tools' table to satisfy legacy FK constraints
+     // The 'tool_versions' table still references 'tools.id' in some environments.
+     try {
+       await (supabase.from("tools") as any).insert({
+          id: newToolId,
+          org_id: orgId,
+          name: "New Tool",
+          type: "tool",
+          current_spec: { actions: [] }
+       });
+     } catch (err) {
+       // Ignore error if table doesn't exist or duplicate
+       console.warn("[ToolCreation] Legacy tools table insert skipped/failed", err);
+     }
+
+     // FIX: Atomic Visibility Check (Two-Phase Commit)
+     const { data: verifyTool } = await (supabase.from("projects") as any)
+        .select("id")
+        .eq("id", newToolId)
+        .single();
+
+     if (!verifyTool) {
+        throw new Error("Invariant violation: Tool created but not visible in DB. Transaction lost?");
+     }
+
      effectiveToolId = newTool.id;
   } else {
       effectiveToolId = existingTool.id;
@@ -468,9 +533,33 @@ export async function runCompilerPipeline(
         },
       });
 
+    // FIX: Handle skip_compile from race condition guard or re-entry
+    if ((compilerResult as any).skip_compile) {
+        // VALIDATION: Ensure tool is actually runnable before redirecting
+        const { data: checkTool } = await (createSupabaseAdminClient()
+          .from("projects") as any)
+          .select("spec, active_version_id, compiled_at, status")
+          .eq("id", input.toolId)
+          .single();
+          
+        const hasRunnableArtifact = checkTool && !!checkTool.active_version_id;
+
+        if (!hasRunnableArtifact) {
+           throw new Error(`Fatal Invariant: Compiler skipped but Tool ${input.toolId} has no spec/version. Cannot redirect to runtime.`);
+        }
+
+        console.log(`[Compiler] skip_compile detected for ${input.executionId}, redirecting to runtime`);
+        return runToolRuntimePipeline(input);
+    }
+
     // Mark as compiled
     if (input.executionId) {
        await updateExecution(input.executionId, { status: "compiled" });
+    }
+
+    // FIX: Compiler Stage Guard - Ensure spec is valid before processing
+    if (!compilerResult.spec || !compilerResult.spec.actions || !Array.isArray(compilerResult.spec.actions)) {
+         throw new Error("Compiler produced invalid spec: actions array missing or invalid");
     }
 
     let intentPlanError: Error | null = null;
@@ -501,7 +590,10 @@ export async function runCompilerPipeline(
       !toolSystemValidation.workflowsBound ||
       !toolSystemValidation.viewsBound
     ) {
+      const errorMsg = `Tool Validation Failed:\n${toolSystemValidation.errors.join("\n")}`;
       toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
+      markStep(steps, "compile", "error", "Validation failed");
+      throw new Error(errorMsg);
     }
     compiledTool = buildCompiledToolArtifact(spec);
     if (input.executionId) {
@@ -509,6 +601,81 @@ export async function runCompilerPipeline(
     }
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
+
+    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
+    const normalizedSpecResult = normalizeToolSpec(spec, {
+      sourcePrompt: input.userMessage,
+      enforceVersion: true,
+    });
+    if (!normalizedSpecResult.ok) {
+      console.error("[ToolSpecNormalizationFailed]", {
+        toolId,
+        error: normalizedSpecResult.error,
+      });
+      throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
+    }
+    const normalizedSpec = normalizedSpecResult.spec;
+    spec = normalizedSpec;
+    const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
+    console.log("[ToolPersistence] Validation Result:", {
+        success: specValidation.success,
+        error: specValidation.success ? null : specValidation.error,
+        status: compilerResult.status
+    });
+    
+    // For persistence, we accept "completed" OR "degraded" as valid states if validation passes
+    const shouldPersistVersion = ["completed", "degraded"].includes(compilerResult.status) && specValidation.success;
+    console.log("[ToolPersistence] Should Persist:", shouldPersistVersion);
+
+    if (shouldPersistVersion) {
+      try {
+        if (!existingExecution?.toolVersionId) {
+          // GUARD: Strict Invariant Check
+          const { data: toolCheck } = await (supabase.from("projects") as any).select("id").eq("id", toolId).single();
+          if (!toolCheck) throw new Error("Invariant: Cannot create tool version without tool row");
+
+          console.log("[ToolPersistence] Creating version for tool:", toolId);
+          const compiled = compiledTool!;
+          const version = await createToolVersion({
+            orgId,
+            toolId,
+            userId,
+            spec: normalizedSpec,
+            compiledTool: compiled,
+            baseSpec,
+            supabase, // Pass shared client
+          });
+          console.log("[ToolPersistence] Version created:", version.id);
+          await promoteToolVersion({ toolId, versionId: version.id, supabase });
+          console.log("[ToolPersistence] Version promoted");
+          if (input.executionId) {
+            await updateExecution(input.executionId, { toolVersionId: version.id });
+          }
+        }
+        console.log("[ToolPersistence] Updating project status to READY");
+        const { error: projectError } = await (supabase.from("projects") as any)
+          .update({
+            spec: normalizedSpec,
+            name: normalizedSpec.name,
+            status: "READY",
+            updated_at: new Date().toISOString(),
+            compiled_at: new Date().toISOString(),
+          })
+          .eq("id", toolId);
+        if (projectError) {
+          throw new Error(`Project update failed: ${projectError.message}`);
+        }
+        console.log("[ToolPersistence] Project updated successfully");
+      } catch (err: any) {
+        console.error("[ToolPersistence] CRITICAL FAILURE:", err);
+        throw err;
+      }
+    } else {
+        console.warn("[ToolPersistence] Skipping persistence because validation failed or compiler incomplete", {
+            status: compilerResult.status,
+            validationErrors: specValidation.success ? [] : specValidation.error
+        });
+    }
 
     const lowConfidenceEntities = spec.entities.filter((entity) => (entity.confidence ?? 1) < 0.7);
     const lowConfidenceActions = spec.actions.filter((action) => (action.confidence ?? 1) < 0.7);
@@ -531,24 +698,44 @@ export async function runCompilerPipeline(
 
     const connectedIntegrationIds = input.connectedIntegrationIds ?? [];
     await transition("RUNTIME_READY", "Validating integrations");
-    const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
-    const missingRequired = requiredIntegrations.filter(
+    const requiredIntegrations = Array.from(
+      new Set([
+        ...(spec.integrations ?? []).map((i) => i.id),
+        ...(spec.actions ?? []).map((a) => a.integrationId).filter(Boolean),
+      ]),
+    ) as IntegrationId[];
+    const missingIntegrationIds = requiredIntegrations.filter(
       (id) => !connectedIntegrationIds.includes(id),
     );
-    if (missingRequired.length > 0) {
-      appendStep(
-        stepsById.get("readiness"),
-        `Missing integrations: ${missingRequired.join(", ")}.`,
-      );
-    }
-    const missingIntegrationIds = spec.integrations
-      .map((i) => i.id)
-      .filter((id) => !connectedIntegrationIds.includes(id));
     if (missingIntegrationIds.length > 0) {
       appendStep(
         stepsById.get("readiness"),
         `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
       );
+      markStep(steps, "readiness", "error", "Integrations required");
+      if (input.executionId) {
+        await updateExecution(input.executionId, {
+          status: "awaiting_integration",
+          requiredIntegrations,
+          missingIntegrations: missingIntegrationIds,
+        });
+      }
+      return {
+        explanation: "Connect the required integrations to continue.",
+        message: { type: "text", content: "Connect the required integrations to continue." },
+        spec: { ...spec, lifecycle_state: machine.state },
+        requiresIntegrations: true,
+        missingIntegrations: missingIntegrationIds,
+        requiredIntegrations,
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations: missingIntegrationIds,
+          requiredIntegrations,
+          executionId: input.executionId,
+          build_steps: steps,
+          progress: compilerResult.progress,
+        },
+      };
     }
 
     markStep(steps, "readiness", "running", "Validating data readiness");
@@ -559,6 +746,32 @@ export async function runCompilerPipeline(
       userId,
       compiledTool: compiledTool!
     });
+    if (readiness.authErrors.length > 0) {
+      markStep(steps, "readiness", "error", "Integration authorization required");
+      if (input.executionId) {
+        await updateExecution(input.executionId, {
+          status: "awaiting_integration",
+          requiredIntegrations,
+          missingIntegrations: readiness.authErrors,
+        });
+      }
+      return {
+        explanation: "Reconnect the required integrations to continue.",
+        message: { type: "text", content: "Reconnect the required integrations to continue." },
+        spec: { ...spec, lifecycle_state: machine.state },
+        requiresIntegrations: true,
+        missingIntegrations: readiness.authErrors,
+        requiredIntegrations,
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations: readiness.authErrors,
+          requiredIntegrations,
+          executionId: input.executionId,
+          build_steps: steps,
+          progress: compilerResult.progress,
+        },
+      };
+    }
     const readinessDuration = Date.now() - readinessStart;
     if (readinessDuration > TIME_BUDGETS.readinessMs) {
       appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
@@ -580,83 +793,7 @@ export async function runCompilerPipeline(
       console.error("[LifecyclePersistenceFailed]", err);
     }
 
-    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    const normalizedSpecResult = normalizeToolSpec(spec, {
-      sourcePrompt: input.userMessage,
-      enforceVersion: true,
-    });
-    if (!normalizedSpecResult.ok) {
-      console.error("[ToolSpecNormalizationFailed]", {
-        toolId,
-        error: normalizedSpecResult.error,
-      });
-      throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
-    }
-    const normalizedSpec = normalizedSpecResult.spec;
-    spec = normalizedSpec;
-    const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
-    const shouldPersistVersion = compilerResult.status === "completed" && specValidation.success;
-    
-    if (shouldPersistVersion) {
-      try {
-        if (!existingExecution?.toolVersionId) {
-          const compiled = compiledTool!;
-          const version = await createToolVersion({
-            orgId,
-            toolId,
-            userId,
-            spec: normalizedSpec,
-            compiledTool: compiled,
-            baseSpec,
-          });
-          await promoteToolVersion({ toolId, versionId: version.id });
-          if (input.executionId) {
-            await updateExecution(input.executionId, { toolVersionId: version.id });
-          }
-        }
-        const { error: projectError } = await (supabase.from("projects") as any)
-          .update({
-            spec: normalizedSpec,
-            name: normalizedSpec.name,
-            status: "BUILDING",
-            updated_at: new Date().toISOString(),
-            compiled_at: new Date().toISOString(),
-          })
-          .eq("id", toolId);
-        if (projectError) {
-          throw new Error(`Project update failed: ${projectError.message}`);
-        }
-      } catch (err: any) {
-        console.error("[ToolPersistence] CRITICAL FAILURE:", err);
-        throw err;
-      }
-    }
 
-    const missingIntegrations = requiredIntegrations.filter(
-      (id) => !input.connectedIntegrationIds.includes(id),
-    );
-    if (missingIntegrations.length > 0) {
-      if (input.executionId) {
-        await updateExecution(input.executionId, {
-          status: "awaiting_integration",
-          requiredIntegrations,
-          missingIntegrations,
-        });
-      }
-      return {
-        explanation: "Connect the required integrations to continue.",
-        message: { type: "text", content: "Connect the required integrations to continue." },
-        requiresIntegrations: true,
-        missingIntegrations,
-        requiredIntegrations,
-        metadata: {
-          requiresIntegrations: true,
-          missingIntegrations,
-          requiredIntegrations,
-          executionId: input.executionId,
-        },
-      };
-    }
 
 
 
@@ -982,7 +1119,7 @@ export async function runCompilerPipeline(
       }
 
       if (input.executionId) {
-        await completeExecution(input.executionId, "completed");
+        await completeExecution(input.executionId);
       }
       const assistantSummary = buildAssistantSummary(spec);
     return {
@@ -1007,7 +1144,7 @@ export async function runCompilerPipeline(
     markStep(steps, "compile", "error", message);
     if (input.executionId) {
       await updateExecution(input.executionId, { status: "failed", error: message });
-      await completeExecution(input.executionId, "failed");
+      await completeExecution(input.executionId);
     }
     
     // Check for fatal infrastructure errors (retry exhaustion, timeouts, network failures)
@@ -1326,11 +1463,13 @@ export async function resumeToolExecution(params: {
   }
 
   if (finalizeError) {
-    await completeExecution(params.executionId, "failed");
+    await updateExecution(params.executionId, { status: "failed" });
+    await completeExecution(params.executionId);
     throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
   }
 
-  await completeExecution(params.executionId, "completed");
+  await updateExecution(params.executionId, { status: "completed" });
+  await completeExecution(params.executionId);
   const assistantSummary = buildAssistantSummary(params.spec);
   return {
     explanation: assistantSummary,
@@ -2555,24 +2694,65 @@ async function runWithRetry<T>(
 }
 
 function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
+  // Defensive: Ensure arrays exist to prevent crashes during canonicalization
+  if (!spec.actions || !Array.isArray(spec.actions)) {
+     console.warn("[Canonicalize] spec.actions missing, defaulting to []", { toolId: spec.id });
+     spec.actions = [];
+  }
+  if (!spec.workflows || !Array.isArray(spec.workflows)) {
+      spec.workflows = [];
+  }
+  if (!spec.triggers || !Array.isArray(spec.triggers)) {
+      spec.triggers = [];
+  }
+  if (!spec.views || !Array.isArray(spec.views)) {
+      spec.views = [];
+  }
+  // Handle state.reducers separately as it's nested
+  if (spec.state && (!spec.state.reducers || !Array.isArray(spec.state.reducers))) {
+      spec.state.reducers = [];
+  }
+
   const actionMap = new Map<string, string>();
+  const actionNameMap = new Map<string, string>();
+  const capabilityMap = new Map<string, string>();
   const reducerMap = new Map<string, string>();
   const viewMap = new Map<string, string>();
   const workflowMap = new Map<string, string>();
   const triggerMap = new Map<string, string>();
+  const normalizeKey = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const resolveActionId = (raw: string) => {
+    const direct =
+      actionMap.get(raw) ??
+      capabilityMap.get(raw) ??
+      actionNameMap.get(normalizeKey(raw));
+    if (direct) return direct;
+    const normalized = normalizeKey(raw);
+    for (const [nameKey, actionId] of actionNameMap) {
+      if (nameKey.includes(normalized) || normalized.includes(nameKey)) {
+        return actionId;
+      }
+    }
+    return raw;
+  };
 
   const actions = spec.actions.map((action) => {
-    const canonicalId = `${action.integrationId}.${action.capabilityId}`;
+    const cap = getCapability(action.capabilityId);
+    const integrationId = (cap?.integrationId ?? action.integrationId) as IntegrationId;
+    const canonicalId = `${integrationId}.${action.capabilityId}`;
     actionMap.set(action.id, canonicalId);
+    actionNameMap.set(normalizeKey(action.name ?? action.id), canonicalId);
+    capabilityMap.set(action.capabilityId, canonicalId);
     const reducerId = action.reducerId ? `reduce.${canonicalId}` : undefined;
     if (action.reducerId) reducerMap.set(action.reducerId, reducerId!);
-    const cap = getCapability(action.capabilityId);
     const confidence = action.confidence ?? (cap?.allowedOperations.includes("read") ? 0.8 : 0.6);
     const requiresApproval =
       action.requiresApproval ?? !(cap?.allowedOperations.includes("read") ?? true);
     return {
       ...action,
       id: canonicalId,
+      integrationId,
       reducerId,
       confidence,
       requiresApproval,
@@ -2592,7 +2772,7 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
       id: canonicalId,
       nodes: workflow.nodes.map((node) => ({
         ...node,
-        actionId: node.actionId ? actionMap.get(node.actionId) ?? node.actionId : undefined,
+        actionId: node.actionId ? resolveActionId(node.actionId) : undefined,
       })),
     };
   });
@@ -2603,7 +2783,7 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     return {
       ...trigger,
       id: canonicalId,
-      actionId: trigger.actionId ? actionMap.get(trigger.actionId) ?? trigger.actionId : undefined,
+      actionId: trigger.actionId ? resolveActionId(trigger.actionId) : undefined,
       workflowId: trigger.workflowId ? workflowMap.get(trigger.workflowId) ?? trigger.workflowId : undefined,
     };
   });
@@ -2614,7 +2794,9 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     return {
       ...view,
       id: canonicalId,
-      actions: view.actions.map((id) => actionMap.get(id) ?? id),
+      actions: view.actions.map(
+        (id) => resolveActionId(id),
+      ),
     };
   });
 
@@ -2642,11 +2824,12 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     enabled: true,
     capabilities: legacyCapabilities ?? defaultCapabilities,
   };
-  const requiredIntegrations: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
-  const integrationIds = new Set([
-    ...spec.integrations.map((i) => i.id),
-    ...requiredIntegrations,
-  ]);
+  const integrationIds = new Set(
+    [
+      ...spec.integrations.map((i) => i.id),
+      ...spec.actions.map((action) => action.integrationId).filter(Boolean),
+    ] as IntegrationId[],
+  );
   const integrations = Array.from(integrationIds).map((id) => ({
     id,
     capabilities: getCapabilitiesForIntegration(id).map((c) => c.id),

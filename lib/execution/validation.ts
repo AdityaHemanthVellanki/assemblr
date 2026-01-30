@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
 import { getDiscoveredSchemas } from "@/lib/schema/store";

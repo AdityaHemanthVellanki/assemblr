@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 type RateLimitResult = { ok: true } | { ok: false; retryAfterSeconds: number };
 

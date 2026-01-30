@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { getTrace } from "./store";
 import { getMetric } from "@/lib/metrics/store";

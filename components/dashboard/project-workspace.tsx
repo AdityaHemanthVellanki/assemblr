@@ -422,7 +422,7 @@ export function ProjectWorkspace({
   const executePrompt = React.useCallback(
     async (
       prompt: string,
-      options?: { requiredIntegrations?: string[] | null; skipUserMessage?: boolean },
+      options?: { requiredIntegrations?: string[] | null; skipUserMessage?: boolean; forceRetry?: boolean },
     ) => {
       if (!prompt.trim() || isExecuting || readOnly) return;
 
@@ -452,6 +452,7 @@ export function ProjectWorkspace({
           options?.requiredIntegrations ?? undefined,
           integrationMode,
           integrationMode === "manual" ? selectedIntegrationIds : undefined,
+          { forceRetry: options?.forceRetry }
         );
         if ("integrationMismatch" in response && response.integrationMismatch) {
           setIsExecuting(false);
@@ -902,7 +903,7 @@ export function ProjectWorkspace({
                         <Button
                           onClick={() => {
                             if (lastUserPrompt) {
-                              void executePrompt(lastUserPrompt, { skipUserMessage: true });
+                              void executePrompt(lastUserPrompt, { skipUserMessage: true, forceRetry: true });
                             }
                           }}
                           disabled={!lastUserPrompt || isExecuting}

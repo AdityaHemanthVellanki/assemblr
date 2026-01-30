@@ -127,6 +127,7 @@ export async function POST(
       return errorResponse("Message is required", 400);
     }
 
+    let execution: any = null;
     let existingExecution = null;
     try {
       const promptHash = computePromptHash(toolId, userMessage);

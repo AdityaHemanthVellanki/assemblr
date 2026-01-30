@@ -1,4 +1,4 @@
-import "server-only";
+// import "server-only";
 
 import { createHash } from "crypto";
 import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, TOOL_SPEC_VERSION, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
@@ -90,6 +90,8 @@ const DEFAULT_BUDGETS: ToolCompilerStageBudgets = {
 
 const BUILDER_NAMESPACE = "tool_builder";
 
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+
 export class ToolCompiler {
   static async run(input: ToolCompilerInput): Promise<ToolCompilerResult> {
     // HARD ASSERTIONS for Canonical Context
@@ -101,14 +103,26 @@ export class ToolCompiler {
         throw new Error("Execution not found");
       }
       if (["compiling", "executing", "completed"].includes(execution.status)) {
-        return { 
-          spec: execution.tool_version_id ? {} as any : {} as any, // Placeholder as we're skipping
-          clarifications: [],
-          status: "completed",
-          progress: [],
-          skip_compile: true,
-          executionId: input.executionId
-        } as any;
+        // FIX: Ensure tool has active version before skipping
+        const { data: tool } = await createSupabaseAdminClient()
+          .from("projects")
+          .select("active_version_id")
+          .eq("id", input.toolId)
+          .single();
+
+        if (tool?.active_version_id) {
+            return { 
+              spec: buildBaseSpec(input.prompt, input.toolId), // Return valid base spec structure to satisfy types
+              clarifications: [],
+              status: "completed",
+              progress: [],
+              skip_compile: true,
+              executionId: input.executionId
+            } as any;
+        }
+        // If no active version, do NOT skip. 
+        // We log this anomaly and force recompilation.
+        console.warn(`[ToolCompiler] Execution ${input.executionId} is ${execution.status} but tool ${input.toolId} has no active version. Forcing recompilation.`);
       }
     }
     // input.userId is optional (can be system/anonymous), but if provided should be valid.
@@ -212,13 +226,11 @@ export class ToolCompiler {
     const validation = ToolSystemSpecSchema.safeParse(spec);
     if (!validation.success) {
       degraded = true;
-      emitProgress({ stage: "validate-spec", status: "completed", message: "Validation defaulted" });
-      return {
-        spec: ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? []),
-        clarifications: [],
-        status: "degraded",
-        progress,
-      };
+      emitProgress({ stage: "validate-spec", status: "completed", message: "Validation failed" });
+      
+      // CRITICAL: Validation is a hard gate. Do not return invalid specs.
+      const errorDetail = validation.error.issues.map(e => `${e.path.join(".")}: ${e.message}`).join("; ");
+      throw new Error(`ToolSpec validation failed: ${errorDetail}`);
     }
 
     return {

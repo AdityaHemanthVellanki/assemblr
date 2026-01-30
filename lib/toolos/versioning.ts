@@ -36,6 +36,7 @@ export async function createToolVersion(params: {
   spec: ToolSystemSpec;
   compiledTool: Record<string, any>;
   baseSpec?: ToolSystemSpec | null;
+  supabase?: any; // Allow injecting client for transaction/atomic context
 }) {
   if (!params.spec || Object.keys(params.spec).length === 0) {
     throw new Error("Cannot create tool version: Spec is empty or null");
@@ -48,7 +49,7 @@ export async function createToolVersion(params: {
   if (!params.orgId) throw new Error("Cannot create tool version: orgId is required");
   if (!params.toolId) throw new Error("Cannot create tool version: toolId is required");
 
-  const supabase = createSupabaseAdminClient();
+  const supabase = params.supabase || createSupabaseAdminClient();
   const normalizedSpecResult = normalizeToolSpec(params.spec, {
     sourcePrompt: (params.spec as any)?.source_prompt ?? params.spec.purpose,
     enforceVersion: true,
@@ -70,6 +71,7 @@ export async function createToolVersion(params: {
     name: normalizedSpec.name,
     purpose: normalizedSpec.purpose,
     tool_spec: normalizedSpec,
+    spec: normalizedSpec, // Fix: Provide 'spec' column as required by DB
     build_hash: buildHash,
     diff,
     // created_by: params.userId ?? null, // REMOVED: Schema mismatch
@@ -90,8 +92,8 @@ export async function createToolVersion(params: {
   return data as ToolVersionRow;
 }
 
-export async function promoteToolVersion(params: { toolId: string; versionId: string }) {
-  const supabase = createSupabaseAdminClient();
+export async function promoteToolVersion(params: { toolId: string; versionId: string; supabase?: any }) {
+  const supabase = params.supabase || createSupabaseAdminClient();
   const { data, error } = await (supabase.from("tool_versions") as any)
     .select("tool_spec")
     .eq("id", params.versionId)

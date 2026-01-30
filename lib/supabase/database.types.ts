@@ -288,6 +288,7 @@ export type Database = {
           id: string;
           org_id: string;
           name: string;
+          active_version_id: string | null;
           data_source_id: string | null;
           spec: Json | null;
           created_at: string;
@@ -297,6 +298,7 @@ export type Database = {
           id?: string;
           org_id: string;
           name: string;
+          active_version_id?: string | null;
           data_source_id?: string | null;
           spec?: Json | null;
           created_at?: string;
@@ -306,6 +308,7 @@ export type Database = {
           id?: string;
           org_id?: string;
           name?: string;
+          active_version_id?: string | null;
           data_source_id?: string | null;
           spec?: Json | null;
           created_at?: string;
