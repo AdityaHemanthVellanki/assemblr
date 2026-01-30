@@ -1,20 +1,24 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat } from "@/lib/ai/tool-chat";
+import { processToolChat, resumeToolExecution } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
+import { computePromptHash, createExecution, findExecutionByPromptHash, getExecutionById } from "@/lib/toolos/executions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export const dynamic = "force-dynamic";
 
 const chatSchema = z.object({
-  message: z.string(),
+  message: z.string().optional(),
+  resumeId: z.string().optional(),
   mode: z.enum(["create", "modify", "chat"]).default("chat"),
   integrationMode: z.enum(["auto", "manual"]).optional(),
   selectedIntegrationIds: z.array(z.string()).optional(),
+}).refine((data) => Boolean(data.message || data.resumeId), {
+  message: "Message or resumeId is required",
 });
 
 export async function POST(
@@ -37,24 +41,170 @@ export async function POST(
     if (!parsed.success) {
       return errorResponse("Invalid body", 400);
     }
-    const { message: userMessage, mode, integrationMode, selectedIntegrationIds } = parsed.data;
+    const { message: userMessage, mode, integrationMode, selectedIntegrationIds, resumeId } = parsed.data;
 
     // Use Admin Client to ensure robust tool execution/updates without cookie/RLS issues
     const supabase = createSupabaseAdminClient();
 
-    // 1. Save User Message
-    const { error: msgError } = await (supabase.from("chat_messages") as any).insert({
-      org_id: ctx.orgId,
-      tool_id: toolId,
-      role: "user",
-      content: userMessage,
-    });
-    if (msgError) {
-      console.error("Failed to save message", msgError);
-      return errorResponse("Failed to save message", 500);
+    if (resumeId) {
+      const { data: resumeRow, error: resumeError } = await (supabase.from("oauth_resume_contexts") as any)
+        .select("*")
+        .eq("id", resumeId)
+        .single();
+      if (resumeError || !resumeRow) {
+        return errorResponse("Resume context not found", 404);
+      }
+      if (resumeRow.user_id !== ctx.userId) {
+        return errorResponse("Unauthorized resume context", 403);
+      }
+      if (resumeRow.expires_at && new Date(resumeRow.expires_at) < new Date()) {
+        return errorResponse("Resume context expired", 410);
+      }
+      const executionId = resumeRow.execution_id as string | null;
+      if (!executionId) {
+        return errorResponse("Execution not found for resume", 404);
+      }
+      let execution = null;
+      try {
+        execution = await getExecutionById(executionId);
+      } catch (err: any) {
+        const message = err?.message ?? "Execution persistence failed";
+        return jsonResponse({
+          explanation: message,
+          message: { type: "text", content: message },
+          metadata: { stage: "execution_persistence", error: message },
+        });
+      }
+      if (!execution || execution.status !== "awaiting_integration") {
+        return errorResponse("Execution is not awaiting integration", 409);
+      }
+
+      const { data: projectRow, error: projectError } = await (supabase.from("projects") as any)
+        .select("spec, active_version_id")
+        .eq("id", toolId)
+        .single();
+      if (projectError || !projectRow) {
+        return errorResponse("Tool not found", 404);
+      }
+
+      let spec = projectRow.spec;
+      let compiledTool = null;
+      const versionId = execution.toolVersionId ?? projectRow.active_version_id;
+      if (versionId) {
+        const { data: versionRow } = await (supabase.from("tool_versions") as any)
+          .select("tool_spec, compiled_tool")
+          .eq("id", versionId)
+          .single();
+        if (versionRow?.tool_spec) spec = versionRow.tool_spec;
+        if (versionRow?.compiled_tool) compiledTool = versionRow.compiled_tool;
+      }
+      if (!compiledTool) {
+        compiledTool = buildCompiledToolArtifact(spec);
+      }
+
+      const result = await resumeToolExecution({
+        executionId,
+        orgId: ctx.orgId,
+        toolId,
+        userId: ctx.userId,
+        prompt: resumeRow.original_prompt ?? "",
+        spec,
+        compiledTool,
+      });
+
+      await (supabase.from("chat_messages") as any).insert({
+        org_id: ctx.orgId,
+        tool_id: toolId,
+        role: "assistant",
+        content: result.message.content,
+        metadata: result.metadata,
+      });
+
+      return jsonResponse(result);
     }
 
-    // 2. Load Context
+    if (!userMessage) {
+      return errorResponse("Message is required", 400);
+    }
+
+    let existingExecution = null;
+    try {
+      const promptHash = computePromptHash(toolId, userMessage);
+      existingExecution = await findExecutionByPromptHash({ toolId, promptHash });
+    } catch (err: any) {
+      const message = err?.message ?? "Execution persistence failed";
+      return jsonResponse({
+        explanation: message,
+        message: { type: "text", content: message },
+        metadata: { stage: "execution_persistence", error: message },
+      });
+    }
+    if (existingExecution) {
+      if (existingExecution.status === "created") {
+        execution = existingExecution;
+      } else {
+        if (existingExecution.status === "awaiting_integration") {
+          return jsonResponse({
+            explanation: "Connect the required integrations to continue.",
+            message: { type: "text", content: "Connect the required integrations to continue." },
+            requiresIntegrations: true,
+            missingIntegrations: existingExecution.missingIntegrations,
+            requiredIntegrations: existingExecution.requiredIntegrations,
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations: existingExecution.missingIntegrations,
+              requiredIntegrations: existingExecution.requiredIntegrations,
+              executionId: existingExecution.id,
+              status: existingExecution.status,
+            },
+          });
+        }
+        const statusMessage =
+          existingExecution.status === "executing" || existingExecution.status === "compiling"
+            ? "Execution already running."
+            : "Request already completed.";
+        return jsonResponse({
+          explanation: statusMessage,
+          message: { type: "text", content: statusMessage },
+          metadata: { executionId: existingExecution.id, status: existingExecution.status },
+        });
+      }
+    }
+
+    if (!execution) {
+      const { data: msgRow, error: msgError } = await (supabase.from("chat_messages") as any)
+        .insert({
+          org_id: ctx.orgId,
+          tool_id: toolId,
+          role: "user",
+          content: userMessage,
+        })
+        .select("id")
+        .single();
+      if (msgError || !msgRow) {
+        console.error("Failed to save message", msgError);
+        return errorResponse("Failed to save message", 500);
+      }
+
+      try {
+        execution = await createExecution({
+          orgId: ctx.orgId,
+          toolId,
+          chatId: toolId,
+          userId: ctx.userId,
+          promptId: msgRow.id,
+          prompt: userMessage,
+        });
+      } catch (err: any) {
+        const message = err?.message ?? "Execution persistence failed";
+        return jsonResponse({
+          explanation: message,
+          message: { type: "text", content: message },
+          metadata: { stage: "execution_persistence", error: message },
+        });
+      }
+    }
+
     const [toolRes, historyRes, connections] = await Promise.all([
       supabase.from("projects").select("spec").eq("id", toolId).single(),
       supabase
@@ -99,6 +249,7 @@ export async function POST(
       mode,
       integrationMode,
       selectedIntegrationIds,
+      executionId: execution.id,
     });
 
     if (mode === "create" && (result.metadata as any)?.persist === true) {

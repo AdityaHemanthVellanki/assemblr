@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
 import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
-import { sendChatMessage } from "@/app/actions/chat";
+import { resumeChatExecution, sendChatMessage } from "@/app/actions/chat";
 import { startOAuthFlow } from "@/app/actions/oauth";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { type ViewSpecPayload } from "@/lib/toolos/spec";
@@ -94,6 +94,7 @@ export function ProjectWorkspace({
   const [integrationGateOpen, setIntegrationGateOpen] = React.useState(false);
   const [missingIntegrations, setMissingIntegrations] = React.useState<string[]>([]);
   const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
+  const [pendingExecutionId, setPendingExecutionId] = React.useState<string | null>(null);
   const [pendingRequiredIntegrations, setPendingRequiredIntegrations] = React.useState<string[]>([]);
   const [pendingMessageAdded, setPendingMessageAdded] = React.useState(false);
   const pendingRef = React.useRef(false);
@@ -401,6 +402,7 @@ export function ProjectWorkspace({
     prompt: string;
     requiredIntegrations: string[];
     messageAdded: boolean;
+    executionId?: string | null;
   }) => {
     try {
       localStorage.setItem("assemblr:pending_prompt", JSON.stringify(payload));
@@ -468,10 +470,13 @@ export function ProjectWorkspace({
           setPendingPrompt(prompt);
           setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
           setPendingMessageAdded(shouldAddMessage);
+          const executionId = (response as any)?.metadata?.executionId ?? null;
+          setPendingExecutionId(executionId);
           storePendingPrompt({
             prompt,
             requiredIntegrations: response.requiredIntegrations ?? [],
             messageAdded: shouldAddMessage,
+            executionId,
           });
           return;
         }
@@ -496,6 +501,9 @@ export function ProjectWorkspace({
           if (pathname === "/app/chat") {
             router.replace(`/dashboard/projects/${data.toolId}`);
           }
+        }
+        if (data.metadata?.executionId) {
+          setPendingExecutionId(data.metadata.executionId);
         }
 
         const pipelineSteps = data.metadata?.build_steps as BuildStep[] | undefined;
@@ -562,6 +570,7 @@ export function ProjectWorkspace({
       prompt: pendingPrompt,
       requiredIntegrations: pendingRequiredIntegrations,
       messageAdded: pendingMessageAdded,
+      executionId: pendingExecutionId,
     });
     
     try {
@@ -570,6 +579,7 @@ export function ProjectWorkspace({
         projectId: project?.id,
         chatId: toolId,
         toolId: toolId,
+        executionId: pendingExecutionId ?? undefined,
         currentPath: window.location.pathname + window.location.search,
         prompt: pendingPrompt,
         integrationMode: integrationMode,
@@ -577,7 +587,7 @@ export function ProjectWorkspace({
         blockedIntegration: integrationId
       });
 
-      window.location.href = oauthUrl;
+      router.push(oauthUrl);
     } catch (err) {
       console.error("Failed to start OAuth flow", err);
       setIsConnecting(false);
@@ -591,7 +601,9 @@ export function ProjectWorkspace({
     storePendingPrompt,
     project?.id,
     toolId,
-    integrationMode
+    integrationMode,
+    pendingExecutionId,
+    router
   ]);
 
   React.useEffect(() => {
@@ -607,28 +619,66 @@ export function ProjectWorkspace({
 
   React.useEffect(() => {
     const connected = searchParams.get("integration_connected");
+    const resumeId = searchParams.get("resumeId");
+    
     if (connected !== "true") return;
-    let pending: { prompt: string; requiredIntegrations: string[]; messageAdded: boolean } | null = null;
-    try {
-      const raw = localStorage.getItem("assemblr:pending_prompt");
-      if (raw) pending = JSON.parse(raw);
-    } catch {
-      pending = null;
-    }
-    if (pending?.prompt) {
+
+    if (!resumeId) return;
+    if (!toolId) return;
+
+    const restoreState = async () => {
       clearPendingPrompt();
       setIntegrationGateOpen(false);
       setMissingIntegrations([]);
       setPendingPrompt(null);
       setPendingRequiredIntegrations([]);
-      setPendingMessageAdded(pending.messageAdded);
-      void executePrompt(pending.prompt, {
-        requiredIntegrations: pending.requiredIntegrations,
-        skipUserMessage: pending.messageAdded,
-      });
-    }
-    if (pathname) router.replace(pathname);
-  }, [searchParams, executePrompt, pathname, router, clearPendingPrompt]);
+      setPendingMessageAdded(false);
+      setPendingExecutionId(null);
+      setIsExecuting(true);
+      setBuildSteps(markFirstRunning(defaultBuildSteps()));
+      setAuthExpired(false);
+
+      const response = await resumeChatExecution(toolId, resumeId);
+      if ("error" in response && response.error) {
+        setMessages((prev) => [...prev, { role: "assistant", content: response.error }]);
+        setBuildSteps(markError(defaultBuildSteps(), response.error));
+        setIsExecuting(false);
+        return;
+      }
+
+      const data = response as {
+        toolId?: string;
+        message: { content: string };
+        spec?: ToolSpec;
+        metadata?: Record<string, any>;
+      };
+
+      const pipelineSteps = data.metadata?.build_steps as BuildStep[] | undefined;
+      if (pipelineSteps && pipelineSteps.length > 0) {
+        setBuildSteps(pipelineSteps);
+      } else {
+        setBuildSteps(markAllSuccess(defaultBuildSteps()));
+      }
+
+      if (data.spec) {
+        setCurrentSpec(data.spec as ToolSpec);
+        setSpecErrorState(null);
+      }
+
+      const assistantMsg = {
+        role: "assistant",
+        content: data.message.content,
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+      setIsExecuting(false);
+
+      if (pathname) {
+        router.replace(pathname);
+      }
+    };
+
+    void restoreState();
+  }, [searchParams, toolId, pathname, router, clearPendingPrompt]);
 
   React.useEffect(() => {
     if (isExecuting) return;

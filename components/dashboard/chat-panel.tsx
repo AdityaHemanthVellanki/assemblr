@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Send, ChevronDown, Plus, X, Check, Loader2 } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import type { ToolSpec } from "@/lib/spec/toolSpec";
 import { INTEGRATIONS_UI } from "@/lib/integrations/registry";
 import { safeFetch, ApiError } from "@/lib/api/client";
 
-import { getResumeContext, startOAuthFlow } from "@/app/actions/oauth";
+import { startOAuthFlow } from "@/app/actions/oauth";
 
 type IntegrationCTA = {
   id: string;
@@ -96,7 +96,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [isLoading, setIsLoading] = React.useState(false);
   const [authExpired, setAuthExpired] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
-  const pathname = usePathname();
+  const router = useRouter();
 
   // Integration Mode State
   const [integrationMode, setIntegrationMode] = React.useState<"auto" | "manual">("auto");
@@ -106,6 +106,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
   const [isSelectorOpen, setIsSelectorOpen] = React.useState(false);
   const [requestMode, setRequestMode] = React.useState<"create" | "chat">("create");
   const [isConnecting, setIsConnecting] = React.useState(false);
+  const [lastExecutionId, setLastExecutionId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let mounted = true;
@@ -155,37 +156,62 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       window.history.replaceState({}, "", newUrl);
 
       if (resumeId) {
-        getResumeContext(resumeId).then((context) => {
-          if (context && context.originalPrompt) {
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", type: "text", content: "Integration connected. Resuming tool assembly..." },
-            ]);
-
-            const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
-            const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
-            let storedIds: string[] = [];
-            try {
-              if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
-            } catch {}
-
-            submitMessage(context.originalPrompt, storedMode || "auto", storedIds);
-          }
-        });
-      } else {
-        const savedInput = sessionStorage.getItem("chatInput");
-        if (savedInput) {
-          // Retrieve stored mode/selection to ensure we respect Manual mode settings
-          // even if React state hasn't hydrated them yet.
-          const storedMode = sessionStorage.getItem("integrationMode") as "auto" | "manual" | null;
-          const storedIdsStr = sessionStorage.getItem("selectedIntegrationIds");
-          let storedIds: string[] = [];
-          try {
-            if (storedIdsStr) storedIds = JSON.parse(storedIdsStr);
-          } catch {}
-
-          submitMessage(savedInput, storedMode || "auto", storedIds);
-        }
+        setIsLoading(true);
+        safeFetch<{
+          message?: { type: string; content?: string; integrations?: any[]; result?: any };
+          explanation?: string;
+          spec?: ToolSpec;
+          metadata?: Record<string, any>;
+        }>(`/api/tools/${toolId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resumeId }),
+        })
+          .then((data) => {
+            const message = data?.message;
+            if (message?.type === "integration_action" && Array.isArray(message.integrations)) {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", type: "integration_action", integrations: message.integrations as IntegrationCTA[] },
+              ]);
+            } else if (message?.type === "data" && message.result) {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", type: "data", result: message.result },
+              ]);
+            } else {
+              const content =
+                message?.type === "text" && typeof message.content === "string"
+                  ? message.content
+                  : typeof data?.explanation === "string"
+                    ? data.explanation
+                    : "";
+              setMessages((prev) => [...prev, { role: "assistant", type: "text", content }]);
+            }
+            if (data?.metadata?.executionId) {
+              setLastExecutionId(data.metadata.executionId);
+            }
+            if (data?.spec) {
+              onSpecUpdate(data.spec);
+            }
+          })
+          .catch((error) => {
+            if (error instanceof ApiError && error.status === 401) {
+              setAuthExpired(true);
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", type: "text", content: "Session expired — reauth required." },
+              ]);
+            } else {
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", type: "text", content: "Sorry, something went wrong. Please try again." },
+              ]);
+            }
+          })
+          .finally(() => {
+            setIsLoading(false);
+          });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -255,6 +281,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
         message?: { type: string; content?: string; integrations?: any[]; result?: any };
         explanation?: string;
         spec?: ToolSpec;
+        metadata?: Record<string, any>;
       }>(`/api/tools/${toolId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -295,6 +322,9 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       
       if (data.spec) {
         onSpecUpdate(data.spec);
+      }
+      if (data?.metadata?.executionId) {
+        setLastExecutionId(data.metadata.executionId);
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -344,13 +374,14 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
           providerId: cta.id,
           chatId: toolId, // toolId is used as chat identifier in this context
           toolId: toolId,
+          executionId: lastExecutionId ?? undefined,
           currentPath: window.location.pathname + window.location.search,
           prompt: promptContent,
           integrationMode: integrationMode,
           blockedIntegration: cta.id
         });
 
-        window.location.href = oauthUrl;
+        router.push(oauthUrl);
 
       } catch (err) {
         console.error("Connection failed", err);

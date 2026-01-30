@@ -8,6 +8,7 @@ const resumeContextSchema = z.object({
   projectId: z.string().optional(),
   chatId: z.string().optional(),
   toolId: z.string().optional(),
+  executionId: z.string().optional(),
   originalPrompt: z.string().optional(),
   pendingIntegrations: z.array(z.string()).optional(),
   blockedIntegration: z.string().optional(),
@@ -32,6 +33,7 @@ export async function saveResumeContext(data: ResumeContextData) {
       project_id: parsed.projectId,
       chat_id: parsed.chatId,
       tool_id: parsed.toolId,
+      execution_id: parsed.executionId,
       original_prompt: parsed.originalPrompt,
       pending_integrations: parsed.pendingIntegrations,
       blocked_integration: parsed.blockedIntegration,
@@ -75,16 +77,18 @@ export async function getResumeContext(id: string) {
     return null;
   }
 
+  const row = data as any;
   return {
-    id: data.id,
-    projectId: data.project_id,
-    chatId: data.chat_id,
-    toolId: data.tool_id,
-    originalPrompt: data.original_prompt,
-    pendingIntegrations: data.pending_integrations,
-    blockedIntegration: data.blocked_integration,
-    orchestrationState: data.orchestration_state,
-    returnPath: data.return_path,
+    id: row.id,
+    projectId: row.project_id,
+    chatId: row.chat_id,
+    toolId: row.tool_id,
+    executionId: row.execution_id,
+    originalPrompt: row.original_prompt,
+    pendingIntegrations: row.pending_integrations,
+    blockedIntegration: row.blocked_integration,
+    orchestrationState: row.orchestration_state,
+    returnPath: row.return_path,
   };
 }
 
@@ -93,6 +97,7 @@ export async function startOAuthFlow(payload: {
   projectId?: string;
   chatId?: string;
   toolId?: string;
+  executionId?: string;
   currentPath: string;
   prompt?: string;
   integrationMode: "auto" | "manual";
@@ -104,6 +109,7 @@ export async function startOAuthFlow(payload: {
     projectId, 
     chatId, 
     toolId, 
+    executionId,
     currentPath, 
     prompt, 
     integrationMode,
@@ -116,6 +122,7 @@ export async function startOAuthFlow(payload: {
     projectId,
     chatId,
     toolId,
+    executionId,
     returnPath: currentPath,
     originalPrompt: prompt,
     pendingIntegrations,

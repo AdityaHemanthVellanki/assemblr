@@ -6,9 +6,24 @@ import { getServerEnv } from "@/lib/env";
 import type { Database } from "@/lib/supabase/database.types";
 
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url);
-  const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/dashboard";
+  const requestUrl = new URL(request.url);
+  const code = requestUrl.searchParams.get("code");
+  const next = requestUrl.searchParams.get("next") ?? "/app/chat";
+  
+  // Use the request origin to ensure we redirect back to the same domain (ngrok vs localhost)
+  const origin = requestUrl.origin;
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+  if (!appUrl) {
+    throw new Error("NEXT_PUBLIC_APP_URL is not defined");
+  }
+
+  // Guardrail: Ensure APP_BASE_URL is valid for the environment
+  if (process.env.NODE_ENV === "production" && appUrl.includes("localhost")) {
+    console.error(`[CRITICAL] NEXT_PUBLIC_APP_URL is set to localhost in production: ${appUrl}`);
+    // We can't redirect safely if the base URL is wrong, but we can try relative or throw
+    throw new Error("Server misconfiguration: Invalid NEXT_PUBLIC_APP_URL (localhost in production)");
+  }
 
   if (code) {
     const env = getServerEnv();
@@ -36,22 +51,15 @@ export async function GET(request: Request) {
         // Update last_login_at
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-            // We can use the admin client here to update the profile without RLS issues if needed,
-            // or use the current client if RLS allows users to update their own profile.
-            // Let's assume users can update their own profile or we use admin client.
-            // Using admin client is safer for system updates.
-            
-            // However, we can't easily import createSupabaseAdminClient here if it's not exported or if we want to keep this self-contained.
-            // But we have lib/supabase/admin.ts.
-            // Let's use the current client first.
-            
              await supabase
                 .from("profiles")
                 .update({ last_login_at: new Date().toISOString() })
                 .eq("id", user.id);
         }
 
-      return NextResponse.redirect(`${origin}${next}`);
+      // Ensure next path starts with /
+      const safeNext = next.startsWith("/") ? next : `/${next}`;
+      return NextResponse.redirect(`${origin}${safeNext}`);
     }
   }
 

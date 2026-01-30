@@ -1,24 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 
-export default function LoginPage() {
+function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const searchParams = useSearchParams();
 
   const handleLogin = async () => {
     setLoading(true);
     setError(null);
     try {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+      if (!appUrl) {
+        throw new Error("NEXT_PUBLIC_APP_URL is not defined");
+      }
+
+      const next = searchParams.get("next") || "/app/chat";
+      // Use window.location.origin to ensure redirects stay on the same domain (localhost vs ngrok)
+      const redirectTo = new URL(`${window.location.origin}/auth/callback`);
+      redirectTo.searchParams.set("next", next);
+
       const supabase = createSupabaseClient();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: redirectTo.toString(),
           queryParams: {
             access_type: "offline",
             prompt: "consent",
@@ -62,5 +74,13 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

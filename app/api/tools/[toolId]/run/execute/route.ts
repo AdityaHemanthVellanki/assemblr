@@ -161,30 +161,20 @@ export async function POST(
             });
             const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
 
-            if (decision.kind === "render") {
-              if (!spec.views || spec.views.length === 0) {
-                throw new Error("View spec required but missing");
-              }
-              const invalidView = spec.views.find((view: any) => !Array.isArray(view.fields) || view.fields.length === 0);
-              if (invalidView) {
-                throw new Error("View spec required but invalid fields");
-              }
-            }
-
             const snapshotRecords = buildSnapshotRecords({
               spec,
               outputs: validation.outputs,
               previous: null,
             });
-            const integrationData = snapshotRecords.integrations;
-            if (decision.kind === "render" && Object.keys(integrationData).length === 0) {
-              throw new Error("Integration data empty — abort finalize");
-            }
+            const integrationData = snapshotRecords.integrations ?? {};
+            const successfulOutputs = validation.outputs.filter((entry) => entry.output !== null && entry.output !== undefined);
+            const dataReady = successfulOutputs.length > 0 && Object.keys(integrationData).length > 0;
+            const viewReady = successfulOutputs.length > 0;
 
             const finalizedAt = new Date().toISOString();
             const snapshot = snapshotRecords;
             const viewSpec: ViewSpecPayload = {
-              views: decision.kind === "render" ? spec.views : [],
+              views: decision.kind === "render" && Array.isArray(spec.views) ? spec.views : [],
               goal_plan: spec.goal_plan,
               intent_contract: spec.intent_contract,
               semantic_plan: spec.semantic_plan,
@@ -203,15 +193,14 @@ export async function POST(
               schema: "public",
               client: "server",
             });
-            const expectedDataReady = goalValidation.level === "satisfied";
             let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
               p_tool_id: toolId,
               p_org_id: ctx.orgId,
               p_integration_data: integrationData,
               p_snapshot: snapshot,
               p_view_spec: viewSpec,
-              p_data_ready: expectedDataReady,
-              p_view_ready: true,
+              p_data_ready: dataReady,
+              p_view_ready: viewReady,
               p_finalized_at: finalizedAt,
             });
 
@@ -224,8 +213,8 @@ export async function POST(
                   integration_data: integrationData ?? {},
                   snapshot,
                   view_spec: viewSpec,
-                  data_ready: expectedDataReady,
-                  view_ready: true,
+                  data_ready: dataReady,
+                  view_ready: viewReady,
                   finalized_at: finalizedAt,
                 });
               if (upsertError) {
@@ -235,10 +224,10 @@ export async function POST(
                   .from("projects")
                   .update({
                     data_snapshot: integrationData ?? {},
-                    data_ready: expectedDataReady,
+                    data_ready: dataReady,
                     view_spec: viewSpec,
-                    view_ready: true,
-                    status: expectedDataReady ? "READY" : "FAILED",
+                    view_ready: viewReady,
+                    status: dataReady ? "READY" : "FAILED",
                     finalized_at: finalizedAt,
                     lifecycle_done: true,
                   })
@@ -278,11 +267,11 @@ export async function POST(
             if (renderStateError || !renderState) {
               throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
             }
-            if (renderState.view_ready !== true) {
-              throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready NOT TRUE IN tool_render_state");
+            if (renderState.view_ready !== viewReady) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready MISMATCH");
             }
-            if (renderState.data_ready !== expectedDataReady) {
-              throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready DOES NOT MATCH GOAL VALIDATION");
+            if (renderState.data_ready !== dataReady) {
+              throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready MISMATCH");
             }
 
             console.log("[FINALIZE] Integrations completed AND state persisted", renderState);

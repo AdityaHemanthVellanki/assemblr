@@ -2,12 +2,14 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
+import { processToolChat, resolveIntegrationRequirements, resumeToolExecution } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/permissions";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
+import { computePromptHash, createExecution, findExecutionByPromptHash, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -110,14 +112,14 @@ export async function sendChatMessage(
     selectedIntegrationIds,
     requiredIntegrationIds: requiredIntegrations,
   });
-  await supabase.from("chat_messages").insert({
-    org_id: orgId,
-    tool_id: effectiveToolId,
-    role: "user",
-    content: message,
-    metadata: null,
-  });
   if (integrationSelection.mismatchMessage) {
+    await supabase.from("chat_messages").insert({
+      org_id: orgId,
+      tool_id: effectiveToolId,
+      role: "user",
+      content: message,
+      metadata: null,
+    });
     await supabase.from("chat_messages").insert({
       org_id: orgId,
       tool_id: effectiveToolId,
@@ -131,44 +133,214 @@ export async function sendChatMessage(
       toolId: effectiveToolId,
     };
   }
-  const effectiveConnectedIntegrations =
-    integrationMode === "manual" && selectedIntegrationIds && selectedIntegrationIds.length > 0
-      ? connectedIntegrationIds.filter((id) => selectedIntegrationIds.includes(id))
-      : connectedIntegrationIds;
 
-  const response = await processToolChat({
-    orgId,
-    toolId: effectiveToolId,
-    userId: userId,
-    currentSpec: effectiveSpec as any,
-    messages: history,
-    userMessage: message,
-    connectedIntegrationIds: effectiveConnectedIntegrations,
-    mode: "create", 
-    integrationMode: integrationMode ?? "auto",
-    selectedIntegrationIds,
-    requiredIntegrationIds: requiredIntegrations,
-  });
-
-  if (response.spec && isToolSystemSpec(response.spec) && response.metadata?.active_version_id) {
-    await supabase
-      .from("projects")
-      .update({ spec: response.spec as any, active_version_id: response.metadata.active_version_id })
-      .eq("id", effectiveToolId);
+  let existingExecution = null;
+  try {
+    const promptHash = computePromptHash(effectiveToolId, message);
+    existingExecution = await findExecutionByPromptHash({ toolId: effectiveToolId, promptHash });
+  } catch (err: any) {
+    return { error: err?.message ?? "Execution persistence failed" };
+  }
+  if (existingExecution) {
+    if (existingExecution.status === "created") {
+      execution = existingExecution;
+    } else {
+      if (existingExecution.status === "awaiting_integration") {
+        return {
+          explanation: "Connect the required integrations to continue.",
+          message: { type: "text", content: "Connect the required integrations to continue." },
+          requiresIntegrations: true,
+          missingIntegrations: existingExecution.missingIntegrations,
+          requiredIntegrations: existingExecution.requiredIntegrations,
+          metadata: {
+            requiresIntegrations: true,
+            missingIntegrations: existingExecution.missingIntegrations,
+            requiredIntegrations: existingExecution.requiredIntegrations,
+            executionId: existingExecution.id,
+            status: existingExecution.status,
+          },
+          toolId: effectiveToolId,
+        };
+      }
+      const statusMessage =
+        existingExecution.status === "executing" || existingExecution.status === "compiling"
+          ? "Execution already running."
+          : "Request already completed.";
+      return {
+        explanation: statusMessage,
+        message: { type: "text", content: statusMessage },
+        metadata: { executionId: existingExecution.id, status: existingExecution.status },
+        toolId: effectiveToolId,
+      };
+    }
   }
 
-  if (response.message?.content) {
-    await supabase.from("chat_messages").insert({
+  const { data: msgRow, error: msgError } = await supabase
+    .from("chat_messages")
+    .insert({
       org_id: orgId,
       tool_id: effectiveToolId,
-      role: "assistant",
-      content: response.message.content,
-      metadata: response.metadata ?? null,
-    });
+      role: "user",
+      content: message,
+      metadata: null,
+    })
+    .select("id")
+    .single();
+  if (msgError || !msgRow) {
+    return { error: "Failed to save message" };
   }
 
+  let execution = null;
+  try {
+    execution = await createExecution({
+      orgId,
+      toolId: effectiveToolId,
+      chatId: effectiveToolId,
+      userId,
+      promptId: msgRow.id,
+      prompt: message,
+    });
+  } catch (err: any) {
+    return { error: err?.message ?? "Execution persistence failed" };
+  }
+
+  // 4. Start Tool Logic (Async)
+  const result = await processToolChat({
+    toolId: effectiveToolId,
+    userMessage: message,
+    messages: history,
+    currentSpec: effectiveSpec as any,
+    orgId,
+    userId,
+    executionId: execution.id,
+    connectedIntegrationIds,
+    mode: !toolId ? "create" : "execute",
+  });
+
   return {
-    ...response,
-    toolId: effectiveToolId
+    ...result,
+    toolId: effectiveToolId,
+    metadata: {
+      ...result.metadata,
+      executionId: execution.id,
+      status: "created",
+    },
   };
+}
+
+export async function resetExecution(executionId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { error: "Unauthorized" };
+  }
+  
+  const execution = await getExecutionById(executionId);
+  if (!execution) {
+    return { error: "Execution not found" };
+  }
+  
+  if (execution.userId !== user.id) {
+    return { error: "Unauthorized access to execution" };
+  }
+  
+  try {
+    await updateExecution(executionId, {
+      status: "created",
+      error: null,
+      lockToken: null,
+      lockAcquiredAt: null,
+      toolVersionId: null,
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { error: err?.message || "Failed to reset execution" };
+  }
+}
+
+export async function resumeChatExecution(toolId: string, resumeId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { error: "Unauthorized" };
+  }
+
+  const adminSupabase = createSupabaseAdminClient();
+
+  const { data: resumeRow, error: resumeError } = await (adminSupabase.from("oauth_resume_contexts") as any)
+    .select("*")
+    .eq("id", resumeId)
+    .single();
+
+  if (resumeError || !resumeRow) {
+    return { error: "Resume context not found" };
+  }
+  if (resumeRow.user_id !== user.id) {
+    return { error: "Unauthorized resume context" };
+  }
+  if (resumeRow.expires_at && new Date(resumeRow.expires_at) < new Date()) {
+    return { error: "Resume context expired" };
+  }
+  const executionId = resumeRow.execution_id as string | null;
+  if (!executionId) {
+    return { error: "Execution not found for resume" };
+  }
+
+  let execution = null;
+  try {
+    execution = await getExecutionById(executionId);
+  } catch (err: any) {
+    return { error: err?.message ?? "Execution persistence failed" };
+  }
+
+  if (!execution || execution.status !== "awaiting_integration") {
+    return { error: "Execution is not awaiting integration" };
+  }
+
+  const { data: projectRow, error: projectError } = await (adminSupabase.from("projects") as any)
+    .select("spec, active_version_id")
+    .eq("id", toolId)
+    .single();
+  if (projectError || !projectRow) {
+    return { error: "Tool not found" };
+  }
+
+  let spec = projectRow.spec;
+  let compiledTool = null;
+  const versionId = execution.toolVersionId ?? projectRow.active_version_id;
+  if (versionId) {
+    const { data: versionRow } = await (adminSupabase.from("tool_versions") as any)
+      .select("tool_spec, compiled_tool")
+      .eq("id", versionId)
+      .single();
+    if (versionRow?.tool_spec) spec = versionRow.tool_spec;
+    if (versionRow?.compiled_tool) compiledTool = versionRow.compiled_tool;
+  }
+  if (!compiledTool) {
+    compiledTool = buildCompiledToolArtifact(spec);
+  }
+
+  try {
+    const result = await resumeToolExecution({
+      executionId,
+      orgId: execution.orgId,
+      toolId,
+      userId: user.id,
+      prompt: resumeRow.original_prompt ?? "",
+      spec,
+      compiledTool,
+    });
+
+    await (adminSupabase.from("chat_messages") as any).insert({
+      org_id: execution.orgId,
+      tool_id: toolId,
+      role: "assistant",
+      content: result.message.content,
+      metadata: result.metadata,
+    });
+
+    return result;
+  } catch (err: any) {
+    return { error: err?.message || "Failed to resume execution" };
+  }
 }

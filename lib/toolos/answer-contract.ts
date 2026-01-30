@@ -15,19 +15,18 @@ export function validateFetchedData(outputs: OutputEntry[], contract: AnswerCont
   }
   const value = constraint.value.toLowerCase();
   const violations: Array<{ actionId: string; dropped: number }> = [];
-  const next = outputs.map((entry) => {
+  outputs.forEach((entry) => {
     if (entry.action.integrationId !== "google") {
-      return { ...entry, output: entry.output };
+      return;
     }
     const normalized = normalizeRows(entry.output);
-    const filtered = normalized.filter((row) => includesConstraint(row, value));
-    const dropped = normalized.length - filtered.length;
+    const kept = normalized.filter((row) => includesConstraint(row, value)).length;
+    const dropped = normalized.length - kept;
     if (dropped > 0) {
       violations.push({ actionId: entry.action.id, dropped });
     }
-    return { ...entry, output: filtered };
   });
-  return { outputs: next, violations };
+  return { outputs, violations };
 }
 
 function normalizeRows(output: any): Array<Record<string, any>> {

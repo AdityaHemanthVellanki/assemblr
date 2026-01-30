@@ -25,6 +25,7 @@ import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } 
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
+import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -38,6 +39,7 @@ export interface ToolChatRequest {
   integrationMode?: "auto" | "manual";
   selectedIntegrationIds?: string[];
   requiredIntegrationIds?: string[];
+  executionId?: string;
 }
 
 export interface ToolChatResponse {
@@ -115,10 +117,78 @@ async function createToolBuilderSystemPrompt(input: {
 export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
+  if (input.mode === "create") {
+    return runCompilerPipeline(input);
+  }
+  return runToolRuntimePipeline(input);
+}
+
+async function runToolRuntimePipeline(
+  input: ToolChatRequest,
+): Promise<ToolChatResponse> {
+  const supabase = createSupabaseAdminClient();
+  
+  // 1. Fetch Tool & Version
+  const { data: project } = await supabase
+    .from("projects")
+    .select("spec, active_version_id, compiled_at")
+    .eq("id", input.toolId)
+    .single();
+
+  if (!project) {
+    throw new Error(`Tool ${input.toolId} not found`);
+  }
+
+  // 2. Resolve Artifacts (Spec + Compiled Tool)
+  let spec = project.spec as ToolSystemSpec;
+  let compiledTool: CompiledToolArtifact | null = null;
+
+  if (project.active_version_id) {
+    const { data: version } = await supabase
+      .from("tool_versions")
+      .select("tool_spec, compiled_tool")
+      .eq("id", project.active_version_id)
+      .single();
+    
+    if (version) {
+      spec = version.tool_spec as ToolSystemSpec;
+      compiledTool = version.compiled_tool as CompiledToolArtifact;
+    }
+  }
+
+  // Fallback: Build artifact from spec if missing (Runtime compilation only, no LLM)
+  if (!compiledTool) {
+    // If spec is empty/invalid, we can't run.
+    if (!spec || Object.keys(spec).length === 0) {
+       throw new Error("Tool has no spec and no active version. Cannot execute.");
+    }
+    compiledTool = buildCompiledToolArtifact(spec);
+  }
+
+  // 3. Delegate to Runtime Execution Logic
+  // We use resumeToolExecution which handles the standard execution flow
+  return resumeToolExecution({
+    executionId: input.executionId!,
+    orgId: input.orgId,
+    toolId: input.toolId,
+    userId: input.userId,
+    prompt: input.userMessage,
+    spec,
+    compiledTool
+  });
+}
+
+async function runCompilerPipeline(
+  input: ToolChatRequest,
+): Promise<ToolChatResponse> {
   getServerEnv();
 
+  // Compiler pipeline requires create mode
   if (input.mode !== "create") {
-    throw new Error("Only create mode is supported in compiler pipeline");
+    throw new Error("Compiler pipeline only supports create mode");
+  }
+  if (!input.userMessage) {
+    throw new Error("Compiler invoked without prompt in create mode");
   }
 
   return await withToolBuildLock(input.toolId, async () => {
@@ -147,6 +217,7 @@ export async function processToolChat(
   // No, resolveBuildContext takes orgId and ensures it exists or throws/creates default.
   // We should trust buildContext.orgId as authoritative.
   const orgId = buildContext.orgId;
+  const existingExecution = input.executionId ? await getExecutionById(input.executionId) : null;
 
   // FIX: Guarantee tool row creation BEFORE compilation
   // This ensures atomic visibility - no "ghost" builds.
@@ -156,25 +227,38 @@ export async function processToolChat(
   // Check if tool exists
   const { data: existingTool } = await supabase
     .from("projects")
-    .select("id") // Removed status, is_activated
-    .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") // Dummy UUID if undefined
+    .select("id, compiled_at, status") 
+    .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") 
     .single();
+
+  if (existingTool?.compiled_at) {
+    return runToolRuntimePipeline(input);
+  }
+
+  // FIX 4: Tool State Guardrails
+  // Prevent double compilation if tool is already in a post-creation state
+  // Valid statuses: DRAFT, BUILDING, READY, FAILED
+  // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
+  if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
+      return runToolRuntimePipeline(input);
+  }
     
   let effectiveToolId = input.toolId;
   
-  if (!existingTool && !input.toolId) {
-     // Create new tool row
-     // NOTE: 'projects' table is the authoritative 'tools' table.
-     // We need to ensure all NOT NULL columns are populated.
-     // Based on schema: org_id, name, spec are NOT NULL.
-     // Also: status, owner_id are recommended.
+  if (!existingTool) {
+     // FIX 1, 2, 3: Auto-create tool in DB if missing (Source of Truth)
+     // This guarantees the compiler never runs on an ephemeral ID.
+     const newToolId = input.toolId || randomUUID();
+     
      const { data: newTool, error: createError } = await supabase
         .from("projects")
         .insert({
-            org_id: orgId, // Use resolved authoritative Org ID
+            id: newToolId,
+            org_id: orgId,
             name: "New Tool", 
-            status: "BUILDING",
-            spec: {}
+            status: "DRAFT", // Initial status
+            spec: {},
+            compiled_at: null
         })
         .select("id")
         .single();
@@ -183,14 +267,7 @@ export async function processToolChat(
          throw new Error(`Failed to create tool row: ${createError?.message}`);
      }
      effectiveToolId = newTool.id;
-  } else if (!existingTool && input.toolId) {
-      // Tool ID provided but not found?
-      // Could be race condition or invalid ID.
-      // We should probably fail or try to create with that ID if UUID is valid?
-      // Safest is to fail if user claims ID exists but DB says no.
-      throw new Error(`Tool ID ${input.toolId} not found`);
-  } else if (existingTool) {
-      // Ensure we have the effective ID if it was passed
+  } else {
       effectiveToolId = existingTool.id;
   }
   
@@ -283,32 +360,20 @@ export async function processToolChat(
     requiredIntegrationIds: input.requiredIntegrationIds,
   });
   if (integrationRequirement.mismatchMessage) {
+    if (input.executionId) {
+      await updateExecution(input.executionId, { status: "failed" });
+    }
     return {
       explanation: integrationRequirement.mismatchMessage,
       message: { type: "text", content: integrationRequirement.mismatchMessage },
       metadata: {
         blocked: true,
         integration_mode: input.integrationMode ?? "auto",
+        executionId: input.executionId,
       },
     };
   }
-  const missingIntegrations = integrationRequirement.requiredIntegrations.filter(
-    (id) => !input.connectedIntegrationIds.includes(id),
-  );
-  if (missingIntegrations.length > 0) {
-    return {
-      explanation: "Connect the required integrations to continue.",
-      message: { type: "text", content: "Connect the required integrations to continue." },
-      requiresIntegrations: true,
-      missingIntegrations,
-      requiredIntegrations: integrationRequirement.requiredIntegrations,
-      metadata: {
-        requiresIntegrations: true,
-        missingIntegrations,
-        requiredIntegrations: integrationRequirement.requiredIntegrations,
-      },
-    };
-  }
+  const requiredIntegrations = integrationRequirement.requiredIntegrations;
 
   const stepsById = new Map(steps.map((s) => [s.id, s]));
   let spec: ToolSystemSpec;
@@ -331,6 +396,17 @@ export async function processToolChat(
     // NOTE: compiledTool must be declared exactly once.
     // Do not redeclare inside try/catch or branches.
     let compiledTool: CompiledToolArtifact | null = null;
+    if (input.executionId) {
+      try {
+        await acquireExecutionLock(input.executionId);
+      } catch (err: any) {
+        return {
+          explanation: "Execution already running.",
+          message: { type: "text", content: "Execution already running." },
+          metadata: { executionId: input.executionId, status: "executing" },
+        };
+      }
+    }
     const stageToStep: Record<string, string> = {
       "understand-purpose": "intent",
       "extract-entities": "entities",
@@ -347,6 +423,7 @@ export async function processToolChat(
         orgId: buildContext.orgId, // Use authoritative orgId
         toolId: input.toolId,
         connectedIntegrationIds: input.connectedIntegrationIds,
+        executionId: input.executionId,
         onUsage: consumeTokens,
         onProgress: (event) => {
           const stepId = stageToStep[event.stage];
@@ -404,6 +481,9 @@ export async function processToolChat(
       toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
     }
     compiledTool = buildCompiledToolArtifact(spec);
+    if (input.executionId) {
+      await updateExecution(input.executionId, { status: "compiled" });
+    }
     markStep(steps, "compile", "success", "Runtime compiled");
     markStep(steps, "views", "running", "Preparing runtime views");
 
@@ -438,13 +518,13 @@ export async function processToolChat(
         `Missing integrations: ${missingRequired.join(", ")}.`,
       );
     }
-    const missingIntegrations = spec.integrations
+    const missingIntegrationIds = spec.integrations
       .map((i) => i.id)
       .filter((id) => !connectedIntegrationIds.includes(id));
-    if (missingIntegrations.length > 0) {
+    if (missingIntegrationIds.length > 0) {
       appendStep(
         stepsById.get("readiness"),
-        `Integrations not connected: ${missingIntegrations.join(", ")}.`,
+        `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
       );
     }
 
@@ -496,51 +576,66 @@ export async function processToolChat(
     
     if (shouldPersistVersion) {
       try {
-        console.log(`[ToolPersistence] Persisting version for ${toolId}...`);
-        
-        const compiled = compiledTool!;
-
-        const { data: version, error: versionError } = await (supabase.from("tool_versions") as any)
-          .insert({
-            tool_id: toolId,
-            org_id: orgId,
-            status: "active",
-            name: normalizedSpec.name,
-            purpose: normalizedSpec.purpose,
-            prompt_used: input.userMessage,
-            tool_spec: normalizedSpec,
-            compiled_tool: compiled,
-            intent_schema: {},
-            diff: null,
-            build_hash: createHash('md5').update(JSON.stringify(normalizedSpec)).digest('hex')
-          })
-          .select("id")
-          .single();
-          
-        if (versionError) {
-          throw new Error(`Version persistence failed: ${versionError.message} (${versionError.code})`);
+        if (!existingExecution?.toolVersionId) {
+          const compiled = compiledTool!;
+          const version = await createToolVersion({
+            orgId,
+            toolId,
+            userId,
+            spec: normalizedSpec,
+            compiledTool: compiled,
+            baseSpec,
+          });
+          await promoteToolVersion({ toolId, versionId: version.id });
+          if (input.executionId) {
+            await updateExecution(input.executionId, { toolVersionId: version.id });
+          }
         }
-        
         const { error: projectError } = await (supabase.from("projects") as any)
           .update({
-            active_version_id: version.id,
             spec: normalizedSpec,
             name: normalizedSpec.name,
             status: "BUILDING",
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            compiled_at: new Date().toISOString(),
           })
           .eq("id", toolId);
-          
         if (projectError) {
-           throw new Error(`Project update failed: ${projectError.message}`);
+          throw new Error(`Project update failed: ${projectError.message}`);
         }
-        
-        console.log(`[ToolPersistence] Success. Version: ${version.id}`);
       } catch (err: any) {
         console.error("[ToolPersistence] CRITICAL FAILURE:", err);
         throw err;
       }
     }
+
+    const missingIntegrations = requiredIntegrations.filter(
+      (id) => !input.connectedIntegrationIds.includes(id),
+    );
+    if (missingIntegrations.length > 0) {
+      if (input.executionId) {
+        await updateExecution(input.executionId, {
+          status: "awaiting_integration",
+          requiredIntegrations,
+          missingIntegrations,
+        });
+      }
+      return {
+        explanation: "Connect the required integrations to continue.",
+        message: { type: "text", content: "Connect the required integrations to continue." },
+        requiresIntegrations: true,
+        missingIntegrations,
+        requiredIntegrations,
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations,
+          requiredIntegrations,
+          executionId: input.executionId,
+        },
+      };
+    }
+
+
 
     let outputs: Array<{ action: any; output: any; error?: any }> = [];
     let goalEvidence: GoalEvidence | null = null;
@@ -682,16 +777,12 @@ export async function processToolChat(
     }
 
       const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
-      if (!spec.answer_contract && !intentPlanError) {
-        throw new Error("Answer contract required but missing");
-      }
-
       const validation = validateFetchedData(
         successfulOutputs.map((entry) => ({ action: entry.action, output: entry.output })),
         spec.answer_contract
       );
       if (validation.violations.length > 0) {
-        console.warn("[AnswerContract] Dropped rows", validation.violations);
+        console.warn("[AnswerContract] Violations", validation.violations);
       }
       if (!goalEvidence) {
         const derivedOutput = validation.outputs.find((entry) => entry.action.id === "github.failure.incidents")?.output;
@@ -714,30 +805,19 @@ export async function processToolChat(
       const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
       console.log("[GoalValidation]", { goalValidation, decision });
 
-      if (decision.kind === "render") {
-        if (!spec.views || spec.views.length === 0) {
-          throw new Error("View spec required but missing");
-        }
-        const invalidView = spec.views.find((view) => !Array.isArray(view.fields) || view.fields.length === 0);
-        if (invalidView) {
-          throw new Error("View spec required but invalid fields");
-        }
-        if (successfulOutputs.length === 0) {
-          throw new Error("Integration data empty — abort finalize");
-        }
-      }
       const snapshotRecords = buildSnapshotRecords({
         spec,
         outputs: validation.outputs,
         previous: null,
       });
 
-
-      const integrationResults = snapshotRecords.integrations;
+      const integrationResults = snapshotRecords.integrations ?? {};
+      const dataReady = successfulOutputs.length > 0 && Object.keys(integrationResults).length > 0;
+      const viewReady = successfulOutputs.length > 0;
       const finalizedAt = new Date().toISOString();
       const snapshot = snapshotRecords;
       const viewSpec: ViewSpecPayload = {
-        views: decision.kind === "render" ? spec.views : [],
+        views: decision.kind === "render" && Array.isArray(spec.views) ? spec.views : [],
         goal_plan: spec.goal_plan,
         intent_contract: spec.intent_contract,
         semantic_plan: spec.semantic_plan,
@@ -757,15 +837,14 @@ export async function processToolChat(
         schema: "public",
         client: "server",
       });
-      const expectedDataReady = goalValidation.level === "satisfied";
       let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
         p_tool_id: toolId,
         p_org_id: buildContext.orgId,
         p_integration_data: integrationResults,
         p_snapshot: snapshot,
         p_view_spec: viewSpec,
-        p_data_ready: expectedDataReady,
-        p_view_ready: true,
+        p_data_ready: dataReady,
+        p_view_ready: viewReady,
         p_finalized_at: finalizedAt,
       });
 
@@ -778,8 +857,8 @@ export async function processToolChat(
             integration_data: integrationResults ?? {},
             snapshot,
             view_spec: viewSpec,
-            data_ready: expectedDataReady,
-            view_ready: true,
+            data_ready: dataReady,
+            view_ready: viewReady,
             finalized_at: finalizedAt,
           });
         if (upsertError) {
@@ -789,10 +868,10 @@ export async function processToolChat(
             .from("projects")
             .update({
               data_snapshot: integrationResults ?? {},
-              data_ready: expectedDataReady,
+              data_ready: dataReady,
               view_spec: viewSpec,
-              view_ready: true,
-              status: expectedDataReady ? "READY" : "FAILED",
+              view_ready: viewReady,
+              status: dataReady ? "READY" : "FAILED",
               finalized_at: finalizedAt,
               lifecycle_done: true,
             })
@@ -822,11 +901,11 @@ export async function processToolChat(
       if (renderStateError || !renderState) {
         throw new Error("FINALIZE CLAIMED SUCCESS BUT tool_render_state ROW DOES NOT EXIST");
       }
-      if (renderState.view_ready !== true) {
-        throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready NOT TRUE IN tool_render_state");
+      if (renderState.view_ready !== viewReady) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT view_ready MISMATCH");
       }
-      if (renderState.data_ready !== expectedDataReady) {
-        throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready DOES NOT MATCH GOAL VALIDATION");
+      if (renderState.data_ready !== dataReady) {
+        throw new Error("FINALIZE CLAIMED SUCCESS BUT data_ready MISMATCH");
       }
 
       const { data: updatedTool, error: verifyError } = await (statusSupabase as any)
@@ -838,7 +917,7 @@ export async function processToolChat(
       if (verifyError) {
         throw new Error(`Finalize DB update failed: ${verifyError.message}`);
       }
-      if (!updatedTool || updatedTool.view_ready !== true || updatedTool.data_ready !== expectedDataReady) {
+      if (!updatedTool || updatedTool.view_ready !== viewReady || updatedTool.data_ready !== dataReady) {
         throw new Error("Finalize flags did NOT persist");
       }
 
@@ -879,7 +958,10 @@ export async function processToolChat(
         }
       }
 
-    const assistantSummary = buildAssistantSummary(spec);
+      if (input.executionId) {
+        await completeExecution(input.executionId, "completed");
+      }
+      const assistantSummary = buildAssistantSummary(spec);
     return {
       explanation: assistantSummary,
       message: { type: "text", content: assistantSummary },
@@ -893,12 +975,17 @@ export async function processToolChat(
         build_logs: machine.logs,
         assumptions,
         completenessScore,
+          executionId: input.executionId,
       },
     };
   } catch (err) {
     // Atomic Failure Handling: Mark tool as error
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
+    if (input.executionId) {
+      await updateExecution(input.executionId, { status: "failed", error: message });
+      await completeExecution(input.executionId, "failed");
+    }
     
     // Check for fatal infrastructure errors (retry exhaustion, timeouts, network failures)
     const isInfraError = 
@@ -957,6 +1044,277 @@ export async function processToolChat(
     },
   };
   });
+}
+
+export async function resumeToolExecution(params: {
+  executionId: string;
+  orgId: string;
+  toolId: string;
+  userId?: string | null;
+  prompt: string;
+  spec: ToolSystemSpec;
+  compiledTool: CompiledToolArtifact;
+}): Promise<ToolChatResponse> {
+  const statusSupabase = createSupabaseAdminClient();
+  const execution = await getExecutionById(params.executionId);
+  if (!execution) throw new Error("Execution not found");
+  
+  if (["compiling", "executing"].includes(execution.status)) {
+     return {
+       explanation: "Execution already running.",
+       message: { type: "text", content: "Execution already running." },
+       metadata: { executionId: params.executionId, status: "executing" },
+     };
+  }
+  
+  if (execution.status === "completed") {
+      return {
+        explanation: "Execution completed.",
+        message: { type: "text", content: "Execution completed." },
+        metadata: { executionId: params.executionId, status: "completed" },
+      };
+  }
+
+  if (["created", "awaiting_integration"].includes(execution.status)) {
+       await updateExecution(params.executionId, { status: "executing" });
+  }
+
+  let outputs: Array<{ action: any; output: any; error?: any }> = [];
+  let goalEvidence: GoalEvidence | null = null;
+  const integrationStatuses: Record<string, IntegrationStatus> = {};
+
+  const readActions = (params.spec.actions || []).filter((action) => action.type === "READ");
+  const queryPlanByAction = new Map((params.spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
+
+  if (params.spec.initialFetch?.actionId) {
+    const initial = params.spec.actions.find(a => a.id === params.spec.initialFetch?.actionId);
+    if (initial && !readActions.find(a => a.id === initial.id)) {
+      readActions.unshift(initial);
+    }
+  }
+
+  const slackRequired = isSlackRequired(params.prompt, params.spec.intent_contract);
+  if (slackRequired) {
+    try {
+      const status = await getIntegrationTokenStatus(params.orgId, "slack");
+      if (status.status !== "valid") {
+        integrationStatuses.slack = {
+          integration: "slack",
+          status: "reauth_required",
+          reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+          required: true,
+          userActionRequired: true,
+        };
+        await updateIntegrationConnectionStatus(params.orgId, "slack", "reauth_required");
+      }
+    } catch (err) {
+      integrationStatuses.slack = {
+        integration: "slack",
+        status: "reauth_required",
+        reason: err instanceof Error ? err.message : "missing_credentials",
+        required: true,
+        userActionRequired: true,
+      };
+      await updateIntegrationConnectionStatus(params.orgId, "slack", "reauth_required");
+    }
+  }
+
+  if (integrationStatuses.slack?.status === "reauth_required" && integrationStatuses.slack?.required) {
+    outputs = [];
+    goalEvidence = {
+      failed_commits: 0,
+      failure_incidents: 0,
+      related_emails: 0,
+      total_emails: 0,
+    };
+  } else if (shouldUseSemanticPlannerLoop(params.spec, params.prompt)) {
+    const planResult = await runSemanticExecutorLoop({
+      spec: params.spec,
+      compiledTool: params.compiledTool,
+      orgId: params.orgId,
+      toolId: params.toolId,
+      userId: params.userId,
+      prompt: params.prompt,
+    });
+    outputs = planResult.outputs;
+    goalEvidence = planResult.evidence;
+  } else if (readActions.length > 0) {
+    for (const action of readActions) {
+      try {
+        const plan = queryPlanByAction.get(action.id);
+        const input =
+          plan && Object.keys(plan.query ?? {}).length > 0
+            ? plan.query
+            : { limit: params.spec.initialFetch?.limit ?? 10 };
+        if (action.integrationId === "slack" && !slackRequired) {
+          if (!integrationStatuses.slack) {
+            try {
+              const status = await getIntegrationTokenStatus(params.orgId, "slack");
+              if (status.status !== "valid") {
+                integrationStatuses.slack = {
+                  integration: "slack",
+                  status: "reauth_required",
+                  reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+                  required: false,
+                  userActionRequired: true,
+                };
+              } else {
+                integrationStatuses.slack = { integration: "slack", status: "ok", required: false };
+              }
+            } catch (err) {
+              integrationStatuses.slack = {
+                integration: "slack",
+                status: "reauth_required",
+                reason: err instanceof Error ? err.message : "missing_credentials",
+                required: false,
+                userActionRequired: true,
+              };
+            }
+          }
+          if (integrationStatuses.slack?.status === "reauth_required") {
+            outputs.push({ action, output: null, error: { skipped: true, reason: "slack_reauth_required" } });
+            continue;
+          }
+        }
+        const result = await executeToolAction({
+          orgId: params.orgId,
+          toolId: params.toolId,
+          compiledTool: params.compiledTool,
+          actionId: action.id,
+          input,
+          userId: params.userId,
+          triggerId: "resume_run",
+          recordRun: true
+        });
+        if (result.events?.length) {
+          for (const event of result.events) {
+            if (event.type === "integration_warning" && event.payload?.integration === "slack") {
+              integrationStatuses.slack = {
+                integration: "slack",
+                status: "reauth_required",
+                reason: event.payload?.reason ?? "token_expired_no_refresh",
+                required: slackRequired,
+                userActionRequired: true,
+              };
+            }
+          }
+        }
+        outputs.push({ action, output: result.output });
+      } catch (err) {
+        outputs.push({ action, output: null, error: err });
+      }
+    }
+  }
+
+  const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
+  const validation = validateFetchedData(
+    successfulOutputs.map((entry) => ({ action: entry.action, output: entry.output })),
+    params.spec.answer_contract
+  );
+  if (validation.violations.length > 0) {
+    console.warn("[AnswerContract] Violations", validation.violations);
+  }
+  if (!goalEvidence) {
+    const derivedOutput = validation.outputs.find((entry) => entry.action.id === "github.failure.incidents")?.output;
+    if (Array.isArray(derivedOutput)) {
+      goalEvidence = buildEvidenceFromDerivedIncidents(derivedOutput);
+    }
+  }
+  const relevance = evaluateRelevanceGate({
+    intentContract: params.spec.intent_contract,
+    outputs: validation.outputs.map((entry) => ({ output: entry.output })),
+  });
+  const goalValidation = evaluateGoalSatisfaction({
+    prompt: params.prompt,
+    goalPlan: params.spec.goal_plan,
+    intentContract: params.spec.intent_contract,
+    evidence: goalEvidence,
+    relevance,
+    integrationStatuses,
+  });
+  const decision = decideRendering({ prompt: params.prompt, result: goalValidation });
+
+  const snapshotRecords = buildSnapshotRecords({
+    spec: params.spec,
+    outputs: validation.outputs,
+    previous: null,
+  });
+
+  const integrationResults = snapshotRecords.integrations ?? {};
+  const dataReady = successfulOutputs.length > 0 && Object.keys(integrationResults).length > 0;
+  const viewReady = successfulOutputs.length > 0;
+  const finalizedAt = new Date().toISOString();
+  const snapshot = snapshotRecords;
+  const viewSpec: ViewSpecPayload = {
+    views: decision.kind === "render" && Array.isArray(params.spec.views) ? params.spec.views : [],
+    goal_plan: params.spec.goal_plan,
+    intent_contract: params.spec.intent_contract,
+    semantic_plan: params.spec.semantic_plan,
+    goal_validation: goalValidation,
+    decision,
+    integration_statuses: Object.keys(integrationStatuses).length > 0 ? integrationStatuses : undefined,
+    answer_contract: params.spec.answer_contract,
+    query_plans: params.spec.query_plans,
+    tool_graph: params.spec.tool_graph,
+    assumptions: Array.isArray(params.spec.clarifications) ? params.spec.clarifications : undefined,
+  };
+
+  let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+    p_tool_id: params.toolId,
+    p_org_id: params.orgId,
+    p_integration_data: integrationResults,
+    p_snapshot: snapshot,
+    p_view_spec: viewSpec,
+    p_data_ready: dataReady,
+    p_view_ready: viewReady,
+    p_finalized_at: finalizedAt,
+  });
+
+  if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+    const { error: upsertError } = await (statusSupabase as any)
+      .from("tool_render_state")
+      .upsert({
+        tool_id: params.toolId,
+        org_id: params.orgId,
+        integration_data: integrationResults ?? {},
+        snapshot,
+        view_spec: viewSpec,
+        data_ready: dataReady,
+        view_ready: viewReady,
+        finalized_at: finalizedAt,
+      });
+    if (upsertError) {
+      finalizeError = upsertError;
+    } else {
+      const { error: projectUpdateError } = await (statusSupabase as any)
+        .from("projects")
+        .update({
+          data_snapshot: integrationResults ?? {},
+          data_ready: dataReady,
+          view_spec: viewSpec,
+          view_ready: viewReady,
+          status: dataReady ? "READY" : "FAILED",
+          finalized_at: finalizedAt,
+          lifecycle_done: true,
+        })
+        .eq("id", params.toolId);
+      finalizeError = projectUpdateError ?? null;
+    }
+  }
+
+  if (finalizeError) {
+    await completeExecution(params.executionId, "failed");
+    throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
+  }
+
+  await completeExecution(params.executionId, "completed");
+  const assistantSummary = buildAssistantSummary(params.spec);
+  return {
+    explanation: assistantSummary,
+    message: { type: "text", content: assistantSummary },
+    spec: params.spec,
+    metadata: { executionId: params.executionId, data_ready: dataReady, view_ready: viewReady },
+  };
 }
 
 export async function applyClarificationAnswer(
@@ -1101,7 +1459,10 @@ export function resolveIntegrationRequirements(params: {
   return { requiredIntegrations: detected };
 }
 
-export function resolveAssumptions(prompt: string) {
+export function resolveAssumptions(prompt?: string) {
+  if (!prompt || typeof prompt !== "string") {
+    return { resolvedPrompt: "", assumptions: [], completenessScore: 0 };
+  }
   const normalized = prompt.toLowerCase();
   const assumptions: Array<{ field: string; reason: string; options?: string[] }> = [];
   const hasTimeRange =

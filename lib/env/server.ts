@@ -23,7 +23,7 @@ const serverEnvSchema = z
     SUPABASE_SECRET_KEY: z.string().min(1),
 
     NEXT_PUBLIC_SITE_URL: optionalUrl(),
-    APP_BASE_URL: z.string().url(),
+    APP_BASE_URL: z.string().url().default(process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"),
 
     // --------------------------------------------------------------------------
     // AI CONFIGURATION (MANDATORY)

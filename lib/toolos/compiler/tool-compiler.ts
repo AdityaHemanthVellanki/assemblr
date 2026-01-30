@@ -12,6 +12,7 @@ import { runFetchData } from "@/lib/toolos/compiler/stages/fetch-data";
 import { runBuildWorkflows } from "@/lib/toolos/compiler/stages/build-workflows";
 import { runDesignViews } from "@/lib/toolos/compiler/stages/design-views";
 import { runValidateSpec } from "@/lib/toolos/compiler/stages/validate-spec";
+import { getExecutionById } from "@/lib/toolos/executions";
 
 export type ToolCompilerStage =
   | "understand-purpose"
@@ -63,6 +64,7 @@ export type ToolCompilerInput = {
   orgId: string;
   toolId: string;
   connectedIntegrationIds?: string[];
+  executionId?: string;
   stageBudgets?: Partial<ToolCompilerStageBudgets>;
   onProgress?: (event: ToolCompilerProgressEvent) => void;
   onUsage?: (usage?: { total_tokens?: number }) => Promise<void> | void;
@@ -93,6 +95,15 @@ export class ToolCompiler {
     // HARD ASSERTIONS for Canonical Context
     if (!input.orgId) throw new Error("ToolCompiler: orgId is required (must be authoritative)");
     if (!input.toolId) throw new Error("ToolCompiler: toolId is required");
+    if (input.executionId) {
+      const execution = await getExecutionById(input.executionId);
+      if (!execution) {
+        throw new Error("Execution not found");
+      }
+      if (["compiling", "executing", "completed"].includes(execution.status)) {
+        throw new Error("Compiler already executed for this prompt");
+      }
+    }
     // input.userId is optional (can be system/anonymous), but if provided should be valid.
 
     const budgets = { ...DEFAULT_BUDGETS, ...(input.stageBudgets ?? {}) };

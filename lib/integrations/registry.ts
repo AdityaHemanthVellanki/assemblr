@@ -14,7 +14,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     id: "github",
     name: "GitHub",
     category: "Engineering",
-    logoUrl: "https://logo.clearbit.com/github.com",
+    logoUrl: "",
     description: "Sync repositories, issues, and PRs.",
     connectionMode: "hosted_oauth",
     auth: {
@@ -26,7 +26,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     id: "slack",
     name: "Slack",
     category: "Messaging",
-    logoUrl: "https://logo.clearbit.com/slack.com",
+    logoUrl: "",
     description: "Read messages and send notifications.",
     connectionMode: "hosted_oauth",
     auth: {
@@ -38,7 +38,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     id: "notion",
     name: "Notion",
     category: "Files",
-    logoUrl: "https://logo.clearbit.com/notion.so",
+    logoUrl: "",
     description: "Access pages and databases.",
     connectionMode: "hosted_oauth",
     auth: {
@@ -50,7 +50,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     id: "linear",
     name: "Linear",
     category: "Engineering",
-    logoUrl: "https://logo.clearbit.com/linear.app",
+    logoUrl: "",
     description: "Manage issues and projects.",
     connectionMode: "hosted_oauth",
     auth: {
@@ -62,7 +62,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     id: "google",
     name: "Google",
     category: "Productivity",
-    logoUrl: "https://logo.clearbit.com/google.com",
+    logoUrl: "",
     description: "Access Sheets, Docs, Gmail, and Meet.",
     connectionMode: "hosted_oauth",
     auth: {

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -150,6 +151,7 @@ export default function IntegrationsPage() {
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [isConnecting, setIsConnecting] = React.useState(false);
   const [origin, setOrigin] = React.useState("");
+  const router = useRouter();
 
   React.useEffect(() => {
     setOrigin(window.location.origin);
@@ -221,7 +223,7 @@ export default function IntegrationsPage() {
                 // No chat/tool context
             });
             
-            window.location.href = oauthUrl;
+            router.push(oauthUrl);
             return;
         } catch (e) {
             console.error("Connect failed", e);
@@ -298,7 +300,7 @@ export default function IntegrationsPage() {
             currentPath: window.location.pathname + window.location.search,
             integrationMode: "manual",
          });
-         window.location.href = oauthUrl;
+         router.push(oauthUrl);
          return; // Don't close modal or reload, we are leaving
       }
 

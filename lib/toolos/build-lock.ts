@@ -9,7 +9,7 @@ export async function withToolBuildLock<T>(toolId: string, fn: () => Promise<T>)
   const current = previous.then(() => next);
   toolBuildLocks.set(toolId, current);
   try {
-    await previous;
+    await previous.catch(() => {});
     return await fn();
   } finally {
     resolveNext();

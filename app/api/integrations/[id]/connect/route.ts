@@ -13,6 +13,13 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const env = getServerEnv();
+  
+  // Guardrail: Ensure APP_BASE_URL is valid for the environment
+  if (process.env.NODE_ENV === "production" && env.APP_BASE_URL.includes("localhost")) {
+    console.error(`[CRITICAL] APP_BASE_URL is set to localhost in production: ${env.APP_BASE_URL}`);
+    return NextResponse.json({ error: "Server misconfiguration: Invalid APP_BASE_URL" }, { status: 500 });
+  }
+
   const { id: providerId } = await params;
   
   const body = await req.json().catch(() => ({}));
@@ -98,7 +105,10 @@ export async function POST(
 
   // Redirect URI strategy
   // Use the same callback endpoint
-  const redirectBase = env.APP_BASE_URL;
+  const redirectBase = process.env.NEXT_PUBLIC_APP_URL;
+  if (!redirectBase) {
+    throw new Error("NEXT_PUBLIC_APP_URL is not defined");
+  }
   const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
 
   oauthParams.append("redirect_uri", redirectUri);

@@ -10,6 +10,19 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const env = getServerEnv();
+  
+  // Guardrail: Ensure APP_BASE_URL is valid for the environment
+  if (process.env.NODE_ENV === "production" && env.APP_BASE_URL.includes("localhost")) {
+    console.error(`[CRITICAL] APP_BASE_URL is set to localhost in production: ${env.APP_BASE_URL}`);
+    const url = new URL(req.url);
+    const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
+    const targetUrl = new URL(redirectPath, env.APP_BASE_URL); // This might still be localhost, but we have to try
+    targetUrl.searchParams.set("error", "Server misconfiguration: Invalid APP_BASE_URL");
+    return NextResponse.redirect(targetUrl);
+  }
+
+  console.log(`[OAuth Start] Using APP_BASE_URL: ${env.APP_BASE_URL}`);
+
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
   const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
