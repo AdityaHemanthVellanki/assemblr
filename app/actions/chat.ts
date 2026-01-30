@@ -2,7 +2,7 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat, resolveIntegrationRequirements, resumeToolExecution } from "@/lib/ai/tool-chat";
+import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline } from "@/lib/ai/tool-chat";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/permissions";
@@ -205,7 +205,7 @@ export async function sendChatMessage(
   }
 
   // 4. Start Tool Logic (Async)
-  const result = await processToolChat({
+  const input = {
     toolId: effectiveToolId,
     userMessage: message,
     messages: history,
@@ -214,16 +214,36 @@ export async function sendChatMessage(
     userId,
     executionId: execution.id,
     connectedIntegrationIds,
-    mode: !toolId ? "create" : "execute",
-  });
+    mode: !toolId ? "create" as const : "execute" as const,
+  };
+
+  let result;
+  // FIX: Mode-based Routing via Execution Status
+  // Instead of relying blindly on "mode", we check the definitive execution status.
+  switch (execution.status) {
+    case "created":
+      // Only "created" executions go to compiler
+      result = await runCompilerPipeline(input);
+      break;
+    case "compiled":
+    case "executing":
+    case "completed":
+    case "failed":
+    case "awaiting_integration":
+      // "compiled", "executing", or "completed" go to runtime
+      result = await runToolRuntimePipeline(input);
+      break;
+    default:
+      throw new Error(`Invalid execution status: ${execution.status}`);
+  }
 
   return {
     ...result,
     toolId: effectiveToolId,
     metadata: {
-      ...result.metadata,
       executionId: execution.id,
-      status: "created",
+      status: execution.status,
+      ...result.metadata,
     },
   };
 }

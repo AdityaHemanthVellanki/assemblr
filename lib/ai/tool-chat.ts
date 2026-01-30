@@ -35,7 +35,7 @@ export interface ToolChatRequest {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   userMessage: string;
   connectedIntegrationIds: string[];
-  mode: "create" | "modify" | "chat";
+  mode: "create" | "modify" | "chat" | "runtime";
   integrationMode?: "auto" | "manual";
   selectedIntegrationIds?: string[];
   requiredIntegrationIds?: string[];
@@ -114,16 +114,23 @@ async function createToolBuilderSystemPrompt(input: {
   return INTENT_SYSTEM_PROMPT;
 }
 
+export async function runToolRuntimePipeline(input: ToolChatRequest) {
+  return await processToolChat({
+    ...input,
+    mode: "runtime",
+  });
+}
+
 export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   if (input.mode === "create") {
     return runCompilerPipeline(input);
   }
-  return runToolRuntimePipeline(input);
+  return _executeToolRuntime(input);
 }
 
-async function runToolRuntimePipeline(
+async function _executeToolRuntime(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   const supabase = createSupabaseAdminClient();
@@ -178,10 +185,21 @@ async function runToolRuntimePipeline(
   });
 }
 
-async function runCompilerPipeline(
+export async function runCompilerPipeline(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   getServerEnv();
+
+  // FIX: Execution Status Gate
+  // If execution exists and is not "created", we must NOT run the compiler.
+  // We route to runtime instead.
+  if (input.executionId) {
+    const execution = await getExecutionById(input.executionId);
+    if (execution && execution.status !== "created") {
+      console.log(`[CompilerGuard] Redirecting execution ${input.executionId} (status: ${execution.status}) to runtime`);
+      return runToolRuntimePipeline(input);
+    }
+  }
 
   // Compiler pipeline requires create mode
   if (input.mode !== "create") {
@@ -449,6 +467,11 @@ async function runCompilerPipeline(
           markStep(steps, stepId, "error", event.message);
         },
       });
+
+    // Mark as compiled
+    if (input.executionId) {
+       await updateExecution(input.executionId, { status: "compiled" });
+    }
 
     let intentPlanError: Error | null = null;
     spec = canonicalizeToolSpec(compilerResult.spec);
@@ -2943,3 +2966,4 @@ function buildFallbackToolSpec(
     },
   };
 }
+console.log("tool-chat exports loaded");

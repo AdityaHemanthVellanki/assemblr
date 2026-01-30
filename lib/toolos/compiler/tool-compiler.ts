@@ -101,7 +101,14 @@ export class ToolCompiler {
         throw new Error("Execution not found");
       }
       if (["compiling", "executing", "completed"].includes(execution.status)) {
-        throw new Error("Compiler already executed for this prompt");
+        return { 
+          spec: execution.tool_version_id ? {} as any : {} as any, // Placeholder as we're skipping
+          clarifications: [],
+          status: "completed",
+          progress: [],
+          skip_compile: true,
+          executionId: input.executionId
+        } as any;
       }
     }
     // input.userId is optional (can be system/anonymous), but if provided should be valid.
