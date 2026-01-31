@@ -20,10 +20,17 @@ export class VersioningService {
     // Use Admin Client for versioning to ensure persistence reliability
     const supabase = createSupabaseAdminClient();
     
+    const memorySchema = {
+      observations: [],
+      aggregates: {},
+      decay: { halfLifeDays: 14 },
+    };
     let baseSpec: ToolSpec = {
       id: toolId,
       name: "New Tool",
+      description: "New Tool",
       purpose: "New Tool",
+      version: TOOL_SPEC_VERSION,
       spec_version: TOOL_SPEC_VERSION,
       created_at: new Date().toISOString(),
       source_prompt: "New Tool",
@@ -39,7 +46,15 @@ export class VersioningService {
       query_plans: [],
       permissions: { roles: [], grants: [] },
       integrations: [],
-      memory: { tool: { namespace: toolId, retentionDays: 30, schema: {} }, user: { namespace: toolId, retentionDays: 30, schema: {} } },
+      memory: {
+        tool: { namespace: toolId, retentionDays: 30, schema: memorySchema },
+        user: { namespace: toolId, retentionDays: 30, schema: memorySchema },
+      },
+      memory_model: {
+        tool: { namespace: toolId, retentionDays: 30, schema: memorySchema },
+        user: { namespace: toolId, retentionDays: 30, schema: memorySchema },
+      },
+      confidence_level: "medium",
       automations: {
         enabled: true,
         capabilities: { canRunWithoutUI: true, supportedTriggers: [], maxFrequency: 1440, safetyConstraints: [] },

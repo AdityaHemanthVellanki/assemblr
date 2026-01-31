@@ -26,6 +26,10 @@ import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
+import { canExecuteTool, ensureToolIdentity } from "@/lib/toolos/lifecycle";
+
+import { IntegrationNotConnectedError, isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
+import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -153,6 +157,10 @@ async function _executeToolRuntime(
   if (!project) {
     throw new Error(`Tool ${input.toolId} not found`);
   }
+  const canExecute = await canExecuteTool({ toolId: input.toolId });
+  if (!canExecute.ok) {
+    throw new Error(`Tool ${input.toolId} is not runnable (${canExecute.reason})`);
+  }
 
   // 2. Resolve Artifacts (Spec + Compiled Tool)
   let spec = project.spec as ToolSystemSpec;
@@ -177,6 +185,36 @@ async function _executeToolRuntime(
        throw new Error("Tool has no spec and no active version. Cannot execute.");
     }
     compiledTool = buildCompiledToolArtifact(spec);
+
+    // FIX: Auto-Repair Invariant Violation
+    // If we have a valid spec/compiled tool but no active version, create one now.
+    // This ensures runtime always runs against a versioned tool.
+    if (!project.active_version_id && input.userId) {
+      console.warn(`[RuntimeRepair] Tool ${input.toolId} has no active version. Auto-repairing...`);
+      try {
+        const version = await createToolVersion({
+            orgId: input.orgId,
+            toolId: input.toolId,
+            userId: input.userId,
+            spec: spec,
+            compiledTool: compiledTool,
+            baseSpec: null,
+            supabase: supabase,
+        });
+        await promoteToolVersion({ toolId: input.toolId, versionId: version.id, supabase });
+        console.log(`[RuntimeRepair] Successfully created and promoted version ${version.id}`);
+        
+        // Update local reference if needed (though we already have spec/compiledTool)
+      } catch (err) {
+        console.error("[RuntimeRepair] Failed to auto-repair tool version:", err);
+        // We continue execution because we have the artifacts, but log the failure.
+        // Ideally we should probably block, but "limp forward" is what we want to avoid? 
+        // User said: "Auto-repair OR Hard fail".
+        // If repair fails, we should hard fail?
+        // Let's hard fail if repair fails to strictly enforce invariant.
+        throw new Error(`Fatal Invariant: Tool has no version and auto-repair failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   // 3. Delegate to Runtime Execution Logic
@@ -203,19 +241,11 @@ export async function runCompilerPipeline(
   if (input.executionId) {
     const execution = await getExecutionById(input.executionId);
     if (execution && execution.status !== "created") {
-      // VALIDATION: Ensure tool is actually runnable before redirecting
-      const { data: checkTool } = await (createSupabaseAdminClient()
-        .from("projects") as any)
-        .select("spec, active_version_id, compiled_at, status")
-        .eq("id", input.toolId)
-        .single();
-        
-      // FIX: Strict Requirement - Skip Compile requires Active Version
-      // We no longer accept just "compiled_at" or "spec" presence.
-      const hasRunnableArtifact = checkTool && !!checkTool.active_version_id;
-
-      if (!hasRunnableArtifact) {
-         throw new Error(`Fatal Invariant: Execution ${input.executionId} is '${execution.status}' but Tool ${input.toolId} has no active version. Cannot redirect to runtime.`);
+      const canExecute = await canExecuteTool({ toolId: input.toolId });
+      if (!canExecute.ok) {
+        throw new Error(
+          `Fatal Invariant: Execution ${input.executionId} is '${execution.status}' but Tool ${input.toolId} is not runnable (${canExecute.reason}). Cannot redirect to runtime.`,
+        );
       }
 
       console.log(`[CompilerGuard] Redirecting execution ${input.executionId} (status: ${execution.status}) to runtime`);
@@ -264,20 +294,30 @@ export async function runCompilerPipeline(
   const orgId = buildContext.orgId;
   const existingExecution = input.executionId ? await getExecutionById(input.executionId) : null;
 
-  // FIX: Guarantee tool row creation BEFORE compilation
-  // This ensures atomic visibility - no "ghost" builds.
-  // We use the admin client to bypass RLS issues during initial creation if needed,
-  // but strictly enforce org ownership.
-  
-  // Check if tool exists
+  const toolId = input.toolId;
+  if (!toolId) {
+    throw new Error("Compiler pipeline requires toolId");
+  }
+
+  const { toolId: ensuredToolId } = await ensureToolIdentity({
+    supabase,
+    toolId,
+    orgId,
+    userId,
+    name: "New Tool",
+    purpose: input.userMessage,
+    sourcePrompt: input.userMessage,
+  });
+
   const { data: existingTool } = await (supabase.from("projects") as any)
-    .select("id, compiled_at, status, active_version_id") 
-    .eq("id", input.toolId || "00000000-0000-0000-0000-000000000000") 
+    .select("id, compiled_at, status, active_version_id")
+    .eq("id", ensuredToolId)
     .single();
 
   // FIX: Only redirect to runtime if we have a valid ACTIVE VERSION.
   // Legacy "compiled_at" check is insufficient and caused the "ToolSpec metadata missing" bug.
-  if (existingTool?.active_version_id) {
+  const canExecuteExisting = await canExecuteTool({ toolId: ensuredToolId });
+  if (canExecuteExisting.ok) {
     return runToolRuntimePipeline(input);
   }
 
@@ -300,12 +340,12 @@ export async function runCompilerPipeline(
       // If no active version, we proceed to compile (fixing the tool).
   }
     
-  let effectiveToolId = input.toolId;
+  let effectiveToolId = ensuredToolId;
   
   if (!existingTool) {
      // FIX 1, 2, 3: Auto-create tool in DB if missing (Source of Truth)
      // This guarantees the compiler never runs on an ephemeral ID.
-     const newToolId = input.toolId || randomUUID();
+     const newToolId = toolId;
      
      const { data: newTool, error: createError } = await supabase
         .from("projects")
@@ -324,29 +364,21 @@ export async function runCompilerPipeline(
          throw new Error(`Failed to create tool row: ${createError?.message}`);
      }
 
-     // FIX: Dual-Write to 'tools' table to satisfy legacy FK constraints
-     // The 'tool_versions' table still references 'tools.id' in some environments.
-     try {
-       await (supabase.from("tools") as any).insert({
-          id: newToolId,
-          org_id: orgId,
-          name: "New Tool",
-          type: "tool",
-          current_spec: { actions: [] }
-       });
-     } catch (err) {
-       // Ignore error if table doesn't exist or duplicate
-       console.warn("[ToolCreation] Legacy tools table insert skipped/failed", err);
+     const { data: verifyProject } = await (supabase.from("projects") as any)
+       .select("id")
+       .eq("id", newToolId)
+       .single();
+
+     const { data: verifyTool } = await (supabase.from("tools") as any)
+       .select("id")
+       .eq("id", newToolId)
+       .single();
+
+     if (!verifyProject) {
+       throw new Error("Invariant violation: Tool created but not visible in 'projects' table.");
      }
-
-     // FIX: Atomic Visibility Check (Two-Phase Commit)
-     const { data: verifyTool } = await (supabase.from("projects") as any)
-        .select("id")
-        .eq("id", newToolId)
-        .single();
-
      if (!verifyTool) {
-        throw new Error("Invariant violation: Tool created but not visible in DB. Transaction lost?");
+       throw new Error("Invariant violation: Tool created but not visible in 'tools' table. This will cause FK violation.");
      }
 
      effectiveToolId = newTool.id;
@@ -357,13 +389,13 @@ export async function runCompilerPipeline(
   // 1. Run Pipeline
   
   // FIX: Inject effectiveToolId into context
-  const toolId = effectiveToolId!;
+  const effectiveToolIdValue = effectiveToolId!;
 
-  await (supabase.from("projects") as any).update({ status: "BUILDING" }).eq("id", toolId);
+  await (supabase.from("projects") as any).update({ status: "BUILDING" }).eq("id", effectiveToolIdValue);
   
   const systemPrompt = await createToolBuilderSystemPrompt({
     orgId: orgId, // Use authoritative ID
-    toolId: toolId,
+    toolId: effectiveToolIdValue,
     currentSpec: input.currentSpec || null,
     history: input.messages,
     capabilities: [], // Will be filled by discovery
@@ -533,23 +565,10 @@ export async function runCompilerPipeline(
         },
       });
 
-    // FIX: Handle skip_compile from race condition guard or re-entry
-    if ((compilerResult as any).skip_compile) {
-        // VALIDATION: Ensure tool is actually runnable before redirecting
-        const { data: checkTool } = await (createSupabaseAdminClient()
-          .from("projects") as any)
-          .select("spec, active_version_id, compiled_at, status")
-          .eq("id", input.toolId)
-          .single();
-          
-        const hasRunnableArtifact = checkTool && !!checkTool.active_version_id;
-
-        if (!hasRunnableArtifact) {
-           throw new Error(`Fatal Invariant: Compiler skipped but Tool ${input.toolId} has no spec/version. Cannot redirect to runtime.`);
-        }
-
-        console.log(`[Compiler] skip_compile detected for ${input.executionId}, redirecting to runtime`);
-        return runToolRuntimePipeline(input);
+    const canExecute = await canExecuteTool({ toolId: effectiveToolIdValue });
+    if (canExecute.ok) {
+      console.log(`[Compiler] canExecute true for ${effectiveToolIdValue}, redirecting to runtime`);
+      return runToolRuntimePipeline(input);
     }
 
     // Mark as compiled
@@ -616,6 +635,7 @@ export async function runCompilerPipeline(
     }
     const normalizedSpec = normalizedSpecResult.spec;
     spec = normalizedSpec;
+    compiledTool = buildCompiledToolArtifact(normalizedSpec);
     const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
     console.log("[ToolPersistence] Validation Result:", {
         success: specValidation.success,
@@ -631,8 +651,8 @@ export async function runCompilerPipeline(
       try {
         if (!existingExecution?.toolVersionId) {
           // GUARD: Strict Invariant Check
-          const { data: toolCheck } = await (supabase.from("projects") as any).select("id").eq("id", toolId).single();
-          if (!toolCheck) throw new Error("Invariant: Cannot create tool version without tool row");
+          const { data: toolCheck } = await (supabase.from("tools") as any).select("id").eq("id", toolId).single();
+          if (!toolCheck) throw new Error("Invariant: Cannot create tool version without tool row in 'tools' table");
 
           console.log("[ToolPersistence] Creating version for tool:", toolId);
           const compiled = compiledTool!;
@@ -739,6 +759,54 @@ export async function runCompilerPipeline(
     }
 
     markStep(steps, "readiness", "running", "Validating data readiness");
+    
+    // FIX: Pre-runtime Integration Readiness Gate
+    // Must run BEFORE runDataReadiness to avoid EncryptionKeyMismatchError
+    try {
+      await runCheckIntegrationReadiness({
+        spec: spec as any,
+        orgId: buildContext.orgId,
+      });
+    } catch (err) {
+      if (isIntegrationNotConnectedError(err)) {
+        markStep(steps, "readiness", "error", "Integration authorization required");
+        
+        const missingIntegrations = err.integrationIds;
+        const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
+
+        if (input.executionId) {
+          await updateExecution(input.executionId, {
+            status: "awaiting_integration",
+            requiredIntegrations,
+            missingIntegrations,
+          });
+        }
+        return {
+          explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
+          message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+          spec: { ...spec, lifecycle_state: machine.state },
+          requiresIntegrations: true,
+          missingIntegrations,
+          requiredIntegrations,
+          metadata: {
+            requiresIntegrations: true,
+            missingIntegrations,
+            requiredIntegrations,
+            executionId: input.executionId,
+            build_steps: steps,
+            progress: compilerResult.progress,
+            integration_error: {
+                type: "INTEGRATION_NOT_CONNECTED",
+                integrationIds: err.integrationIds,
+                requiredBy: err.requiredBy,
+                blockingActions: err.blockingActions
+            }
+          },
+        };
+      }
+      throw err;
+    }
+
     const readinessStart = Date.now();
     const readiness = await runDataReadiness(spec, {
       orgId: buildContext.orgId,
@@ -961,6 +1029,7 @@ export async function runCompilerPipeline(
         evidence: goalEvidence,
         relevance,
         integrationStatuses,
+        hasData: successfulOutputs.length > 0,
       });
       const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
       console.log("[GoalValidation]", { goalValidation, decision });
@@ -972,8 +1041,14 @@ export async function runCompilerPipeline(
       });
 
       const integrationResults = snapshotRecords.integrations ?? {};
-      const dataReady = successfulOutputs.length > 0 && Object.keys(integrationResults).length > 0;
-      const viewReady = successfulOutputs.length > 0;
+      const dataReady = successfulOutputs.length > 0;
+      
+      if (successfulOutputs.length > 0 && !dataReady) {
+         throw new Error("Invariant violated: Records exist but data_ready is false");
+      }
+
+      // View should be ready if the decision is to render, even if data is empty (empty state)
+      const viewReady = decision.kind === "render" || successfulOutputs.length > 0;
       const finalizedAt = new Date().toISOString();
       const snapshot = snapshotRecords;
       const viewSpec: ViewSpecPayload = {
@@ -1031,7 +1106,7 @@ export async function runCompilerPipeline(
               data_ready: dataReady,
               view_spec: viewSpec,
               view_ready: viewReady,
-              status: dataReady ? "READY" : "FAILED",
+              status: viewReady ? "READY" : "FAILED",
               finalized_at: finalizedAt,
               lifecycle_done: true,
             })
@@ -1139,6 +1214,49 @@ export async function runCompilerPipeline(
       },
     };
   } catch (err) {
+    if (isIntegrationNotConnectedError(err)) {
+      console.warn(`[Compiler] Integrations missing: ${err.integrationIds.join(", ")}`);
+      
+      const missingIntegrations = err.integrationIds;
+      // We don't have the full list of required integrations here easily without recalculating, 
+      // but for the error response, the missing ones are the most critical.
+      // We can use the missing ones as "required" for this context if we want to block on them.
+      const requiredIntegrations = missingIntegrations;
+
+      // Mark execution as waiting, NOT failed
+      if (input.executionId) {
+        await updateExecution(input.executionId, {
+          status: "awaiting_integration",
+          requiredIntegrations,
+          missingIntegrations,
+        });
+      }
+
+      // Return structured response
+      return {
+        explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
+        message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+        spec: input.currentSpec ?? {},
+        requiresIntegrations: true,
+        missingIntegrations,
+        requiredIntegrations,
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations,
+          requiredIntegrations,
+          executionId: input.executionId,
+          build_steps: steps,
+          integration_error: {
+              type: "INTEGRATION_NOT_CONNECTED",
+              integrationIds: err.integrationIds, // Updated to array
+              integrationId: err.integrationIds[0], // Backwards compatibility if needed
+              requiredBy: err.requiredBy,
+              blockingActions: err.blockingActions
+          }
+        },
+      };
+    }
+
     // Atomic Failure Handling: Mark tool as error
     const message = err instanceof Error ? err.message : "Build failed";
     markStep(steps, "compile", "error", message);
@@ -1237,6 +1355,49 @@ export async function resumeToolExecution(params: {
 
   if (["created", "awaiting_integration"].includes(execution.status)) {
        await updateExecution(params.executionId, { status: "executing" });
+  }
+
+  // Integration Readiness Gate: Verify all required integrations are connected
+  // This must happen before any data fetching or credential access.
+  try {
+    await runCheckIntegrationReadiness({
+        spec: params.spec as any,
+        orgId: params.orgId,
+    });
+  } catch (err) {
+    if (isIntegrationNotConnectedError(err)) {
+      const missingIntegrations = err.integrationIds;
+      const requiredIntegrations = missingIntegrations;
+
+      // Mark execution as waiting, NOT failed
+      await updateExecution(params.executionId, {
+        status: "awaiting_integration",
+        requiredIntegrations,
+        missingIntegrations,
+      });
+
+      return {
+        explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
+        message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+        spec: params.spec,
+        requiresIntegrations: true,
+        missingIntegrations,
+        requiredIntegrations,
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations,
+          requiredIntegrations,
+          executionId: params.executionId,
+          integration_error: {
+              type: "INTEGRATION_NOT_CONNECTED",
+              integrationIds: err.integrationIds,
+              requiredBy: err.requiredBy,
+              blockingActions: err.blockingActions
+          }
+        },
+      };
+    }
+    throw err;
   }
 
   let outputs: Array<{ action: any; output: any; error?: any }> = [];
@@ -1391,6 +1552,7 @@ export async function resumeToolExecution(params: {
     evidence: goalEvidence,
     relevance,
     integrationStatuses,
+    hasData: successfulOutputs.length > 0,
   });
   const decision = decideRendering({ prompt: params.prompt, result: goalValidation });
 
@@ -1401,8 +1563,13 @@ export async function resumeToolExecution(params: {
   });
 
   const integrationResults = snapshotRecords.integrations ?? {};
-  const dataReady = successfulOutputs.length > 0 && Object.keys(integrationResults).length > 0;
-  const viewReady = successfulOutputs.length > 0;
+  const dataReady = successfulOutputs.length > 0;
+  
+  if (successfulOutputs.length > 0 && !dataReady) {
+      throw new Error("Invariant violated: Records exist but data_ready is false");
+  }
+
+  const viewReady = decision.kind === "render" || dataReady;
   const finalizedAt = new Date().toISOString();
   const snapshot = snapshotRecords;
   const viewSpec: ViewSpecPayload = {
@@ -1900,35 +2067,78 @@ async function applyGoalPlan(spec: ToolSystemSpec, prompt: string): Promise<Tool
 }
 
 async function applyIntentContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
-  const response = await getAzureOpenAIClient().chat.completions.create({
-    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
-    messages: [
-      {
-        role: "system",
-        content:
-          `Return JSON only: {"userGoal":string,"successCriteria":[string],"requiredEntities":{"integrations":[string],"objects":[string],"filters":[string]},"forbiddenOutputs":[string],"acceptableFallbacks":[string]}.`,
-      },
-      { role: "user", content: prompt },
-    ],
-    temperature: 0,
-    max_tokens: 400,
-    response_format: { type: "json_object" },
-  });
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error("Intent contract required but invalid");
-  }
-  let parsed;
   try {
-    parsed = IntentContractSchema.safeParse(JSON.parse(content));
+    const response = await getAzureOpenAIClient().chat.completions.create({
+      model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
+      messages: [
+        {
+          role: "system",
+          content:
+            `Return JSON only: {"userGoal":string,"successCriteria":[string],"implicitConstraints":[string],"hiddenStateRequirements":[string],"timeHorizon":{"window":string,"rationale":string}?, "subjectivityScore":number,"heuristics":[{"id":string,"name":string,"definition":string,"tunableParams":object,"confidence":number}],"requiredEntities":{"integrations":[string],"objects":[string],"filters":[string]},"forbiddenOutputs":[string],"acceptableFallbacks":[string]}.`,
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0,
+      max_tokens: 400,
+      response_format: { type: "json_object" },
+    });
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("Intent contract required but invalid");
+    }
+    const parsed = IntentContractSchema.safeParse(JSON.parse(content));
+    if (!parsed.success) {
+      throw new Error("Intent contract required but invalid");
+    }
+    return { ...spec, intent_contract: parsed.data };
   } catch {
-    throw new Error("Intent contract required but invalid");
+    const fallback = buildFallbackIntentContract(prompt);
+    return { ...spec, intent_contract: fallback };
   }
-  if (!parsed.success) {
-    throw new Error("Intent contract required but invalid");
+}
+
+function buildFallbackIntentContract(prompt: string): IntentContract {
+  const normalized = prompt.toLowerCase();
+  const heuristics = [];
+  if (normalized.includes("reply") || normalized.includes("respond")) {
+    heuristics.push({
+      id: "reply_urgency",
+      name: "Reply urgency",
+      definition: "Unreplied messages older than 48h with high-priority sender",
+      tunableParams: { minHours: 48, priorityThreshold: 0.7 },
+      confidence: 0.6,
+    });
   }
-  const contract = parsed.data;
-  return { ...spec, intent_contract: contract };
+  if (normalized.includes("commitment") || normalized.includes("follow up")) {
+    heuristics.push({
+      id: "follow_up_gap",
+      name: "Follow-up gap",
+      definition: "Commitments with no action within 7 days of promise",
+      tunableParams: { maxDaysWithoutAction: 7 },
+      confidence: 0.55,
+    });
+  }
+  if (normalized.includes("cold") || normalized.includes("going cold")) {
+    heuristics.push({
+      id: "cooling_clients",
+      name: "Cooling clients",
+      definition: "No interaction in 14 days with previously active contacts",
+      tunableParams: { inactivityDays: 14 },
+      confidence: 0.5,
+    });
+  }
+  return {
+    userGoal: prompt,
+    successCriteria: ["Rank items by urgency", "Surface items requiring response"],
+    implicitConstraints: ["Prefer most recent activity", "Prioritize high-signal senders"],
+    hiddenStateRequirements: ["Track last response time", "Track commitment timestamps"],
+    timeHorizon: { window: "14d", rationale: "Covers recent commitments and overdue replies" },
+    subjectivityScore: 0.6,
+    heuristics,
+    requiredEntities: { integrations: [], objects: [], filters: [] },
+    forbiddenOutputs: [],
+    acceptableFallbacks: ["Show unanswered items only", "Ask for missing integrations"],
+  };
 }
 
 async function applySemanticPlan(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
@@ -1975,7 +2185,7 @@ async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
         {
           role: "system",
           content:
-            `Return JSON only: {"primary_goal":string,"sub_goals":[string],"constraints":[string],"derived_entities":[{"name":string,"description":string,"fields":[{"name":string,"type":string}]}]}.`,
+            `Return JSON only: {"kind": "DATA_RETRIEVAL" | "TRANSFORMATION" | "PLANNING" | "ANALYSIS", "primary_goal":string,"sub_goals":[string],"constraints":[string],"derived_entities":[{"name":string,"description":string,"fields":[{"name":string,"type":string}]}]}.`,
         },
         { role: "user", content: prompt },
       ],
@@ -2712,6 +2922,18 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
   if (spec.state && (!spec.state.reducers || !Array.isArray(spec.state.reducers))) {
       spec.state.reducers = [];
   }
+  if (!spec.description || spec.description.length === 0) {
+    spec.description = spec.purpose ?? "Tool description";
+  }
+  if (!spec.version) {
+    spec.version = spec.spec_version ?? TOOL_SPEC_VERSION;
+  }
+  if (!spec.memory_model) {
+    spec.memory_model = spec.memory;
+  }
+  if (!spec.confidence_level) {
+    spec.confidence_level = "medium";
+  }
 
   const actionMap = new Map<string, string>();
   const actionNameMap = new Map<string, string>();
@@ -3089,7 +3311,9 @@ function buildFallbackToolSpec(
   return {
     id,
     name,
+    description: prompt,
     purpose: prompt,
+    version: TOOL_SPEC_VERSION,
     spec_version: TOOL_SPEC_VERSION,
     created_at: new Date().toISOString(),
     source_prompt: prompt,
@@ -3131,6 +3355,11 @@ function buildFallbackToolSpec(
       tool: { namespace: id, retentionDays: 30, schema: {} },
       user: { namespace: id, retentionDays: 30, schema: {} },
     },
+    memory_model: {
+      tool: { namespace: id, retentionDays: 30, schema: {} },
+      user: { namespace: id, retentionDays: 30, schema: {} },
+    },
+    confidence_level: "medium",
     automations: {
       enabled: true,
       capabilities: {

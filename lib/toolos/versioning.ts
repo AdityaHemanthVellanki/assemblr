@@ -2,6 +2,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { createHash } from "crypto";
+import { computeSpecHash } from "@/lib/spec/toolSpec";
 
 type ToolVersionRow = {
   id: string;
@@ -50,6 +51,17 @@ export async function createToolVersion(params: {
   if (!params.toolId) throw new Error("Cannot create tool version: toolId is required");
 
   const supabase = params.supabase || createSupabaseAdminClient();
+
+  // FIX: Hard Guard - Verify Parent Tool Exists
+  const { data: parentTool } = await (supabase.from("tools") as any)
+    .select("id")
+    .eq("id", params.toolId)
+    .single();
+
+  if (!parentTool) {
+    throw new Error(`Invariant violation: Cannot create version for non-existent tool ${params.toolId} (checked 'tools' table)`);
+  }
+
   const normalizedSpecResult = normalizeToolSpec(params.spec, {
     sourcePrompt: (params.spec as any)?.source_prompt ?? params.spec.purpose,
     enforceVersion: true,
@@ -59,10 +71,12 @@ export async function createToolVersion(params: {
   }
   const normalizedSpec = normalizedSpecResult.spec;
   const diff = params.baseSpec ? diffSpecs(params.baseSpec, normalizedSpec) : null;
-  const buildHash =
-    typeof (params.compiledTool as any)?.specHash === "string"
-      ? (params.compiledTool as any).specHash
-      : createHash("sha256").update(JSON.stringify(normalizedSpec)).digest("hex");
+  const specHash = computeSpecHash(normalizedSpec);
+  const buildHash = specHash;
+  const compiledTool = {
+    ...(params.compiledTool ?? {}),
+    specHash,
+  };
 
   const payload: any = {
     tool_id: params.toolId,
@@ -75,7 +89,7 @@ export async function createToolVersion(params: {
     build_hash: buildHash,
     diff,
     // created_by: params.userId ?? null, // REMOVED: Schema mismatch
-    compiled_tool: params.compiledTool,
+    compiled_tool: compiledTool,
     intent_schema: (params.compiledTool as any)?.intentSchema ?? null,
   };
 

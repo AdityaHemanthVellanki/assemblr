@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { computeSpecHash } from "@/lib/spec/toolSpec";
 import { getCapability } from "@/lib/capabilities/registry";
 import {
   ToolSystemSpec,
@@ -50,7 +51,7 @@ export function buildCompiledToolArtifact(spec: ToolSystemSpec): CompiledToolArt
   compileToolSystem(spec);
   return {
     compiledAt: new Date().toISOString(),
-    specHash: createHash("sha256").update(JSON.stringify(spec)).digest("hex"),
+    specHash: computeSpecHash(spec),
     actions: spec.actions,
     workflows: spec.workflows,
     triggers: spec.triggers,

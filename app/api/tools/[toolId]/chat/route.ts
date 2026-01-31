@@ -5,9 +5,10 @@ import { processToolChat, resumeToolExecution } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
-import { computePromptHash, createExecution, findExecutionByPromptHash, getExecutionById } from "@/lib/toolos/executions";
+import { computePromptHash, createExecution, findExecutionByPromptHash, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 // import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
+import { isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -102,15 +103,50 @@ export async function POST(
         compiledTool = buildCompiledToolArtifact(spec);
       }
 
-      const result = await resumeToolExecution({
-        executionId,
-        orgId: ctx.orgId,
-        toolId,
-        userId: ctx.userId,
-        prompt: resumeRow.original_prompt ?? "",
-        spec,
-        compiledTool,
-      });
+      let result;
+      try {
+        result = await resumeToolExecution({
+          executionId,
+          orgId: ctx.orgId,
+          toolId,
+          userId: ctx.userId,
+          prompt: resumeRow.original_prompt ?? "",
+          spec,
+          compiledTool,
+        });
+      } catch (err: any) {
+        if (isIntegrationNotConnectedError(err)) {
+          const missingIntegrations = err.integrationIds;
+          const requiredIntegrations = missingIntegrations;
+
+          // Mark execution as waiting, NOT failed
+          await updateExecution(executionId, {
+            status: "awaiting_integration",
+            requiredIntegrations,
+            missingIntegrations,
+          });
+
+          return jsonResponse({
+            message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations,
+              requiredIntegrations,
+              executionId: execution.id,
+              status: "awaiting_integration",
+              integration_error: {
+                  type: "INTEGRATION_NOT_CONNECTED",
+                  integrationIds: err.integrationIds,
+                  requiredBy: err.requiredBy,
+                  blockingActions: err.blockingActions
+              },
+              prompt: resumeRow.original_prompt
+            },
+            toolId,
+          });
+        }
+        throw err;
+      }
 
       await (supabase.from("chat_messages") as any).insert({
         org_id: ctx.orgId,

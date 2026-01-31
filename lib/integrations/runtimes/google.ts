@@ -41,7 +41,14 @@ export class GoogleRuntime implements IntegrationRuntime {
         // Gmail API requires query params
         const queryParams = new URLSearchParams();
         queryParams.append("maxResults", String(maxResults));
-        if (q) queryParams.append("q", q);
+        
+        // Fix: Default to INBOX to avoid clutter if no query provided
+        // Also ensure "latest" semantics are respected by API defaults (reverse chron)
+        if (q) {
+             queryParams.append("q", q);
+        } else {
+             queryParams.append("q", "label:INBOX");
+        }
 
         const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?${queryParams.toString()}`;
         
@@ -60,38 +67,43 @@ export class GoogleRuntime implements IntegrationRuntime {
             }
             
             const data = await res.json();
-            // Fetch details for snippets if needed, but for now return list
-            // Ideally we should fetch snippets in batch or let the UI handle it. 
-            // The prompt says "Gmail integration executes real data".
-            // The list endpoint only returns IDs and threadIds. 
-            // We should probably fetch at least snippets.
-            // But let's stick to the list for now to satisfy the capability contract.
-            
-            // Actually, to make "show my latest emails" useful, we need snippets.
-            // Let's do a quick batch fetch for snippets if possible, or just map.
-            // For a robust implementation, we might want to return the list and let the UI resolve details,
-            // or return enriched data. Given "show my latest emails" implies seeing content:
             
             const messages = data.messages || [];
             if (messages.length > 0) {
-                // Fetch first 5 details to show something useful? 
-                // Or just return the list structure.
-                // Let's return the raw list for now, the UI might bind to it.
-                // If the user wants "Show table of emails", we need fields.
-                // The capability definition in definitions.ts doesn't specify fields for google_gmail_list.
-                // Wait, it does: "supportedFields": ["q", "maxResults", "includeSpamTrash"]
-                // It doesn't define output schema.
-                
-                // Let's try to fetch details for the first few to populate a table
+                // Fetch details for the first few to populate a table
                 const detailed = await Promise.all(messages.slice(0, 10).map(async (m: any) => {
                     try {
                         const dRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}`, {
                              headers: { Authorization: `Bearer ${token}` }
                         });
-                        if (dRes.ok) return await dRes.json();
+                        if (dRes.ok) {
+                            const msg = await dRes.json();
+                            const headers = msg.payload?.headers || [];
+                            const getHeader = (name: string) => headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+                            
+                            // Return flat structure for UI
+                            return {
+                                id: msg.id,
+                                threadId: msg.threadId,
+                                snippet: msg.snippet,
+                                from: getHeader("From"),
+                                subject: getHeader("Subject"),
+                                date: getHeader("Date"),
+                                internalDate: msg.internalDate
+                            };
+                        }
                         return m;
                     } catch { return m; }
                 }));
+                
+                // Fix: Enforce sort by internalDate DESC to ensure "latest" means latest
+                detailed.sort((a: any, b: any) => {
+                    const dateA = a.internalDate ? Number(a.internalDate) : 0;
+                    const dateB = b.internalDate ? Number(b.internalDate) : 0;
+                    return dateB - dateA;
+                });
+
+                console.log("[RENDER] Records passed to UI:", detailed.length);
                 return detailed;
             }
 

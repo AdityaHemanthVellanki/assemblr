@@ -226,7 +226,11 @@ export const DerivedEntitySchema = z.object({
 });
 export type DerivedEntity = z.infer<typeof DerivedEntitySchema>;
 
+export const GoalKindSchema = z.enum(["DATA_RETRIEVAL", "TRANSFORMATION", "PLANNING", "ANALYSIS"]);
+export type GoalKind = z.infer<typeof GoalKindSchema>;
+
 export const GoalPlanSchema = z.object({
+  kind: GoalKindSchema.default("PLANNING"),
   primary_goal: z.string().min(1),
   sub_goals: z.array(z.string()).default([]),
   constraints: z.array(z.string()).default([]),
@@ -237,6 +241,26 @@ export type GoalPlan = z.infer<typeof GoalPlanSchema>;
 export const IntentContractSchema = z.object({
   userGoal: z.string().min(1),
   successCriteria: z.array(z.string()).default([]),
+  implicitConstraints: z.array(z.string()).default([]),
+  hiddenStateRequirements: z.array(z.string()).default([]),
+  timeHorizon: z
+    .object({
+      window: z.string().min(1),
+      rationale: z.string().min(1),
+    })
+    .optional(),
+  subjectivityScore: z.number().min(0).max(1).default(0.5),
+  heuristics: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        name: z.string().min(1),
+        definition: z.string().min(1),
+        tunableParams: z.record(z.string(), z.any()).default({}),
+        confidence: z.number().min(0).max(1).default(0.7),
+      }),
+    )
+    .default([]),
   requiredEntities: z.object({
     integrations: z.array(z.string()).default([]),
     objects: z.array(z.string()).default([]),
@@ -266,6 +290,7 @@ export const AbsenceReasonSchema = z.enum([
   "emails_exist_not_related",
   "integration_permission_missing",
   "ambiguous_query",
+  "no_data_found",
 ]);
 export type AbsenceReason = z.infer<typeof AbsenceReasonSchema>;
 
@@ -398,7 +423,9 @@ export type InitialFetch = z.infer<typeof InitialFetchSchema>;
 export const ToolSystemSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
+  description: z.string().min(1).default("Tool description"),
   purpose: z.string().min(1),
+  version: z.number().int().min(1).default(TOOL_SPEC_VERSION),
   spec_version: z.number().int().min(1).default(TOOL_SPEC_VERSION),
   created_at: z.string().min(1).optional(),
   source_prompt: z.string().min(1).optional(),
@@ -429,6 +456,11 @@ export const ToolSystemSpecSchema = z.object({
   query_plans: z.array(IntegrationQueryPlanSchema).default([]),
   tool_graph: ToolGraphSchema.optional(),
   memory: MemorySpecSchema,
+  memory_model: MemorySpecSchema.default({
+    tool: { namespace: "default", retentionDays: 30, schema: {} },
+    user: { namespace: "default", retentionDays: 30, schema: {} },
+  }),
+  confidence_level: z.enum(["low", "medium", "high"]).default("medium"),
   automations: AutomationsSpecSchema.optional(),
   observability: ObservabilitySpecSchema.optional(),
   clarifications: z.array(ClarificationSchema).optional(),
@@ -442,12 +474,37 @@ export function isToolSystemSpec(value: unknown): value is ToolSystemSpec {
   return ToolSystemSpecSchema.safeParse(value).success;
 }
 
-export function createEmptyToolSpec(): ToolSystemSpec {
+export function createEmptyToolSpec(input?: {
+  id?: string;
+  name?: string;
+  purpose?: string;
+  description?: string;
+  sourcePrompt?: string;
+}): ToolSystemSpec {
+  const name = input?.name?.trim() || "New Tool";
+  const purpose = input?.purpose?.trim() || "To be defined";
+  const description = input?.description?.trim() || purpose;
+  const sourcePrompt = input?.sourcePrompt?.trim() || purpose;
+  const now = new Date().toISOString();
+  const id =
+    input?.id ??
+    (typeof globalThis.crypto !== "undefined" && "randomUUID" in globalThis.crypto
+      ? globalThis.crypto.randomUUID()
+      : `tool_${Date.now()}`);
+  const memorySchema = {
+    observations: [],
+    aggregates: {},
+    decay: { halfLifeDays: 14 },
+  };
   return {
-    id: crypto.randomUUID(),
-    name: "New Tool",
-    purpose: "To be defined",
+    id,
+    name,
+    description,
+    purpose,
+    version: TOOL_SPEC_VERSION,
     spec_version: TOOL_SPEC_VERSION,
+    created_at: now,
+    source_prompt: sourcePrompt,
     entities: [],
     state: {
       initial: {},
@@ -460,10 +517,17 @@ export function createEmptyToolSpec(): ToolSystemSpec {
     views: [],
     permissions: { roles: [], grants: [] },
     integrations: [],
+    derived_entities: [],
+    query_plans: [],
     memory: {
-      tool: { namespace: "default", retentionDays: 30, schema: {} },
-      user: { namespace: "default", retentionDays: 30, schema: {} },
+      tool: { namespace: id, retentionDays: 30, schema: memorySchema },
+      user: { namespace: id, retentionDays: 30, schema: memorySchema },
     },
+    memory_model: {
+      tool: { namespace: id, retentionDays: 30, schema: memorySchema },
+      user: { namespace: id, retentionDays: 30, schema: memorySchema },
+    },
+    confidence_level: "medium",
     lifecycle_state: "DRAFT",
   };
 }

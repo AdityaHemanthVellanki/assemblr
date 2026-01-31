@@ -3,13 +3,14 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline } from "@/lib/ai/tool-chat";
-import { isToolSystemSpec, createEmptyToolSpec } from "@/lib/toolos/spec";
+import { isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
+import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional } from "@/lib/permissions";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
-import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { computePromptHash, createExecution, findExecutionByPromptHash, getExecutionById, updateExecution } from "@/lib/toolos/executions";
+import { ensureToolIdentity } from "@/lib/toolos/lifecycle";
 
 export async function sendChatMessage(
   toolId: string | undefined,
@@ -43,41 +44,16 @@ export async function sendChatMessage(
       
       console.log("[ToolCreation] Context Resolved:", { orgId, userId });
 
-      // CRITICAL: Use Admin Client for atomic creation
       const adminSupabase = createSupabaseAdminClient();
-      
-      const payload = {
-          org_id: orgId,
-          name: "New Tool",
-          status: "DRAFT",
-          spec: createEmptyToolSpec()
-      };
-      
-      // FAIL-FAST GUARD
-      if (!PROJECT_STATUSES.includes(payload.status as any)) {
-        throw new Error(`Invalid project status: ${payload.status}`);
-      }
-
-      const { data: newProjects, error } = await adminSupabase
-        .from("projects")
-        .insert(payload)
-        .select("id");
-      
-      // FIX: Safe retrieval of ID
-      const newProject = newProjects && newProjects.length > 0 ? newProjects[0] : null;
-
-      if (error || !newProject) {
-          console.error("[ToolCreation] DB INSERT FAILED", {
-              code: error?.code,
-              message: error?.message,
-              details: error?.details,
-              hint: error?.hint,
-              payload
-          });
-          throw new Error(`Failed to create project: ${error?.message || "Unknown error"} (Code: ${error?.code})`);
-      }
-      
-      effectiveToolId = newProject.id;
+      const { toolId: ensuredToolId } = await ensureToolIdentity({
+        supabase: adminSupabase,
+        orgId,
+        userId,
+        name: "New Tool",
+        purpose: message,
+        sourcePrompt: message,
+      });
+      effectiveToolId = ensuredToolId;
       console.log("[ToolCreation] Success:", effectiveToolId);
 
     } catch (err) {
@@ -176,61 +152,79 @@ export async function sendChatMessage(
       execution = existingExecution;
     } else {
       if (existingExecution.status === "awaiting_integration") {
-        return {
-          explanation: "Connect the required integrations to continue.",
-          message: { type: "text", content: "Connect the required integrations to continue." },
-          requiresIntegrations: true,
-          missingIntegrations: existingExecution.missingIntegrations,
-          requiredIntegrations: existingExecution.requiredIntegrations,
-          metadata: {
+        const missing = existingExecution.missingIntegrations || [];
+        // Check if all missing are now connected
+        const allConnected = missing.every((id: string) => connectedIntegrationIds.includes(id));
+
+        if (allConnected) {
+          console.log(`[Chat] Resuming execution ${existingExecution.id} after integration connection`);
+          // Reset status to "created" to re-trigger compiler/pipeline
+          await updateExecution(existingExecution.id, {
+            status: "created",
+            error: null
+          });
+          existingExecution.status = "created";
+          execution = existingExecution;
+        } else {
+          return {
+            explanation: "Connect the required integrations to continue.",
+            message: { type: "text", content: "Connect the required integrations to continue." },
             requiresIntegrations: true,
             missingIntegrations: existingExecution.missingIntegrations,
             requiredIntegrations: existingExecution.requiredIntegrations,
-            executionId: existingExecution.id,
-            status: existingExecution.status,
-          },
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations: existingExecution.missingIntegrations,
+              requiredIntegrations: existingExecution.requiredIntegrations,
+              executionId: existingExecution.id,
+              status: existingExecution.status,
+            },
+            toolId: effectiveToolId,
+          };
+        }
+      } else {
+        const statusMessage =
+          existingExecution.status === "executing" || existingExecution.status === "compiling"
+            ? "Execution already running."
+            : "Request already completed.";
+        return {
+          explanation: statusMessage,
+          message: { type: "text", content: statusMessage },
+          metadata: { executionId: existingExecution.id, status: existingExecution.status },
           toolId: effectiveToolId,
         };
       }
-      const statusMessage =
-        existingExecution.status === "executing" || existingExecution.status === "compiling"
-          ? "Execution already running."
-          : "Request already completed.";
-      return {
-        explanation: statusMessage,
-        message: { type: "text", content: statusMessage },
-        metadata: { executionId: existingExecution.id, status: existingExecution.status },
-        toolId: effectiveToolId,
-      };
     }
   }
 
-  const { data: msgRow, error: msgError } = await supabase
-    .from("chat_messages")
-    .insert({
-      org_id: orgId,
-      tool_id: effectiveToolId,
-      role: "user",
-      content: message,
-      metadata: null,
-    })
-    .select("id")
-    .single();
-  if (msgError || !msgRow) {
-    return { error: "Failed to save message" };
-  }
+  if (!execution) {
+    const { data: msgRow, error: msgError } = await supabase
+      .from("chat_messages")
+      .insert({
+        org_id: orgId,
+        tool_id: effectiveToolId,
+        role: "user",
+        content: message,
+        metadata: null,
+      })
+      .select("id")
+      .single();
+    if (msgError || !msgRow) {
+      return { error: "Failed to save message" };
+    }
 
-  try {
-    execution = await createExecution({
-      orgId,
-      toolId: effectiveToolId,
-      chatId: effectiveToolId,
-      userId,
-      promptId: msgRow.id,
-      prompt: message,
-    });
-  } catch (err: any) {
-    return { error: err?.message ?? "Execution persistence failed" };
+    try {
+      execution = await createExecution({
+        orgId,
+        toolId: effectiveToolId,
+        chatId: effectiveToolId,
+        userId,
+        promptId: msgRow.id,
+        prompt: message,
+      });
+    } catch (err: any) {
+      return { error: err?.message ?? "Execution persistence failed" };
+    }
   }
 
   // 4. Start Tool Logic (Async)
@@ -281,6 +275,43 @@ export async function sendChatMessage(
       try {
         result = await runToolRuntimePipeline(input);
       } catch (err: any) {
+        if (isIntegrationNotConnectedError(err)) {
+          console.warn(`[RuntimePipeline] Integrations missing: ${err.integrationIds.join(", ")}`);
+          
+          const missingIntegrations = err.integrationIds;
+          const requiredIntegrations = missingIntegrations;
+
+          // Mark execution as waiting, NOT failed
+          await updateExecution(execution.id, {
+            status: "awaiting_integration",
+            requiredIntegrations,
+            missingIntegrations,
+          });
+
+          return {
+            explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
+            message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+            spec: effectiveSpec ?? {},
+            requiresIntegrations: true,
+            missingIntegrations,
+            requiredIntegrations,
+            toolId: effectiveToolId,
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations,
+              requiredIntegrations,
+              executionId: execution.id,
+              status: "awaiting_integration",
+              integration_error: {
+                  type: "INTEGRATION_NOT_CONNECTED",
+                  integrationIds: err.integrationIds,
+                  requiredBy: err.requiredBy,
+                  blockingActions: err.blockingActions
+              }
+            },
+          };
+        }
+
         console.error("[RuntimePipeline] Critical Failure:", err);
         return {
             explanation: "Runtime execution failed.",
@@ -425,6 +456,39 @@ export async function resumeChatExecution(toolId: string, resumeId: string) {
 
     return result;
   } catch (err: any) {
+    if (isIntegrationNotConnectedError(err)) {
+      console.warn(`[ResumePipeline] Integrations missing: ${err.integrationIds.join(", ")}`);
+      
+      const missingIntegrations = err.integrationIds;
+      const requiredIntegrations = missingIntegrations;
+
+      // Mark execution as waiting, NOT failed
+      await updateExecution(executionId, {
+        status: "awaiting_integration",
+        requiredIntegrations,
+        missingIntegrations,
+      });
+
+      return {
+        message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+        metadata: {
+          requiresIntegrations: true,
+          missingIntegrations,
+          requiredIntegrations,
+          executionId: execution.id,
+          status: "awaiting_integration",
+          integration_error: {
+              type: "INTEGRATION_NOT_CONNECTED",
+              integrationIds: err.integrationIds,
+              requiredBy: err.requiredBy,
+              blockingActions: err.blockingActions
+          },
+          prompt: resumeRow.original_prompt
+        },
+        toolId,
+      };
+    }
+
     return { error: err?.message || "Failed to resume execution" };
   }
 }

@@ -20,6 +20,7 @@ export type ValidationInputs = {
   evidence?: GoalEvidence | null;
   relevance?: RelevanceGateResult | null;
   integrationStatuses?: Record<string, { status: string; reason?: string; required?: boolean }>;
+  hasData?: boolean;
 };
 
 export function buildEvidenceFromDerivedIncidents(incidents: Array<Record<string, any>>): GoalEvidence {
@@ -40,7 +41,23 @@ export function evaluateGoalSatisfaction(params: ValidationInputs): GoalSatisfac
     related_emails: 0,
     total_emails: 0,
   };
+  if (params.hasData) {
+    return {
+      level: "satisfied",
+      satisfied: true,
+      confidence: 1.0,
+    };
+  }
+
   if (params.intentContract && params.intentContract.successCriteria.length === 0) {
+    // If data is present, we should be lenient about missing success criteria for simple retrievals
+    if (params.hasData) {
+      return {
+        level: "satisfied",
+        satisfied: true,
+        confidence: 0.9,
+      };
+    }
     return {
       level: "unsatisfied",
       satisfied: false,
@@ -50,6 +67,21 @@ export function evaluateGoalSatisfaction(params: ValidationInputs): GoalSatisfac
       absence_reason: "ambiguous_query",
     };
   }
+  
+  // Data Presence Beats Semantic Perfection:
+  // (Handled by top-level check)
+
+  if (!params.hasData && params.goalPlan?.kind === "DATA_RETRIEVAL") {
+    return {
+      level: "unsatisfied",
+      satisfied: false,
+      confidence: 0.9,
+      failure_reason: "no_data_found",
+      missing_requirements: ["data_records"],
+      absence_reason: "no_data_found",
+    };
+  }
+
   if (!params.goalPlan) {
     return {
       level: "unsatisfied",

@@ -48,7 +48,7 @@ export function compileToolUX(input: {
         value: String(section.capabilities[0]?.params?.[key] ?? ""),
       })),
       emptyState: {
-        title: "No results",
+        title: "Ready to execute",
         description: "Submit to execute the action.",
       },
       loading,
@@ -60,11 +60,27 @@ export function compileToolUX(input: {
       },
     };
   }
-  const rows = entities
+
+  // Schema Bleeding Fix: Strict Isolation
+  const filteredEntities = entities.filter((entity) =>
+    isEntityMatchingSection(entity, section.entityType),
+  );
+
+  const rows = filteredEntities
     .slice(0, limit)
     .map((entity) => toRow(entity, section.integration, supplemental));
   const columns = rows.length > 0 ? Object.keys(rows[0].values) : defaultColumns(section.entityType, section.integration);
   const grouped = buildGroups(section, rows);
+
+  const emptyStateTitle = section.entityType
+    ? `No ${section.entityType.toLowerCase()}s found`
+    : "No data found";
+
+  const emptyStateDescription = section.entityType === "Email"
+    ? "No emails found matching your search."
+    : section.entityType === "Issue"
+    ? "No issues found matching your filters."
+    : "Try adjusting your query or filters.";
 
   return {
     sectionId: section.id,
@@ -76,8 +92,8 @@ export function compileToolUX(input: {
     rows,
     groups: grouped.length > 0 ? grouped : undefined,
     emptyState: {
-      title: "No results",
-      description: "Try adjusting filters or refresh to load more data.",
+      title: emptyStateTitle,
+      description: emptyStateDescription,
     },
     loading,
     error,
@@ -87,9 +103,27 @@ export function compileToolUX(input: {
     ],
     pagination: {
       limit,
-      hasMore: entities.length > limit,
+      hasMore: filteredEntities.length > limit,
     },
   };
+}
+
+function isEntityMatchingSection(entity: NormalizedEntity, entityType: EntityType | undefined): boolean {
+  if (!entityType) return true;
+  switch (entityType) {
+    case "Email":
+      return "subject" in entity && "from" in entity;
+    case "Repo":
+      return "stars" in entity && "name" in entity;
+    case "Issue":
+      return "status" in entity && "assignee" in entity;
+    case "Message":
+      return "text" in entity && "channel" in entity;
+    case "Page":
+      return "workspace" in entity && "lastEdited" in entity;
+    default:
+      return true;
+  }
 }
 
 function toRow(

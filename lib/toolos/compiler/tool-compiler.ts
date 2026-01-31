@@ -8,6 +8,7 @@ import { runUnderstandPurpose } from "@/lib/toolos/compiler/stages/understand-pu
 import { runExtractEntities } from "@/lib/toolos/compiler/stages/extract-entities";
 import { runResolveIntegrations } from "@/lib/toolos/compiler/stages/resolve-integrations";
 import { runDefineActions } from "@/lib/toolos/compiler/stages/define-actions";
+import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
 import { runFetchData } from "@/lib/toolos/compiler/stages/fetch-data";
 import { runBuildWorkflows } from "@/lib/toolos/compiler/stages/build-workflows";
 import { runDesignViews } from "@/lib/toolos/compiler/stages/design-views";
@@ -90,7 +91,7 @@ const DEFAULT_BUDGETS: ToolCompilerStageBudgets = {
 
 const BUILDER_NAMESPACE = "tool_builder";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { canExecuteTool } from "@/lib/toolos/lifecycle";
 
 export class ToolCompiler {
   static async run(input: ToolCompilerInput): Promise<ToolCompilerResult> {
@@ -103,26 +104,18 @@ export class ToolCompiler {
         throw new Error("Execution not found");
       }
       if (["compiling", "executing", "completed"].includes(execution.status)) {
-        // FIX: Ensure tool has active version before skipping
-        const { data: tool } = await createSupabaseAdminClient()
-          .from("projects")
-          .select("active_version_id")
-          .eq("id", input.toolId)
-          .single();
-
-        if (tool?.active_version_id) {
-            return { 
-              spec: buildBaseSpec(input.prompt, input.toolId), // Return valid base spec structure to satisfy types
-              clarifications: [],
-              status: "completed",
-              progress: [],
-              skip_compile: true,
-              executionId: input.executionId
-            } as any;
+        const canExecute = await canExecuteTool({ toolId: input.toolId });
+        if (canExecute.ok) {
+          return {
+            spec: buildBaseSpec(input.prompt, input.toolId),
+            clarifications: [],
+            status: "completed",
+            progress: [],
+          };
         }
-        // If no active version, do NOT skip. 
-        // We log this anomaly and force recompilation.
-        console.warn(`[ToolCompiler] Execution ${input.executionId} is ${execution.status} but tool ${input.toolId} has no active version. Forcing recompilation.`);
+        console.warn(
+          `[ToolCompiler] Execution ${input.executionId} is ${execution.status} but tool ${input.toolId} is not runnable (${canExecute.reason}). Forcing recompilation.`,
+        );
       }
     }
     // input.userId is optional (can be system/anonymous), but if provided should be valid.
@@ -212,6 +205,17 @@ export class ToolCompiler {
       () => runStage("extract-entities", budgets.extractEntitiesMs, runExtractEntities),
       () => runStage("resolve-integrations", budgets.resolveIntegrationsMs, runResolveIntegrations),
       () => runStage("define-actions", budgets.defineActionsMs, runDefineActions),
+      // Integration Readiness Gate: Check for missing credentials BEFORE runtime/fetch-data.
+      async () => {
+        try {
+          return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
+        } catch (error: any) {
+          if (error.constructor.name === "IntegrationNotConnectedError" || error.type === "INTEGRATION_NOT_CONNECTED") {
+             throw error; // Propagate up to tool-chat.ts to handle UI modal
+          }
+          throw error;
+        }
+      },
       () => runStage("fetch-data", budgets.fetchDataMs, runFetchData),
       () => runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows),
       () => runStage("design-views", budgets.designViewsMs, runDesignViews),
@@ -297,6 +301,8 @@ function mergeSpec(base: ToolSystemSpec, patch: Partial<ToolSystemSpec>): ToolSy
   return {
     ...base,
     ...patch,
+    description: patch.description ?? base.description,
+    version: patch.version ?? base.version,
     entities: patch.entities ?? base.entities,
     actions: patch.actions ?? base.actions,
     workflows: patch.workflows ?? base.workflows,
@@ -312,6 +318,8 @@ function mergeSpec(base: ToolSystemSpec, patch: Partial<ToolSystemSpec>): ToolSy
     permissions: patch.permissions ?? base.permissions,
     integrations: patch.integrations ?? base.integrations,
     memory: patch.memory ?? base.memory,
+    memory_model: patch.memory_model ?? base.memory_model,
+    confidence_level: patch.confidence_level ?? base.confidence_level,
     automations: patch.automations ?? base.automations,
     observability: patch.observability ?? base.observability,
     stateGraph: patch.stateGraph ?? base.stateGraph,
@@ -324,7 +332,9 @@ function buildBaseSpec(prompt: string, toolId: string): ToolSystemSpec {
   return {
     id,
     name: "Tool",
+    description: prompt,
     purpose: prompt,
+    version: TOOL_SPEC_VERSION,
     spec_version: TOOL_SPEC_VERSION,
     created_at: new Date().toISOString(),
     source_prompt: prompt,
@@ -346,6 +356,11 @@ function buildBaseSpec(prompt: string, toolId: string): ToolSystemSpec {
       tool: { namespace: id, retentionDays: 30, schema: {} },
       user: { namespace: id, retentionDays: 30, schema: {} },
     },
+    memory_model: {
+      tool: { namespace: id, retentionDays: 30, schema: {} },
+      user: { namespace: id, retentionDays: 30, schema: {} },
+    },
+    confidence_level: "medium",
     automations: {
       enabled: true,
       capabilities: {
@@ -402,6 +417,26 @@ function ensureMinimumSpec(
     .map((id) => IntegrationIdSchema.safeParse(id))
     .filter((result) => result.success)
     .map((result) => result.data);
+
+  // Intent → Domain Lock: STRICT FILTERING
+  // If the prompt clearly implies specific integrations, we MUST filter out everything else.
+  // This prevents "Schema Bleeding" where previous/hallucinated entities (like Repos) appear in Email tools.
+  if (detectedIntegrations.length > 0) {
+    const allowed = new Set(detectedIntegrations);
+    
+    // Filter existing spec elements to match allowed domain
+    if (spec.integrations.length > 0) {
+      spec.integrations = spec.integrations.filter(i => allowed.has(i.id));
+    }
+    if (spec.entities.length > 0) {
+      spec.entities = spec.entities.filter(e => allowed.has(e.sourceIntegration));
+    }
+    if (spec.actions.length > 0) {
+      spec.actions = spec.actions.filter(a => allowed.has(a.integrationId));
+    }
+    // Note: Workflows/Views might need filtering too, but they usually depend on actions/entities.
+  }
+
   const integrationIds: IntegrationId[] =
     spec.integrations.length > 0
       ? spec.integrations.map((i) => i.id)
@@ -483,11 +518,11 @@ function ensureMinimumSpec(
 function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
   const normalized = text.toLowerCase();
   const hits = new Set<ToolSystemSpec["integrations"][number]["id"]>();
-  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive")) hits.add("google");
-  if (normalized.includes("github")) hits.add("github");
-  if (normalized.includes("slack")) hits.add("slack");
-  if (normalized.includes("notion")) hits.add("notion");
-  if (normalized.includes("linear")) hits.add("linear");
+  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("email") || normalized.includes("inbox")) hits.add("google");
+  if (normalized.includes("github") || normalized.includes("repo") || normalized.includes("pr") || normalized.includes("pull request")) hits.add("github");
+  if (normalized.includes("slack") || normalized.includes("message") || normalized.includes("channel")) hits.add("slack");
+  if (normalized.includes("notion") || normalized.includes("page") || normalized.includes("doc")) hits.add("notion");
+  if (normalized.includes("linear") || normalized.includes("issue") || normalized.includes("ticket")) hits.add("linear");
   return Array.from(hits);
 }
 

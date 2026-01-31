@@ -146,6 +146,7 @@ export async function POST(
               .filter((entry: any) => entry.output !== undefined && entry.output !== null);
 
             const validation = validateFetchedData(outputEntries, spec.answer_contract);
+            const successfulOutputs = validation.outputs.filter((entry) => entry.output !== null && entry.output !== undefined);
             const derivedOutput = validation.outputs.find((entry: any) => entry.action.id === "github.failure.incidents")?.output;
             const goalEvidence = Array.isArray(derivedOutput) ? buildEvidenceFromDerivedIncidents(derivedOutput) : undefined;
             const relevance = evaluateRelevanceGate({
@@ -158,6 +159,7 @@ export async function POST(
               intentContract: spec.intent_contract,
               evidence: goalEvidence,
               relevance,
+              hasData: successfulOutputs.length > 0,
             });
             const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
 
@@ -167,9 +169,13 @@ export async function POST(
               previous: null,
             });
             const integrationData = snapshotRecords.integrations ?? {};
-            const successfulOutputs = validation.outputs.filter((entry) => entry.output !== null && entry.output !== undefined);
-            const dataReady = successfulOutputs.length > 0 && Object.keys(integrationData).length > 0;
-            const viewReady = successfulOutputs.length > 0;
+            
+            const dataReady = successfulOutputs.length > 0;
+            const viewReady = decision.kind === "render" || successfulOutputs.length > 0;
+            
+            if (successfulOutputs.length > 0 && !dataReady) {
+               throw new Error("Invariant violated: Records exist but data_ready is false");
+            }
 
             const finalizedAt = new Date().toISOString();
             const snapshot = snapshotRecords;

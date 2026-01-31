@@ -1,4 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createEmptyToolSpec } from "@/lib/toolos/spec";
+import { computeSpecHash } from "@/lib/spec/toolSpec";
+import { createHash, randomUUID } from "crypto";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
 
 export type FinalizeToolExecutionInput = {
@@ -118,4 +121,124 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
   if (updatePayload.data_ready) {
       console.log("[FINALIZE] data_ready set to true for tool", toolId);
   }
+}
+
+export async function ensureToolIdentity(params: {
+  supabase?: ReturnType<typeof createSupabaseAdminClient>;
+  toolId?: string;
+  orgId: string;
+  userId: string;
+  name?: string;
+  purpose?: string;
+  sourcePrompt?: string;
+}) {
+  const supabase = params.supabase ?? createSupabaseAdminClient();
+  const toolId = params.toolId ?? randomUUID();
+  const name = params.name ?? "New Tool";
+  const now = new Date().toISOString();
+  const spec = createEmptyToolSpec({
+    id: toolId,
+    name,
+    purpose: params.purpose ?? name,
+    sourcePrompt: params.sourcePrompt ?? params.purpose ?? name,
+  });
+
+  const { data: toolRow, error: toolError } = await (supabase.from("tools") as any)
+    .upsert(
+      {
+        id: toolId,
+        org_id: params.orgId,
+        name,
+        type: "tool",
+        current_spec: spec,
+      },
+      { onConflict: "id" },
+    )
+    .select("id, org_id")
+    .single();
+
+  if (toolError || !toolRow) {
+    throw new Error(`Fatal: failed to create tool row: ${toolError?.message || "Unknown error"}`);
+  }
+  if (toolRow.org_id && toolRow.org_id !== params.orgId) {
+    throw new Error(`Invariant: tool ${toolId} belongs to a different org`);
+  }
+
+  const { data: projectRow, error: projectError } = await (supabase.from("projects") as any)
+    .upsert(
+      {
+        id: toolId,
+        org_id: params.orgId,
+        name,
+        status: "DRAFT",
+        spec,
+        created_at: now,
+        updated_at: now,
+      },
+      { onConflict: "id" },
+    )
+    .select("id, org_id")
+    .single();
+
+  if (projectError || !projectRow) {
+    throw new Error(`Fatal: failed to create project row: ${projectError?.message || "Unknown error"}`);
+  }
+  if (projectRow.org_id && projectRow.org_id !== params.orgId) {
+    throw new Error(`Invariant: project ${toolId} belongs to a different org`);
+  }
+
+  const { data: verifyTool } = await (supabase.from("tools") as any)
+    .select("id")
+    .eq("id", toolId)
+    .single();
+  if (!verifyTool) {
+    throw new Error("Invariant: tool not persisted to tools table");
+  }
+
+  const { data: verifyProject } = await (supabase.from("projects") as any)
+    .select("id")
+    .eq("id", toolId)
+    .single();
+  if (!verifyProject) {
+    throw new Error("Invariant: tool not persisted to projects table");
+  }
+
+  return { toolId, spec };
+}
+
+export async function canExecuteTool(params: { toolId: string }) {
+  const supabase = createSupabaseAdminClient();
+  const { data: project } = await (supabase.from("projects") as any)
+    .select("id, active_version_id, spec")
+    .eq("id", params.toolId)
+    .single();
+
+  if (!project?.id) return { ok: false, reason: "tool_missing" };
+
+  const { data: toolRow } = await (supabase.from("tools") as any)
+    .select("id")
+    .eq("id", params.toolId)
+    .single();
+
+  if (!toolRow?.id) return { ok: false, reason: "legacy_tool_missing" };
+
+  if (!project.active_version_id) return { ok: false, reason: "active_version_missing" };
+
+  const { data: version } = await (supabase.from("tool_versions") as any)
+    .select("tool_spec, compiled_tool")
+    .eq("id", project.active_version_id)
+    .single();
+
+  if (!version?.compiled_tool || !version?.tool_spec) {
+    return { ok: false, reason: "compiled_artifact_missing" };
+  }
+
+  const specHash = computeSpecHash(version.tool_spec as any);
+  const compiledSpecHash = (version.compiled_tool as any)?.specHash;
+
+  if (!compiledSpecHash || compiledSpecHash !== specHash) {
+    return { ok: false, reason: "compiled_hash_mismatch" };
+  }
+
+  return { ok: true, reason: "ok" };
 }

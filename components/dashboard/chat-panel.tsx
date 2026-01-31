@@ -536,7 +536,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                   {msg.result.summary ? (
                     <div className="text-xs font-medium text-muted-foreground">{msg.result.summary}</div>
                   ) : null}
-                  {msg.result.result_type === "list" && Array.isArray(msg.result.rows) ? (
+                  {(msg.result.result_type === "list" || msg.result.result_type === "table") && Array.isArray(msg.result.rows) ? (
                     <ul className="list-disc pl-4">
                       {msg.result.rows.slice(0, 10).map((row, idx) => {
                         const r = row as Record<string, any>;
@@ -556,7 +556,7 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
                     </pre>
                   ) : (
                     <div className="text-sm">
-                      {msg.result.summary || "No results found."}
+                      {msg.result.summary || (msg.result.rows && msg.result.rows.length > 0 ? "Data available." : "No records found.")}
                     </div>
                   )}
                 </div>

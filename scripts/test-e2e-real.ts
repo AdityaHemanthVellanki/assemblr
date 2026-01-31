@@ -7,6 +7,8 @@ import { IntegrationId, isToolSystemSpec } from "@/lib/toolos/spec";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { renderView } from "@/lib/toolos/view-renderer";
+import { ensureToolIdentity, canExecuteTool } from "@/lib/toolos/lifecycle";
+import { computeSpecHash } from "@/lib/spec/toolSpec";
 
 async function runTest() {
   assertNoMocks();
@@ -26,9 +28,16 @@ async function runTest() {
 
   const scenarios = [
     {
-      name: "Multi-Integration",
-      prompt:
-        "Create a dashboard with Gmail emails, GitHub repos, Linear issues, Slack messages, and Notion pages.",
+      name: "Reply Required Emails",
+      prompt: "Show me emails I need to reply to but haven’t",
+    },
+    {
+      name: "Response Priority",
+      prompt: "What should I respond to first right now?",
+    },
+    {
+      name: "Commitments Follow Up",
+      prompt: "What commitments did I make but never followed up on?",
     },
   ];
 
@@ -37,24 +46,26 @@ async function runTest() {
   for (const scenario of scenarios) {
     console.log(`\n--- Scenario: ${scenario.name} ---`);
     try {
-      const { data: project, error: projectError } = await supabase
-        .from("projects")
-        .insert({ org_id: orgId, name: `E2E ${scenario.name}`, spec: {} as any })
-        .select("id")
-        .single();
-      if (projectError || !project) {
-        throw new Error("Failed to create tool");
-      }
+      const { toolId } = await ensureToolIdentity({
+        supabase,
+        orgId,
+        userId: user.id,
+        name: `E2E ${scenario.name}`,
+        purpose: scenario.prompt,
+        sourcePrompt: scenario.prompt,
+      });
 
       const result = await processToolChat({
         orgId,
-        toolId: project.id,
+        toolId,
+        userId: user.id,
         currentSpec: {},
         messages: [],
         userMessage: scenario.prompt,
         connectedIntegrationIds: [],
         mode: "create",
         integrationMode: "auto",
+        supabaseClient: supabase,
       });
 
       if (!result.spec || !isToolSystemSpec(result.spec)) {
@@ -64,16 +75,41 @@ async function runTest() {
       await supabase
         .from("projects")
         .update({ spec: result.spec as any })
-        .eq("id", project.id);
+        .eq("id", toolId);
 
-      const integrations = result.spec.integrations.map((s) => s.id);
-      const expected: IntegrationId[] = ["google", "github", "linear", "slack", "notion"];
-      const missing = expected.filter((id) => !integrations.includes(id));
-      if (missing.length > 0) {
-        throw new Error(`Missing integrations: ${missing.join(", ")}`);
+      const { data: projectRow } = await supabase
+        .from("projects")
+        .select("active_version_id")
+        .eq("id", toolId)
+        .single();
+      if (!projectRow?.active_version_id) {
+        throw new Error("Missing active_version_id after compile");
       }
+      const { data: versionRow } = await (supabase.from("tool_versions") as any)
+        .select("tool_spec, compiled_tool, build_hash")
+        .eq("id", projectRow.active_version_id)
+        .single();
+      if (!versionRow?.tool_spec || !versionRow?.compiled_tool) {
+        throw new Error("Missing tool_spec or compiled_tool after compile");
+      }
+      const computedHash = computeSpecHash(versionRow.tool_spec);
+      const compiledHash = versionRow.compiled_tool?.specHash;
+      if (compiledHash !== computedHash) {
+        console.log("Hash mismatch", {
+          compiledHash,
+          computedHash,
+          buildHash: versionRow.build_hash,
+        });
+      }
+
+      const executionCheck = await canExecuteTool({ toolId });
+      if (!executionCheck.ok) {
+        throw new Error(`Tool not executable after compile (${executionCheck.reason})`);
+      }
+
+      const integrations = result.spec.integrations.map((s) => s.id) as IntegrationId[];
       const compiledTool = buildCompiledToolArtifact(result.spec);
-      for (const integration of expected) {
+      for (const integration of integrations) {
         const action = result.spec.actions.find((a) => a.integrationId === integration);
         if (!action) {
           console.error(`❌ Missing action for ${integration}`);
@@ -82,7 +118,7 @@ async function runTest() {
         try {
           const exec = await executeToolAction({
             orgId,
-            toolId: project.id,
+            toolId,
             compiledTool,
             actionId: action.id,
             input: {},

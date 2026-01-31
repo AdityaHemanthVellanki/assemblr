@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 
 import { PermissionError, requireOrgMember, requireRole } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
-import { createEmptyToolSpec, hasMinimalToolSpecFields, parseToolSpec } from "@/lib/spec/toolSpec";
+import { hasMinimalToolSpecFields, parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { ensureToolIdentity } from "@/lib/toolos/lifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -70,40 +72,17 @@ export async function POST(req: Request) {
         ? maybeName.trim()
         : "Untitled Project";
 
-    const spec = createEmptyToolSpec({ name, purpose: name, sourcePrompt: name });
+    const adminSupabase = createSupabaseAdminClient();
+    const { toolId } = await ensureToolIdentity({
+      supabase: adminSupabase,
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      name,
+      purpose: name,
+      sourcePrompt: name,
+    });
 
-    const supabase = await createSupabaseServerClient();
-    const projectRes = await supabase
-      .from("projects")
-      .insert({ 
-        name, 
-        org_id: ctx.orgId, 
-        spec,
-        status: "DRAFT" // Explicitly set valid status to satisfy projects_status_check
-      })
-      .select("id")
-      .single();
-
-    if (projectRes.error || !projectRes.data?.id) {
-      console.error("create project failed", {
-        userId: ctx.userId,
-        orgId: ctx.orgId,
-        message: projectRes.error?.message,
-        code: projectRes.error?.code,
-        details: projectRes.error?.details,
-      });
-
-      // Handle constraint violations explicitly
-      if (projectRes.error?.code === '23514') {
-        return NextResponse.json({ 
-          error: "Database constraint violation: Invalid status or data format." 
-        }, { status: 400 });
-      }
-
-      return NextResponse.json({ error: "Failed to create project" }, { status: 500 });
-    }
-
-    return NextResponse.json({ id: projectRes.data.id }, { status: 201 });
+    return NextResponse.json({ id: toolId }, { status: 201 });
   } catch (err) {
     if (err instanceof PermissionError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

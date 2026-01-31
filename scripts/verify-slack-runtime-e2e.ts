@@ -21,10 +21,17 @@ const scenarios: SlackScenario[] = [
 ];
 
 function buildSlackSpec(): ToolSystemSpec {
+  const memorySchema = {
+    observations: [],
+    aggregates: {},
+    decay: { halfLifeDays: 14 },
+  };
   return {
     id: "slack-tool",
     name: "Slack Tool",
+    description: "Slack runtime verification",
     purpose: "Slack runtime verification",
+    version: 1,
     spec_version: 1,
     created_at: new Date().toISOString(),
     source_prompt: "Slack runtime verification",
@@ -52,9 +59,14 @@ function buildSlackSpec(): ToolSystemSpec {
     derived_entities: [],
     query_plans: [],
     memory: {
-      tool: { namespace: "slack-tool", retentionDays: 30, schema: {} },
-      user: { namespace: "slack-tool", retentionDays: 30, schema: {} },
+      tool: { namespace: "slack-tool", retentionDays: 30, schema: memorySchema },
+      user: { namespace: "slack-tool", retentionDays: 30, schema: memorySchema },
     },
+    memory_model: {
+      tool: { namespace: "slack-tool", retentionDays: 30, schema: memorySchema },
+      user: { namespace: "slack-tool", retentionDays: 30, schema: memorySchema },
+    },
+    confidence_level: "medium",
     automations: {
       enabled: true,
       capabilities: {

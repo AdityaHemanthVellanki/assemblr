@@ -93,6 +93,13 @@ export function ProjectWorkspace({
   );
   const [integrationGateOpen, setIntegrationGateOpen] = React.useState(false);
   const [missingIntegrations, setMissingIntegrations] = React.useState<string[]>([]);
+  const [integrationErrorMetadata, setIntegrationErrorMetadata] = React.useState<{
+    type: string;
+    integrationId: string;
+    integrationIds?: string[];
+    requiredBy?: string[];
+    blockingActions?: string[];
+  } | null>(null);
   const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
   const [pendingExecutionId, setPendingExecutionId] = React.useState<string | null>(null);
   const [pendingRequiredIntegrations, setPendingRequiredIntegrations] = React.useState<string[]>([]);
@@ -126,12 +133,7 @@ export function ProjectWorkspace({
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
-  const canRenderTool = Boolean(
-    toolId &&
-      viewReady &&
-      viewSpec &&
-      (viewSpec.decision?.kind !== "render" || dataSnapshot)
-  );
+  const canRenderTool = Boolean(toolId && viewSpec);
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
@@ -153,27 +155,9 @@ export function ProjectWorkspace({
       didPollRef.current = true;
       return;
     }
-    if (viewReady && dataReady) {
-      didPollRef.current = true;
-      return;
-    }
-
     const poll = async () => {
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
-            
-            if (res.data_ready === true && res.view_ready === true) {
-                 console.log("[UI] Data ready, stopping polling");
-                 setDataReady(true);
-                 setViewReady(true);
-                 if (res.data_snapshot) setDataSnapshot(res.data_snapshot);
-                if (res.view_spec) {
-                  const normalized =
-                    Array.isArray(res.view_spec) ? { views: res.view_spec } : res.view_spec;
-                  setViewSpec(normalized);
-                }
-                 return;
-            }
 
             // Update local state from DB response
             if (res.status) setProjectStatus(res.status);
@@ -182,23 +166,23 @@ export function ProjectWorkspace({
                  setInitError(res.error);
             }
 
-            if (res.data_ready === true && res.data_snapshot) {
-                 setDataReady(true);
-                 setDataSnapshot(res.data_snapshot);
+            if (typeof res.data_ready === "boolean") {
+                 setDataReady(res.data_ready);
             }
 
-            if (res.view_ready === true && res.view_spec) {
+            if (res.data_snapshot) {
+                 setDataSnapshot(res.data_snapshot);
+                 setDataReady(true);
+            }
+
+            if (typeof res.view_ready === "boolean") {
+                 setViewReady(res.view_ready);
+            }
+
+            if (res.view_spec) {
                  const normalized =
                    Array.isArray(res.view_spec) ? { views: res.view_spec } : res.view_spec;
-                 setViewReady(true);
                  setViewSpec(normalized);
-            }
-            
-            if (res.data_ready === true && res.view_ready === true) {
-                 if (res.status === "FAILED") {
-                     setInitError(res.error || "Tool initialization failed.");
-                 }
-                 return;
             }
 
             if (res.status === "FAILED") {
@@ -468,6 +452,7 @@ export function ProjectWorkspace({
           setBuildSteps(defaultBuildSteps());
           setIntegrationGateOpen(true);
           setMissingIntegrations(response.missingIntegrations ?? []);
+          setIntegrationErrorMetadata((response as any).metadata?.integration_error ?? null);
           setPendingPrompt(prompt);
           setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
           setPendingMessageAdded(shouldAddMessage);
@@ -561,9 +546,9 @@ export function ProjectWorkspace({
     await executePrompt(inputValue);
   };
 
-  const handleConnectMissing = React.useCallback(async () => {
+  const handleConnectMissing = React.useCallback(async (targetIntegrationId?: string) => {
     if (!pendingPrompt || missingIntegrations.length === 0) return;
-    const integrationId = missingIntegrations[0];
+    const integrationId = targetIntegrationId || missingIntegrations[0];
     
     setIsConnecting(true);
     
@@ -631,6 +616,7 @@ export function ProjectWorkspace({
       clearPendingPrompt();
       setIntegrationGateOpen(false);
       setMissingIntegrations([]);
+      setIntegrationErrorMetadata(null);
       setPendingPrompt(null);
       setPendingRequiredIntegrations([]);
       setPendingMessageAdded(false);
@@ -647,6 +633,35 @@ export function ProjectWorkspace({
         return;
       }
 
+      if ("requiresIntegrations" in response && response.requiresIntegrations) {
+        setIsExecuting(false);
+        setBuildSteps(defaultBuildSteps());
+        setIntegrationGateOpen(true);
+        setMissingIntegrations(response.missingIntegrations ?? []);
+        setIntegrationErrorMetadata((response as any).metadata?.integration_error ?? null);
+        
+        const executionId = (response as any)?.metadata?.executionId ?? null;
+        setPendingExecutionId(executionId);
+        
+        // Retrieve the prompt from the response metadata to ensure subsequent connections work
+        const originalPrompt = (response as any)?.metadata?.prompt ?? null;
+        if (originalPrompt) {
+            setPendingPrompt(originalPrompt);
+            setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
+            // We don't know if the message was added, but for pending prompt logic it matters less
+            // The important part is that handleConnectMissing has a prompt to work with.
+            setPendingMessageAdded(true); 
+            
+            // Store it in localStorage just in case
+            storePendingPrompt({
+                prompt: originalPrompt,
+                requiredIntegrations: response.requiredIntegrations ?? [],
+                messageAdded: true,
+                executionId,
+            });
+        }
+      }
+      
       const data = response as {
         toolId?: string;
         message: { content: string };
@@ -972,36 +987,44 @@ export function ProjectWorkspace({
             <div className="space-y-2">
               {missingIntegrations.map((integrationId) => {
                 const integration = integrationById.get(integrationId);
+                const isBlocking = integrationErrorMetadata?.integrationIds?.includes(integrationId) || integrationErrorMetadata?.integrationId === integrationId;
+                const blockingActions = isBlocking ? integrationErrorMetadata?.requiredBy : undefined;
+
                 return (
                   <div
                     key={integrationId}
-                    className="flex items-center justify-between rounded-md border border-border/60 bg-muted/20 px-3 py-2"
+                    className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3"
                   >
-                    <div className="flex items-center gap-2">
-                      {integration?.logoUrl ? (
-                        <Image
-                          src={integration.logoUrl}
-                          alt={integration.name}
-                          width={20}
-                          height={20}
-                          className="h-5 w-5 rounded"
-                        />
-                      ) : null}
-                      <span className="text-foreground/90">{integration?.name ?? integrationId}</span>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        {integration?.logoUrl ? (
+                          <Image
+                            src={integration.logoUrl}
+                            alt={integration.name}
+                            width={20}
+                            height={20}
+                            className="h-5 w-5 rounded"
+                          />
+                        ) : null}
+                        <span className="text-foreground/90 font-medium">{integration?.name ?? integrationId}</span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleConnectMissing(integrationId)}
+                      >
+                        Connect
+                      </Button>
                     </div>
-                    <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                      Required
-                    </span>
+                    {blockingActions && blockingActions.length > 0 && (
+                      <div className="text-xs text-muted-foreground pl-7">
+                        Needed for: {blockingActions.join(", ")}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
-            <Button
-              onClick={handleConnectMissing}
-              disabled={!pendingPrompt || missingIntegrations.length === 0}
-            >
-              Connect & Continue
-            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -1266,6 +1289,7 @@ function ToolViewRenderer({
   dataSnapshot: Record<string, any> | null;
 }) {
   const records = resolveSnapshotRecords(dataSnapshot ?? null);
+  console.log("UI received records:", records);
   const state = records.state ?? {};
   const views = Array.isArray(viewSpec.views) ? viewSpec.views : [];
   const answerContract = viewSpec.answer_contract;
@@ -1295,7 +1319,13 @@ function ToolViewRenderer({
         </div>
       </div>
     ) : null;
-  if (decision?.kind === "ask") {
+  const viewRows = views.map((view) => {
+    const data = resolveStatePath(state, view.source.statePath);
+    const rows = normalizeRows(data);
+    return { view, rows };
+  });
+  const hasRows = viewRows.some(({ rows }) => rows.length > 0);
+  if (decision?.kind === "ask" && !hasRows) {
     return (
       <div className="flex h-full flex-col bg-background">
         <div className="border-b border-border/60 px-6 py-4">
@@ -1312,18 +1342,18 @@ function ToolViewRenderer({
       </div>
     );
   }
-  if (decision?.kind === "explain") {
+  if (decision?.kind === "explain" && !hasRows) {
     return (
       <div className="flex h-full flex-col bg-background">
         <div className="border-b border-border/60 px-6 py-4">
-          <div className="text-xs uppercase text-muted-foreground">Explanation</div>
-          <div className="text-lg font-semibold">No results</div>
+          <div className="text-xs uppercase text-muted-foreground">Status</div>
+          <div className="text-lg font-semibold">Update</div>
         </div>
         <div className="flex-1 overflow-auto p-6 space-y-4">
           {slackBanner}
           {assumptionsBanner}
           <div className="rounded-lg border border-border/60 bg-background px-4 py-6 text-sm">
-            {decision.explanation ?? "No results found for the requested goal."}
+            {decision.explanation ?? "No data found matching your request."}
           </div>
         </div>
       </div>
@@ -1343,48 +1373,45 @@ function ToolViewRenderer({
             {decision.explanation}
           </div>
         )}
-        {views.map((view) => {
-          const data = resolveStatePath(state, view.source.statePath);
-          const rows = normalizeRows(data);
-          return (
-            <div key={view.id} className="rounded-lg border border-border/60 bg-background">
-              <div className="border-b border-border/60 px-4 py-3 text-sm font-medium">{view.name}</div>
-              <div className="overflow-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/40 text-muted-foreground">
-                    <tr>
+        {viewRows.map(({ view, rows }) => (
+          <div key={view.id} className="rounded-lg border border-border/60 bg-background">
+            <div className="border-b border-border/60 px-4 py-3 text-sm font-medium">{view.name}</div>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-muted-foreground">
+                  <tr>
+                    {view.fields.map((field) => (
+                      <th key={field} className="px-4 py-2 text-left font-medium">
+                        {field}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, index) => (
+                    <tr key={`${view.id}-${index}`} className="border-t border-border/60">
                       {view.fields.map((field) => (
-                        <th key={field} className="px-4 py-2 text-left font-medium">
-                          {field}
-                        </th>
+                        <td key={`${view.id}-${index}-${field}`} className="px-4 py-2 align-top">
+                          {formatCell(row?.[field])}
+                        </td>
                       ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, index) => (
-                      <tr key={`${view.id}-${index}`} className="border-t border-border/60">
-                        {view.fields.map((field) => (
-                          <td key={`${view.id}-${index}-${field}`} className="px-4 py-2 align-top">
-                            {formatCell(row?.[field])}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {rows.length === 0 && (
-                  <div className="px-4 py-6 text-sm text-muted-foreground">
-                    {viewSpec.goal_plan?.primary_goal
-                      ? `No results for ${viewSpec.goal_plan.primary_goal}.`
-                      : answerContract?.required_constraints?.[0]
-                      ? `No ${answerContract.entity_type}s found related to "${answerContract.required_constraints[0].value}".`
-                      : "No results."}
-                  </div>
-                )}
-              </div>
+                  ))}
+                </tbody>
+              </table>
+              {rows.length === 0 && (
+                <div className="px-4 py-6 text-sm text-muted-foreground">
+                  {decision?.explanation ||
+                    (view.source?.entity
+                      ? `No ${view.source.entity.toLowerCase()}s found matching your criteria.`
+                      : viewSpec.goal_plan?.primary_goal
+                        ? `No results found for "${viewSpec.goal_plan.primary_goal}".`
+                        : "No records found matching your criteria.")}
+                </div>
+              )}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </div>
   );
