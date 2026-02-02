@@ -49,7 +49,7 @@ BEGIN
 
   UPDATE public.projects
   SET
-    data_snapshot = p_integration_data,
+    data_snapshot = p_snapshot,
     data_ready = true,
     view_spec = p_view_spec,
     view_ready = true,

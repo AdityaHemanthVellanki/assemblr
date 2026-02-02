@@ -11,7 +11,7 @@ import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { FatalInvariantViolation } from "@/lib/core/errors";
 
 export const dynamic = "force-dynamic";
-import { materializeToolOutput, getLatestToolResult, buildSnapshotRecords } from "@/lib/toolos/materialization";
+import { materializeToolOutput, getLatestToolResult, buildSnapshotRecords, countSnapshotRecords } from "@/lib/toolos/materialization";
 import { type ViewSpecPayload } from "@/lib/toolos/spec";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
@@ -153,27 +153,27 @@ export async function POST(
               intentContract: spec.intent_contract,
               outputs: validation.outputs.map((entry) => ({ output: entry.output })),
             });
-            const goalValidation = evaluateGoalSatisfaction({
-              prompt: spec.purpose,
-              goalPlan: spec.goal_plan,
-              intentContract: spec.intent_contract,
-              evidence: goalEvidence,
-              relevance,
-              hasData: successfulOutputs.length > 0,
-            });
-            const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
-
             const snapshotRecords = buildSnapshotRecords({
               spec,
               outputs: validation.outputs,
               previous: null,
             });
             const integrationData = snapshotRecords.integrations ?? {};
+            const recordCount = countSnapshotRecords(snapshotRecords);
+            const dataReady = recordCount > 0;
+
+            const goalValidation = evaluateGoalSatisfaction({
+              prompt: spec.purpose,
+              goalPlan: spec.goal_plan,
+              intentContract: spec.intent_contract,
+              evidence: goalEvidence,
+              relevance,
+              hasData: dataReady,
+            });
+            const decision = decideRendering({ prompt: spec.purpose, result: goalValidation });
+            const viewReady = decision.kind === "render" || dataReady;
             
-            const dataReady = successfulOutputs.length > 0;
-            const viewReady = decision.kind === "render" || successfulOutputs.length > 0;
-            
-            if (successfulOutputs.length > 0 && !dataReady) {
+            if (recordCount > 0 && !dataReady) {
                throw new Error("Invariant violated: Records exist but data_ready is false");
             }
 
@@ -229,7 +229,7 @@ export async function POST(
                 const { error: projectUpdateError } = await (statusSupabase as any)
                   .from("projects")
                   .update({
-                    data_snapshot: integrationData ?? {},
+                    data_snapshot: snapshot,
                     data_ready: dataReady,
                     view_spec: viewSpec,
                     view_ready: viewReady,

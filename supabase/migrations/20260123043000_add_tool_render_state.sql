@@ -18,6 +18,8 @@ CREATE OR REPLACE FUNCTION public.finalize_tool_render_state(
   p_integration_data jsonb,
   p_snapshot jsonb,
   p_view_spec jsonb,
+  p_data_ready boolean,
+  p_view_ready boolean,
   p_finalized_at timestamptz
 )
 RETURNS void
@@ -47,8 +49,8 @@ BEGIN
     p_integration_data,
     p_snapshot,
     p_view_spec,
-    true,
-    true,
+    p_data_ready,
+    p_view_ready,
     p_finalized_at
   )
   ON CONFLICT (tool_id) DO UPDATE
@@ -63,10 +65,10 @@ BEGIN
 
   UPDATE public.projects
   SET
-    data_snapshot = p_integration_data,
-    data_ready = true,
+    data_snapshot = p_snapshot,
+    data_ready = p_data_ready,
     view_spec = p_view_spec,
-    view_ready = true,
+    view_ready = p_view_ready,
     status = 'READY',
     finalized_at = p_finalized_at,
     lifecycle_done = true,

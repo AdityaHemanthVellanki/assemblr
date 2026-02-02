@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Share } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Circle, Loader2, Share } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PromptBar } from "@/components/dashboard/prompt-bar";
 import { ZeroStateView } from "@/components/dashboard/zero-state";
-import { BuildProgressPanel, type BuildStep } from "@/components/dashboard/build-progress-panel";
+import type { BuildStep } from "@/components/dashboard/build-progress-panel";
 import { resumeChatExecution, sendChatMessage } from "@/app/actions/chat";
 import { startOAuthFlow } from "@/app/actions/oauth";
 import { ToolSpec } from "@/lib/spec/toolSpec";
@@ -782,9 +782,15 @@ export function ProjectWorkspace({
               <div className="flex h-full w-[360px] flex-col border-r border-border/50">
                 <ScrollArea className="flex-1">
                   <div className="px-4 py-6 space-y-6">
-                    <BuildProgressPanel
-                      steps={buildSteps}
-                      collapsed={!showBuildSteps}
+                    <NarratedExecutionPanel
+                      buildSteps={buildSteps}
+                      prompt={lastUserPrompt}
+                      spec={currentSpec}
+                      assumptions={viewSpec?.assumptions ?? []}
+                      missingIntegrations={missingIntegrations}
+                      integrationById={integrationById}
+                      isExecuting={isExecuting}
+                      show={showBuildSteps}
                       onToggle={() => setShowBuildSteps((prev) => !prev)}
                     />
                     {messages.map((m, i) => (
@@ -1321,10 +1327,27 @@ function ToolViewRenderer({
     ) : null;
   const viewRows = views.map((view) => {
     const data = resolveStatePath(state, view.source.statePath);
-    const rows = normalizeRows(data);
-    return { view, rows };
+    const [integrationKey] = view.source.statePath.split(".");
+    const fallback =
+      data ?? (integrationKey ? records.integrations?.[integrationKey] ?? null : null);
+    const rows = normalizeRows(fallback);
+    const actionFallback = Array.isArray(view.actions)
+      ? view.actions.flatMap((actionId) => normalizeRows(records.actions?.[actionId]))
+      : [];
+    const resolvedRows = rows.length > 0 ? rows : actionFallback;
+    const sampleKeys = Object.keys((resolvedRows[0] ?? {}) as Record<string, any>);
+    console.log("[Render] View data", {
+      viewId: view.id,
+      entity: view.source?.entity ?? null,
+      rowsLength: resolvedRows.length,
+      schemaFields: view.fields,
+      rowKeys: sampleKeys,
+      assumptionsApplied: assumptions.length,
+    });
+    return { view, rows: resolvedRows };
   });
   const hasRows = viewRows.some(({ rows }) => rows.length > 0);
+  const recordCount = countSnapshotRecords(records);
   if (decision?.kind === "ask" && !hasRows) {
     return (
       <div className="flex h-full flex-col bg-background">
@@ -1373,45 +1396,54 @@ function ToolViewRenderer({
             {decision.explanation}
           </div>
         )}
-        {viewRows.map(({ view, rows }) => (
-          <div key={view.id} className="rounded-lg border border-border/60 bg-background">
-            <div className="border-b border-border/60 px-4 py-3 text-sm font-medium">{view.name}</div>
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-muted-foreground">
-                  <tr>
-                    {view.fields.map((field) => (
-                      <th key={field} className="px-4 py-2 text-left font-medium">
-                        {field}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => (
-                    <tr key={`${view.id}-${index}`} className="border-t border-border/60">
+        {viewRows.map(({ view, rows }) => {
+          if (view.source?.entity === "Email") {
+            console.log("[EmailTable] Render", {
+              rowsLength: rows.length,
+              rowKeys: Object.keys((rows[0] ?? {}) as Record<string, any>),
+              assumptionsApplied: assumptions.length,
+            });
+          }
+          return (
+            <div key={view.id} className="rounded-lg border border-border/60 bg-background">
+              <div className="border-b border-border/60 px-4 py-3 text-sm font-medium">{view.name}</div>
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 text-muted-foreground">
+                    <tr>
                       {view.fields.map((field) => (
-                        <td key={`${view.id}-${index}-${field}`} className="px-4 py-2 align-top">
-                          {formatCell(row?.[field])}
-                        </td>
+                        <th key={field} className="px-4 py-2 text-left font-medium">
+                          {field}
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-              {rows.length === 0 && (
-                <div className="px-4 py-6 text-sm text-muted-foreground">
-                  {decision?.explanation ||
-                    (view.source?.entity
-                      ? `No ${view.source.entity.toLowerCase()}s found matching your criteria.`
-                      : viewSpec.goal_plan?.primary_goal
-                        ? `No results found for "${viewSpec.goal_plan.primary_goal}".`
-                        : "No records found matching your criteria.")}
-                </div>
-              )}
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => (
+                      <tr key={`${view.id}-${index}`} className="border-t border-border/60">
+                        {view.fields.map((field) => (
+                          <td key={`${view.id}-${index}-${field}`} className="px-4 py-2 align-top">
+                            {formatCell(row?.[field])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length === 0 && recordCount === 0 && (
+                  <div className="px-4 py-6 text-sm text-muted-foreground">
+                    {decision?.explanation ||
+                      (view.source?.entity
+                        ? `No ${view.source.entity.toLowerCase()}s found matching your criteria.`
+                        : viewSpec.goal_plan?.primary_goal
+                          ? `No results found for "${viewSpec.goal_plan.primary_goal}".`
+                          : "No records found matching your criteria.")}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1419,12 +1451,27 @@ function ToolViewRenderer({
 
 function normalizeRows(data: any): Array<Record<string, any>> {
   if (Array.isArray(data)) {
-    return data.map((row) => normalizeGmailRow(row) ?? row);
+    return data.flatMap((row) => {
+      if (Array.isArray(row)) {
+        return row.map((inner) => normalizeGmailRow(inner) ?? inner);
+      }
+      return [normalizeGmailRow(row) ?? row];
+    });
   }
   if (data && typeof data === "object") {
+    const extracted =
+      Array.isArray((data as any).messages) ? (data as any).messages : null;
+    if (extracted) {
+      return extracted.map((row: any) => normalizeGmailRow(row) ?? row);
+    }
     return Object.values(data)
       .filter((value) => value && typeof value === "object")
-      .map((row) => normalizeGmailRow(row) ?? row) as Array<Record<string, any>>;
+      .flatMap((row) => {
+        if (Array.isArray(row)) {
+          return row.map((inner) => normalizeGmailRow(inner) ?? inner);
+        }
+        return [normalizeGmailRow(row) ?? row];
+      }) as Array<Record<string, any>>;
   }
   return [];
 }
@@ -1477,7 +1524,26 @@ function resolveSnapshotRecords(snapshot: Record<string, any> | null | undefined
       integrations: typeof cast.integrations === "object" && cast.integrations ? cast.integrations : {},
     };
   }
+  if (Array.isArray(snapshot)) {
+    return { state: {}, actions: {}, integrations: { fallback: snapshot } };
+  }
+  if (snapshot && typeof snapshot === "object") {
+    return { state: {}, actions: {}, integrations: snapshot };
+  }
   return { state: {}, actions: {}, integrations: {} };
+}
+
+function countSnapshotRecords(records: SnapshotRecords | null | undefined) {
+  if (!records?.actions) return 0;
+  let total = 0;
+  for (const value of Object.values(records.actions)) {
+    if (Array.isArray(value)) {
+      total += value.length;
+      continue;
+    }
+    if (value) total += 1;
+  }
+  return total;
 }
 
 function defaultBuildSteps(): BuildStep[] {
@@ -1575,4 +1641,283 @@ function markError(steps: BuildStep[], message: string): BuildStep[] {
     compileStep.logs.push(message);
   }
   return next;
+}
+
+function NarratedExecutionPanel({
+  buildSteps,
+  prompt,
+  spec,
+  assumptions,
+  missingIntegrations,
+  integrationById,
+  isExecuting,
+  show,
+  onToggle,
+}: {
+  buildSteps: BuildStep[];
+  prompt: string | null;
+  spec: ToolSpec | null;
+  assumptions: Array<unknown>;
+  missingIntegrations: string[];
+  integrationById: Map<string, (typeof INTEGRATIONS_UI)[number]>;
+  isExecuting: boolean;
+  show: boolean;
+  onToggle: () => void;
+}) {
+  const [addToolsOpen, setAddToolsOpen] = React.useState(true);
+  const [actionOpen, setActionOpen] = React.useState(true);
+
+  if (!show && !prompt && !isExecuting) {
+    return null;
+  }
+
+  const actionLabel = resolveActionLabel(spec, prompt);
+  const actionPhrase = toSentence(actionLabel);
+  const integrationIds = resolveIntegrationIds(spec, missingIntegrations);
+  const introNarration = buildIntroNarration(integrationIds, integrationById, prompt, actionPhrase);
+  const addToolsStatus = deriveAddToolsStatus(buildSteps, missingIntegrations);
+  const actionStatus = deriveActionStatus(buildSteps);
+  const showIntermediate = addToolsStatus === "success";
+  const showAssumptions = assumptions.length > 0 && addToolsStatus !== "error";
+  const failureNarration = buildFailureNarration(addToolsStatus, actionStatus, missingIntegrations, integrationById);
+
+  return (
+    <div className="space-y-5">
+      <button
+        className="flex w-full items-center justify-between rounded-lg border border-border/60 bg-background px-4 py-3 text-left text-sm font-medium"
+        onClick={onToggle}
+        type="button"
+      >
+        Execution plan
+        <span className="text-xs text-muted-foreground">{show ? "Hide" : "Show"}</span>
+      </button>
+      {show && (
+        <div className="space-y-5">
+          {introNarration && (
+            <div className="text-sm text-foreground/90">{introNarration}</div>
+          )}
+          {failureNarration ? (
+            <div className="text-sm text-foreground/90">{failureNarration}</div>
+          ) : (
+            <>
+              <NarratedStepCard
+                title="Add Tools"
+                status={addToolsStatus}
+                open={addToolsOpen}
+                onToggle={() => setAddToolsOpen((prev) => !prev)}
+              >
+                {integrationIds.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">Preparing tool access.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {integrationIds.map((id) => {
+                      const ui = integrationById.get(id);
+                      const name = resolveIntegrationName(id, ui?.name, prompt);
+                      const description = resolveIntegrationDescription(id, ui?.description, prompt);
+                      return (
+                        <div key={id} className="space-y-1">
+                          <div className="text-sm font-medium">{name}</div>
+                          <div className="text-xs text-muted-foreground">{description}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </NarratedStepCard>
+              {showAssumptions && (
+                <div className="text-sm text-foreground/90">
+                  I applied reasonable defaults where details were missing. You can refine this later if needed.
+                </div>
+              )}
+              {showIntermediate && actionPhrase && (
+                <div className="text-sm text-foreground/90">Now I’ll {actionPhrase}.</div>
+              )}
+              <NarratedStepCard
+                title={actionLabel}
+                status={actionStatus}
+                open={actionOpen}
+                onToggle={() => setActionOpen((prev) => !prev)}
+              >
+                {actionStatus === "running" && (
+                  <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-muted-foreground" />
+                    Working…
+                  </div>
+                )}
+              </NarratedStepCard>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NarratedStepCard({
+  title,
+  status,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  status: BuildStep["status"];
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const pillLabel = statusLabel(status);
+  const pillClass = statusClass(status);
+  return (
+    <div className="rounded-lg border border-border/60 bg-background">
+      <button
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium"
+        onClick={onToggle}
+        type="button"
+      >
+        <div className="flex items-center gap-2">
+          <StatusGlyph status={status} />
+          <span>{title}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-xs ${pillClass}`}>{pillLabel}</span>
+          <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+        </div>
+      </button>
+      {open && <div className="border-t border-border/60 px-4 py-3">{children}</div>}
+    </div>
+  );
+}
+
+function StatusGlyph({ status }: { status: BuildStep["status"] }) {
+  if (status === "success") {
+    return (
+      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/15">
+        <Check className="h-3 w-3 text-emerald-500" />
+      </span>
+    );
+  }
+  if (status === "error") return <AlertCircle className="h-4 w-4 text-red-500" />;
+  if (status === "running") return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
+  return <Circle className="h-4 w-4 text-muted-foreground" />;
+}
+
+function statusLabel(status: BuildStep["status"]) {
+  if (status === "success") return "Complete";
+  if (status === "running") return "In progress";
+  if (status === "error") return "Blocked";
+  return "Pending";
+}
+
+function statusClass(status: BuildStep["status"]) {
+  if (status === "success") return "bg-emerald-500/10 text-emerald-600";
+  if (status === "running") return "bg-blue-500/10 text-blue-600";
+  if (status === "error") return "bg-red-500/10 text-red-600";
+  return "bg-muted text-muted-foreground";
+}
+
+function resolveActionLabel(spec: ToolSpec | null, prompt: string | null) {
+  const fromSpec = spec?.actions?.[0]?.name;
+  if (fromSpec) return fromSpec;
+  const normalized = (prompt ?? "").toLowerCase();
+  if (normalized.includes("email") || normalized.includes("gmail") || normalized.includes("inbox")) {
+    return "List emails";
+  }
+  if (normalized.includes("issue")) return "List issues";
+  if (normalized.includes("message") || normalized.includes("slack")) return "List messages";
+  if (normalized.includes("repo")) return "List repos";
+  if (normalized.includes("page") || normalized.includes("notion")) return "List pages";
+  return "Run request";
+}
+
+function toSentence(label: string) {
+  if (!label) return "";
+  const trimmed = label.trim();
+  if (!trimmed) return "";
+  return trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+}
+
+function resolveIntegrationIds(spec: ToolSpec | null, missingIntegrations: string[]) {
+  const ids = new Set<string>();
+  (spec?.integrations ?? []).forEach((integration) => ids.add(integration.id));
+  missingIntegrations.forEach((id) => ids.add(id));
+  return Array.from(ids);
+}
+
+function resolveIntegrationName(id: string, fallback: string | undefined, prompt: string | null) {
+  if (id === "google") {
+    const normalized = (prompt ?? "").toLowerCase();
+    if (normalized.includes("email") || normalized.includes("gmail") || normalized.includes("inbox")) {
+      return "Gmail";
+    }
+  }
+  return fallback ?? id;
+}
+
+function resolveIntegrationDescription(id: string, fallback: string | undefined, prompt: string | null) {
+  if (id === "google") {
+    const normalized = (prompt ?? "").toLowerCase();
+    if (normalized.includes("email") || normalized.includes("gmail") || normalized.includes("inbox")) {
+      return "Allow Assemblr to automate email tasks for you.";
+    }
+  }
+  return fallback ?? "Enable access to complete this step.";
+}
+
+function deriveAddToolsStatus(steps: BuildStep[], missingIntegrations: string[]) {
+  const integrations = steps.find((step) => step.id === "integrations");
+  const readiness = steps.find((step) => step.id === "readiness");
+  if (missingIntegrations.length > 0) return "error";
+  if (integrations?.status === "error" || readiness?.status === "error") return "error";
+  if (integrations?.status === "success") return "success";
+  if (integrations?.status === "running" || readiness?.status === "running") return "running";
+  return "pending";
+}
+
+function deriveActionStatus(steps: BuildStep[]) {
+  const runtime = steps.find((step) => step.id === "runtime");
+  const views = steps.find((step) => step.id === "views");
+  if (runtime?.status === "error" || views?.status === "error") return "error";
+  if (runtime?.status === "success" || views?.status === "success") return "success";
+  if (runtime?.status === "running") return "running";
+  return "pending";
+}
+
+function buildIntroNarration(
+  integrationIds: string[],
+  integrationById: Map<string, (typeof INTEGRATIONS_UI)[number]>,
+  prompt: string | null,
+  actionPhrase: string,
+) {
+  if (integrationIds.length === 0) {
+    if (!actionPhrase) return "Now I’ll get started.";
+    return `Now I’ll ${actionPhrase}.`;
+  }
+  const names = integrationIds
+    .map((id) => resolveIntegrationName(id, integrationById.get(id)?.name, prompt))
+    .filter(Boolean);
+  const tools = names.join(" and ");
+  if (actionPhrase) {
+    return `Now I’ll enable ${tools} access and ${actionPhrase}.`;
+  }
+  return `Now I’ll enable ${tools} access.`;
+}
+
+function buildFailureNarration(
+  addToolsStatus: BuildStep["status"],
+  actionStatus: BuildStep["status"],
+  missingIntegrations: string[],
+  integrationById: Map<string, (typeof INTEGRATIONS_UI)[number]>,
+) {
+  if (missingIntegrations.length > 0) {
+    const names = missingIntegrations
+      .map((id) => integrationById.get(id)?.name ?? id)
+      .filter(Boolean);
+    const joined = names.join(" and ");
+    return `I wasn’t able to access ${joined} yet. Please allow access to continue.`;
+  }
+  if (addToolsStatus === "error" || actionStatus === "error") {
+    return "I wasn’t able to complete this request yet. Please try again.";
+  }
+  return "";
 }

@@ -21,7 +21,7 @@ import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
-import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords } from "@/lib/toolos/materialization";
+import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords, countSnapshotRecords } from "@/lib/toolos/materialization";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
@@ -1022,18 +1022,6 @@ export async function runCompilerPipeline(
         intentContract: spec.intent_contract,
         outputs: validation.outputs.map((entry) => ({ output: entry.output })),
       });
-      const goalValidation = evaluateGoalSatisfaction({
-        prompt: input.userMessage,
-        goalPlan: spec.goal_plan,
-        intentContract: spec.intent_contract,
-        evidence: goalEvidence,
-        relevance,
-        integrationStatuses,
-        hasData: successfulOutputs.length > 0,
-      });
-      const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
-      console.log("[GoalValidation]", { goalValidation, decision });
-
       const snapshotRecords = buildSnapshotRecords({
         spec,
         outputs: validation.outputs,
@@ -1041,14 +1029,26 @@ export async function runCompilerPipeline(
       });
 
       const integrationResults = snapshotRecords.integrations ?? {};
-      const dataReady = successfulOutputs.length > 0;
+      const recordCount = countSnapshotRecords(snapshotRecords);
+      const dataReady = recordCount > 0;
       
-      if (successfulOutputs.length > 0 && !dataReady) {
+      const goalValidation = evaluateGoalSatisfaction({
+        prompt: input.userMessage,
+        goalPlan: spec.goal_plan,
+        intentContract: spec.intent_contract,
+        evidence: goalEvidence,
+        relevance,
+        integrationStatuses,
+        hasData: dataReady,
+      });
+      const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
+      console.log("[GoalValidation]", { goalValidation, decision });
+      
+      if (recordCount > 0 && !dataReady) {
          throw new Error("Invariant violated: Records exist but data_ready is false");
       }
 
-      // View should be ready if the decision is to render, even if data is empty (empty state)
-      const viewReady = decision.kind === "render" || successfulOutputs.length > 0;
+      const viewReady = decision.kind === "render" || dataReady;
       const finalizedAt = new Date().toISOString();
       const snapshot = snapshotRecords;
       const viewSpec: ViewSpecPayload = {
@@ -1102,7 +1102,7 @@ export async function runCompilerPipeline(
           const { error: projectUpdateError } = await (statusSupabase as any)
             .from("projects")
             .update({
-              data_snapshot: integrationResults ?? {},
+              data_snapshot: snapshot,
               data_ready: dataReady,
               view_spec: viewSpec,
               view_ready: viewReady,
@@ -1545,17 +1545,6 @@ export async function resumeToolExecution(params: {
     intentContract: params.spec.intent_contract,
     outputs: validation.outputs.map((entry) => ({ output: entry.output })),
   });
-  const goalValidation = evaluateGoalSatisfaction({
-    prompt: params.prompt,
-    goalPlan: params.spec.goal_plan,
-    intentContract: params.spec.intent_contract,
-    evidence: goalEvidence,
-    relevance,
-    integrationStatuses,
-    hasData: successfulOutputs.length > 0,
-  });
-  const decision = decideRendering({ prompt: params.prompt, result: goalValidation });
-
   const snapshotRecords = buildSnapshotRecords({
     spec: params.spec,
     outputs: validation.outputs,
@@ -1563,9 +1552,21 @@ export async function resumeToolExecution(params: {
   });
 
   const integrationResults = snapshotRecords.integrations ?? {};
-  const dataReady = successfulOutputs.length > 0;
+  const recordCount = countSnapshotRecords(snapshotRecords);
+  const dataReady = recordCount > 0;
   
-  if (successfulOutputs.length > 0 && !dataReady) {
+  const goalValidation = evaluateGoalSatisfaction({
+    prompt: params.prompt,
+    goalPlan: params.spec.goal_plan,
+    intentContract: params.spec.intent_contract,
+    evidence: goalEvidence,
+    relevance,
+    integrationStatuses,
+    hasData: dataReady,
+  });
+  const decision = decideRendering({ prompt: params.prompt, result: goalValidation });
+  
+  if (recordCount > 0 && !dataReady) {
       throw new Error("Invariant violated: Records exist but data_ready is false");
   }
 
@@ -1616,7 +1617,7 @@ export async function resumeToolExecution(params: {
       const { error: projectUpdateError } = await (statusSupabase as any)
         .from("projects")
         .update({
-          data_snapshot: integrationResults ?? {},
+          data_snapshot: snapshot,
           data_ready: dataReady,
           view_spec: viewSpec,
           view_ready: viewReady,
@@ -1803,15 +1804,11 @@ export function resolveAssumptions(prompt?: string) {
     normalized.includes("last month") ||
     normalized.includes("past") ||
     normalized.includes("recent") ||
+    normalized.includes("latest") ||
+    normalized.includes("newest") ||
+    normalized.includes("most recent") ||
     normalized.includes("last 7 days") ||
     normalized.includes("last 30 days");
-  if (!hasTimeRange) {
-    assumptions.push({
-      field: "time_range",
-      reason: "Assumed the last 7 days.",
-      options: ["today", "last 7 days", "last 30 days"],
-    });
-  }
   if (
     normalized.includes("important") &&
     (normalized.includes("email") || normalized.includes("inbox") || normalized.includes("mail"))

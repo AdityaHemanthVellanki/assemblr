@@ -47,7 +47,7 @@ BEGIN
 
   UPDATE public.projects
   SET
-    data_snapshot = COALESCE(p_integration_data, '{}'::jsonb),
+    data_snapshot = p_snapshot,
     data_ready = p_data_ready,
     view_spec = p_view_spec,
     view_ready = p_view_ready,

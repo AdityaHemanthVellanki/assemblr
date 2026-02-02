@@ -1,6 +1,6 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resumeToolExecution } from "@/lib/ai/tool-chat";
+import { resolveAssumptions, resumeToolExecution } from "@/lib/ai/tool-chat";
 import { IntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 
 // Mock dependencies
@@ -33,6 +33,7 @@ vi.mock("@/lib/toolos/goal-validation", () => ({
 vi.mock("@/lib/toolos/materialization", () => ({
   buildSnapshotRecords: vi.fn(),
   finalizeToolEnvironment: vi.fn(),
+  countSnapshotRecords: vi.fn(),
 }));
 
 // Mock Supabase clients
@@ -63,7 +64,7 @@ import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering } from "@/lib/toolos/goal-validation";
-import { buildSnapshotRecords, finalizeToolEnvironment } from "@/lib/toolos/materialization";
+import { buildSnapshotRecords, finalizeToolEnvironment, countSnapshotRecords } from "@/lib/toolos/materialization";
 
 describe("resumeToolExecution - Data Retrieval Flow", () => {
   const mockExecutionId = "exec-123";
@@ -106,7 +107,17 @@ describe("resumeToolExecution - Data Retrieval Flow", () => {
         viewId: "default"
     });
     (buildSnapshotRecords as any).mockReturnValue({
-        integrations: { google: { data: [{ id: "msg1" }] } }
+        state: { google: { emails: [{ id: "msg1" }] } },
+        actions: { google_gmail_list: [{ id: "msg1" }] },
+        integrations: { google: [{ id: "msg1" }] }
+    });
+    (countSnapshotRecords as any).mockImplementation((snapshot: any) => {
+      if (!snapshot?.actions) return 0;
+      return Object.values(snapshot.actions).reduce<number>((total, value: any) => {
+        if (Array.isArray(value)) return total + value.length;
+        if (value) return total + 1;
+        return total;
+      }, 0);
     });
     (finalizeToolEnvironment as any).mockResolvedValue({
         status: "MATERIALIZED"
@@ -143,6 +154,11 @@ describe("resumeToolExecution - Data Retrieval Flow", () => {
   it("should set view_ready=true when records are empty (empty state)", async () => {
     // Mock empty data
     (executeToolAction as any).mockResolvedValue({ output: [] });
+    (buildSnapshotRecords as any).mockReturnValueOnce({
+      state: {},
+      actions: {},
+      integrations: {},
+    });
     
     // Mock decision to render empty state
     (evaluateGoalSatisfaction as any).mockReturnValue({
@@ -176,5 +192,45 @@ describe("resumeToolExecution - Data Retrieval Flow", () => {
             })
         })
     }));
+  });
+
+  it("should persist snapshot when finalize_tool_render_state is unavailable", async () => {
+    mockRpc.mockResolvedValueOnce({
+      error: { message: "finalize_tool_render_state does not exist" }
+    });
+
+    await resumeToolExecution({
+      executionId: mockExecutionId,
+      orgId: mockOrgId,
+      toolId: mockToolId,
+      userId: mockUserId,
+      prompt: "show my latest emails",
+      spec: mockSpec as any,
+      compiledTool: mockCompiledTool as any,
+    });
+
+    const updateCall = mockFrom.mock.results.find((result) =>
+      typeof result.value?.update === "function"
+    )?.value.update;
+    const calledUpdate =
+      updateCall && updateCall.mock.calls.length > 0
+        ? updateCall
+        : mockFrom.mock.results
+            .map((result) => result.value?.update)
+            .find((mockFn) => mockFn && mockFn.mock.calls.length > 0);
+    expect(calledUpdate).toBeDefined();
+    expect(calledUpdate?.mock.calls[0][0]).toEqual(expect.objectContaining({
+      data_snapshot: expect.objectContaining({
+        state: expect.any(Object),
+        actions: expect.any(Object),
+        integrations: expect.any(Object),
+      }),
+    }));
+  });
+
+  it("should not apply time_range assumption for latest intent", () => {
+    const result = resolveAssumptions("show my latest emails");
+    const timeAssumption = result.assumptions.find((item) => item.field === "time_range");
+    expect(timeAssumption).toBeUndefined();
   });
 });
