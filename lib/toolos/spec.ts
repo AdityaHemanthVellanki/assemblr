@@ -216,6 +216,16 @@ export const AnswerContractSchema = z.object({
   entity_type: z.string().min(1),
   required_constraints: z.array(AnswerConstraintSchema).default([]),
   failure_policy: z.enum(["empty_over_incorrect"]),
+  list_shape: z.enum(["array", "object"]).default("array"),
+  result_shape: z
+    .object({
+      kind: z.enum(["list"]).default("list"),
+      fields: z.array(z.string()).default([]),
+      order_by: z.string().optional(),
+      order_direction: z.enum(["asc", "desc"]).optional(),
+      limit: z.number().min(1).optional(),
+    })
+    .optional(),
 });
 export type AnswerContract = z.infer<typeof AnswerContractSchema>;
 
@@ -396,6 +406,7 @@ export const ToolLifecycleStateSchema = z.enum([
   "BUILDING",
   "READY",
   "FAILED",
+  "FAILED_COMPILATION",
   "INIT",
   "INTENT_PARSED",
   "ENTITIES_EXTRACTED",
@@ -417,6 +428,8 @@ export const InitialFetchSchema = z.object({
   integrationId: IntegrationIdSchema,
   actionId: z.string().min(1),
   limit: z.number().min(1).default(10),
+  order_by: z.string().optional(),
+  order_direction: z.enum(["asc", "desc"]).optional(),
 });
 export type InitialFetch = z.infer<typeof InitialFetchSchema>;
 

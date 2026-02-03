@@ -2,6 +2,7 @@ import "server-only";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
+import { countSnapshotRecords } from "@/lib/toolos/materialization";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 
 type Scenario = {
@@ -56,7 +57,7 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
   });
 
   const { data: renderState } = await (admin.from("tool_render_state") as any)
-    .select("view_spec, data_ready, view_ready")
+    .select("view_spec, data_ready, view_ready, snapshot")
     .eq("tool_id", toolId)
     .maybeSingle();
 
@@ -87,9 +88,10 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
   if (viewSpec.goal_validation.absence_reason === "ambiguous_query" && decision.kind !== "ask") {
     throw new Error(`[${scenario.name}] Ambiguous query must ask clarification`);
   }
-  const expectedDataReady = level === "satisfied";
+  const recordCount = countSnapshotRecords(renderState.snapshot ?? null);
+  const expectedDataReady = recordCount > 0;
   if (renderState.data_ready !== expectedDataReady || renderState.view_ready !== true) {
-    throw new Error(`[${scenario.name}] Flags inconsistent with goal validation`);
+    throw new Error(`[${scenario.name}] Flags inconsistent with record count`);
   }
 
   console.log("Scenario result", {

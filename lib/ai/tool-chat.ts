@@ -26,7 +26,7 @@ import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
-import { canExecuteTool, ensureToolIdentity } from "@/lib/toolos/lifecycle";
+import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
 
 import { IntegrationNotConnectedError, isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
@@ -587,13 +587,19 @@ export async function runCompilerPipeline(
     try {
       spec = await applyIntentContract(spec, resolvedPrompt);
       spec = await applySemanticPlan(spec, resolvedPrompt);
-      spec = await applyGoalPlan(spec, resolvedPrompt);
     } catch (err) {
       intentPlanError = err as Error;
       appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
     }
+    spec = await applyGoalPlan(spec, resolvedPrompt);
     if (!intentPlanError) {
-      spec = await applyAnswerContract(spec, resolvedPrompt);
+      try {
+        spec = await applyAnswerContract(spec, resolvedPrompt);
+      } catch (err) {
+        const warningMessage =
+          err instanceof Error ? `Answer contract skipped: ${err.message}` : "Answer contract skipped";
+        appendStep(stepsById.get("compile"), warningMessage);
+      }
     }
     if (assumptions.length > 0) {
       const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
@@ -637,6 +643,10 @@ export async function runCompilerPipeline(
     spec = normalizedSpec;
     compiledTool = buildCompiledToolArtifact(normalizedSpec);
     const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
+    const { data: projectSnapshot } = await (supabase.from("projects") as any)
+      .select("spec, active_version_id, status, name, compiled_at")
+      .eq("id", toolId)
+      .single();
     console.log("[ToolPersistence] Validation Result:", {
         success: specValidation.success,
         error: specValidation.success ? null : specValidation.error,
@@ -648,6 +658,7 @@ export async function runCompilerPipeline(
     console.log("[ToolPersistence] Should Persist:", shouldPersistVersion);
 
     if (shouldPersistVersion) {
+      let createdVersionId: string | null = null;
       try {
         if (!existingExecution?.toolVersionId) {
           // GUARD: Strict Invariant Check
@@ -665,6 +676,7 @@ export async function runCompilerPipeline(
             baseSpec,
             supabase, // Pass shared client
           });
+          createdVersionId = version.id;
           console.log("[ToolPersistence] Version created:", version.id);
           await promoteToolVersion({ toolId, versionId: version.id, supabase });
           console.log("[ToolPersistence] Version promoted");
@@ -688,6 +700,34 @@ export async function runCompilerPipeline(
         console.log("[ToolPersistence] Project updated successfully");
       } catch (err: any) {
         console.error("[ToolPersistence] CRITICAL FAILURE:", err);
+        if (createdVersionId) {
+          try {
+            const previousActiveVersionId = projectSnapshot?.active_version_id ?? null;
+            const previousSpec = projectSnapshot?.spec ?? null;
+            const previousStatus = projectSnapshot?.status ?? "DRAFT";
+            const previousName = projectSnapshot?.name ?? "Tool";
+            const previousCompiledAt = projectSnapshot?.compiled_at ?? null;
+            if (previousActiveVersionId) {
+              await (supabase.from("tool_versions") as any)
+                .update({ status: "active" })
+                .eq("id", previousActiveVersionId);
+            }
+            await (supabase.from("tool_versions") as any)
+              .delete()
+              .eq("id", createdVersionId);
+            await (supabase.from("projects") as any)
+              .update({
+                active_version_id: previousActiveVersionId,
+                spec: previousSpec,
+                status: previousStatus,
+                name: previousName,
+                compiled_at: previousCompiledAt,
+              })
+              .eq("id", toolId);
+          } catch (rollbackError) {
+            console.error("[ToolPersistence] Rollback failed:", rollbackError);
+          }
+        }
         throw err;
       }
     } else {
@@ -939,10 +979,7 @@ export async function runCompilerPipeline(
         for (const action of readActions) {
             try {
                  const plan = queryPlanByAction.get(action.id);
-                 const input =
-                   plan && Object.keys(plan.query ?? {}).length > 0
-                     ? plan.query
-                     : { limit: spec.initialFetch?.limit ?? 10 };
+                 const input = buildReadActionInput({ action, plan, spec });
                  if (action.integrationId === "slack" && !slackRequired) {
                     if (!integrationStatuses.slack) {
                       try {
@@ -1193,6 +1230,10 @@ export async function runCompilerPipeline(
         }
       }
 
+      if (viewReady) {
+        markStep(steps, "views", "success", "Output ready");
+      }
+
       if (input.executionId) {
         await completeExecution(input.executionId);
       }
@@ -1265,16 +1306,30 @@ export async function runCompilerPipeline(
       await completeExecution(input.executionId);
     }
     
-    // Check for fatal infrastructure errors (retry exhaustion, timeouts, network failures)
-    const isInfraError = 
-      message.includes("Timeout") || 
-      message.includes("fetch failed") || 
-      message.includes("ECONNREFUSED") ||
-      message.includes("500") ||
-      message.includes("network");
-      
-    const failureState = isInfraError ? "INFRA_ERROR" : "DEGRADED";
-    await transition(failureState, message, "error");
+    const compilerFailure = isCompilerError(err);
+    if (compilerFailure) {
+      await transition("FAILED_COMPILATION", message, "error");
+      try {
+        await finalizeToolExecution({
+          toolId,
+          status: "FAILED",
+          errorMessage: message,
+          data_ready: false,
+          view_ready: false,
+        });
+      } catch (finalizeErr) {
+        console.error("[CompilerFinalizeFailed]", finalizeErr);
+      }
+    } else {
+      const isInfraError =
+        message.includes("Timeout") ||
+        message.includes("fetch failed") ||
+        message.includes("ECONNREFUSED") ||
+        message.includes("500") ||
+        message.includes("network");
+      const failureState = isInfraError ? "INFRA_ERROR" : "DEGRADED";
+      await transition(failureState, message, "error");
+    }
     
     if (err instanceof BudgetExceededError) {
       return {
@@ -1463,10 +1518,7 @@ export async function resumeToolExecution(params: {
     for (const action of readActions) {
       try {
         const plan = queryPlanByAction.get(action.id);
-        const input =
-          plan && Object.keys(plan.query ?? {}).length > 0
-            ? plan.query
-            : { limit: params.spec.initialFetch?.limit ?? 10 };
+        const input = buildReadActionInput({ action, plan, spec: params.spec });
         if (action.integrationId === "slack" && !slackRequired) {
           if (!integrationStatuses.slack) {
             try {
@@ -1894,6 +1946,10 @@ function appendStep(step: BuildStep | undefined, log: string) {
   step.logs.push(log);
 }
 
+function isCompilerError(error: any) {
+  return Boolean(error && typeof error === "object" && error.type === "COMPILER_ERROR");
+}
+
 async function runDataReadiness(
   spec: ToolSystemSpec,
   context?: { orgId: string; toolId: string; userId: string | null; compiledTool: CompiledToolArtifact }
@@ -1999,10 +2055,33 @@ async function runDataReadiness(
 
 function buildDefaultInput(cap: NonNullable<ReturnType<typeof getCapability>>) {
   const input: Record<string, any> = {};
-  if (cap.supportedFields.includes("maxResults")) input.maxResults = 5;
+  if (cap.id === "google_gmail_list") {
+    input.maxResults = 10;
+  } else if (cap.supportedFields.includes("maxResults")) {
+    input.maxResults = 5;
+  }
   if (cap.supportedFields.includes("pageSize")) input.pageSize = 5;
   if (cap.supportedFields.includes("first")) input.first = 5;
   if (cap.supportedFields.includes("limit")) input.limit = 5;
+  return input;
+}
+
+function buildReadActionInput(params: {
+  action: ToolSystemSpec["actions"][number];
+  plan?: IntegrationQueryPlan;
+  spec: ToolSystemSpec;
+}) {
+  const query = params.plan?.query ?? {};
+  const input: Record<string, any> =
+    Object.keys(query).length > 0 ? { ...query } : { limit: params.spec.initialFetch?.limit ?? 10 };
+  if (params.action.capabilityId === "google_gmail_list") {
+    if (input.order_by === undefined) {
+      input.order_by = params.spec.initialFetch?.order_by ?? "internalDate";
+    }
+    if (input.order_direction === undefined) {
+      input.order_direction = params.spec.initialFetch?.order_direction ?? "desc";
+    }
+  }
   return input;
 }
 
@@ -2058,9 +2137,15 @@ function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSys
 }
 
 async function applyGoalPlan(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
-  const goalPlan = await generateGoalPlanWithRetry(prompt);
-  const next = augmentSpecForGoalPlan(spec, prompt, goalPlan);
-  return { ...next, goal_plan: goalPlan };
+  try {
+    const goalPlan = await generateGoalPlanWithRetry(prompt);
+    const next = augmentSpecForGoalPlan(spec, prompt, goalPlan);
+    return { ...next, goal_plan: goalPlan };
+  } catch {
+    const fallback = buildFallbackGoalPlan(prompt);
+    const next = augmentSpecForGoalPlan(spec, prompt, fallback);
+    return { ...next, goal_plan: fallback };
+  }
 }
 
 async function applyIntentContract(spec: ToolSystemSpec, prompt: string): Promise<ToolSystemSpec> {
@@ -2200,6 +2285,17 @@ async function generateGoalPlanWithRetry(prompt: string): Promise<GoalPlan> {
     }
   }
   throw new Error("Goal plan required but unavailable");
+}
+
+function buildFallbackGoalPlan(prompt: string): GoalPlan {
+  const normalized = prompt.trim();
+  return {
+    kind: "DATA_RETRIEVAL",
+    primary_goal: normalized.length > 0 ? normalized : "Retrieve requested data",
+    sub_goals: [],
+    constraints: [],
+    derived_entities: [],
+  };
 }
 
 function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: GoalPlan): ToolSystemSpec {
@@ -2417,7 +2513,24 @@ async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promis
   if (!parsed.success) {
     throw new Error("Answer contract required but invalid");
   }
+  const normalizedPrompt = prompt.toLowerCase();
   const contract = parsed.data;
+  const isEmail = contract.entity_type.toLowerCase() === "email";
+  const wantsLatest =
+    normalizedPrompt.includes("latest") ||
+    normalizedPrompt.includes("recent") ||
+    normalizedPrompt.includes("newest") ||
+    normalizedPrompt.includes("most recent");
+  const resultShape =
+    isEmail && wantsLatest
+      ? {
+          kind: "list" as const,
+          fields: contract.result_shape?.fields ?? [],
+          order_by: contract.result_shape?.order_by ?? "internalDate",
+          order_direction: contract.result_shape?.order_direction ?? "desc",
+          limit: contract.result_shape?.limit ?? 10,
+        }
+      : contract.result_shape;
   const queryPlans = buildQueryPlansForContract(spec, contract);
   if (queryPlans.length === 0) {
     throw new Error("Answer contract required but query plans missing");
@@ -2425,7 +2538,7 @@ async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promis
   const toolGraph = buildToolGraphForContract(queryPlans);
   return {
     ...spec,
-    answer_contract: contract,
+    answer_contract: resultShape ? { ...contract, result_shape: resultShape } : contract,
     query_plans: queryPlans,
     tool_graph: toolGraph,
   };
@@ -2982,6 +3095,53 @@ function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
     const id = reducerMap.get(reducer.id) ?? reducer.id;
     return { ...reducer, id };
   });
+
+  const invalidWorkflowRefs: string[] = [];
+  const invalidTriggerRefs: string[] = [];
+  const invalidViewRefs: string[] = [];
+  const actionIdSet = new Set(spec.actions.map((action) => action.id));
+  const workflowIdSet = new Set(spec.workflows.map((workflow) => workflow.id));
+  for (const workflow of spec.workflows) {
+    for (const node of workflow.nodes) {
+      if (node.type === "action" && node.actionId && !actionIdSet.has(node.actionId)) {
+        const resolved = resolveActionId(node.actionId);
+        if (resolved !== node.actionId) {
+          invalidWorkflowRefs.push(`${workflow.id}:${node.actionId}`);
+        }
+      }
+    }
+  }
+  for (const trigger of spec.triggers) {
+    if (trigger.actionId && !actionIdSet.has(trigger.actionId)) {
+      const resolved = resolveActionId(trigger.actionId);
+      if (resolved !== trigger.actionId) {
+        invalidTriggerRefs.push(`${trigger.id}:${trigger.actionId}`);
+      }
+    }
+    if (trigger.workflowId && !workflowIdSet.has(trigger.workflowId)) {
+      invalidTriggerRefs.push(`${trigger.id}:${trigger.workflowId}`);
+    }
+  }
+  for (const view of spec.views) {
+    for (const actionId of view.actions) {
+      if (!actionIdSet.has(actionId)) {
+        const resolved = resolveActionId(actionId);
+        if (resolved !== actionId) {
+          invalidViewRefs.push(`${view.id}:${actionId}`);
+        }
+      }
+    }
+  }
+  if (invalidWorkflowRefs.length > 0 || invalidTriggerRefs.length > 0 || invalidViewRefs.length > 0) {
+    const details = [
+      invalidWorkflowRefs.length > 0 ? `workflows=${invalidWorkflowRefs.join(", ")}` : null,
+      invalidTriggerRefs.length > 0 ? `triggers=${invalidTriggerRefs.join(", ")}` : null,
+      invalidViewRefs.length > 0 ? `views=${invalidViewRefs.join(", ")}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    throw new Error(`Action/workflow ids must match action ids exactly: ${details}`);
+  }
 
   const workflows = spec.workflows.map((workflow, index) => {
     const canonicalId = `workflow.${index + 1}`;

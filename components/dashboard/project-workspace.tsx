@@ -125,7 +125,6 @@ export function ProjectWorkspace({
   const [viewSpec, setViewSpec] = React.useState<ViewSpecPayload | null>(project?.view_spec ?? null);
   const [dataReady, setDataReady] = React.useState<boolean>(project?.data_ready ?? false);
   const [dataSnapshot, setDataSnapshot] = React.useState<Record<string, any> | null>(project?.data_snapshot ?? null);
-  const didPollRef = React.useRef(false);
 
   // Derived state
   const isZeroState = messages.length === 0;
@@ -138,26 +137,12 @@ export function ProjectWorkspace({
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
     if (!toolId) return;
-    didPollRef.current = false;
-  }, [toolId]);
-
-
-  React.useEffect(() => {
-    if (!toolId) return;
-    if (didPollRef.current) return;
-    
-    // If already ready, don't poll
-    if (canRenderTool) {
-      didPollRef.current = true;
-      return;
-    }
-    if (projectStatus === "FAILED") {
-      didPollRef.current = true;
-      return;
-    }
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
     const poll = async () => {
         try {
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
+            if (cancelled) return;
 
             // Update local state from DB response
             if (res.status) setProjectStatus(res.status);
@@ -185,18 +170,33 @@ export function ProjectWorkspace({
                  setViewSpec(normalized);
             }
 
+            if (res.lifecycle_state || res.build_logs) {
+              const buildLogs = Array.isArray(res.build_logs) ? res.build_logs : null;
+              setBuildSteps(deriveBuildSteps(res.lifecycle_state ?? null, buildLogs));
+            }
+
             if (res.status === "FAILED") {
                  // Terminal state: failure
                  setInitError(res.error || "Tool initialization failed.");
+                 if (interval) clearInterval(interval);
+                 interval = null;
+            }
+            if (res.done) {
+                 if (interval) clearInterval(interval);
+                 interval = null;
             }
         } catch (e) {
             console.error("Status poll failed", e);
         }
     };
 
-    didPollRef.current = true;
     void poll();
-  }, [toolId, canRenderTool, projectStatus, viewReady, dataReady]);
+    interval = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, [toolId]);
 
   // Dynamic Header Title
   const headerTitle =
@@ -1616,7 +1616,7 @@ function resolveLifecycleStep(
   // if (lifecycleState === "MATERIALIZED") return { stepId: "views", status: "success" };
   // if (lifecycleState === "ACTIVE") return { stepId: "views", status: "success" };
   
-  if (lifecycleState === "FAILED") {
+  if (lifecycleState === "FAILED" || lifecycleState === "FAILED_COMPILATION") {
     return { stepId: "compile", status: "error" };
   }
   

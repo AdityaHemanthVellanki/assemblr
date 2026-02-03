@@ -153,6 +153,14 @@ export class ToolCompiler {
     }> = [];
 
     let degraded = false;
+    const isCompilerError = (error: any) =>
+      Boolean(
+        error &&
+          typeof error === "object" &&
+          error.type === "COMPILER_ERROR" &&
+          error.code &&
+          error.stage,
+      );
     const runStage = async (
       stage: ToolCompilerStage,
       budgetMs: number,
@@ -178,6 +186,14 @@ export class ToolCompiler {
         return { status: "completed" as const };
       }
       if (result && "error" in result) {
+        const errorValue = (result as any).error;
+        if (isCompilerError(errorValue)) {
+          const compilerError =
+            errorValue instanceof Error
+              ? errorValue
+              : Object.assign(new Error(errorValue.message ?? "Compiler error"), errorValue);
+          throw compilerError;
+        }
         const errorMessage =
           result.error instanceof Error ? result.error.message : String(result.error ?? "Stage failed");
         degraded = true;
@@ -992,7 +1008,11 @@ function buildDefaultInputForCapability(capabilityId: string) {
   const cap = getCapability(capabilityId);
   if (!cap) return {};
   const input: Record<string, any> = {};
-  if (cap.supportedFields.includes("maxResults")) input.maxResults = 5;
+  if (capabilityId === "google_gmail_list") {
+    input.maxResults = 10;
+  } else if (cap.supportedFields.includes("maxResults")) {
+    input.maxResults = 5;
+  }
   if (cap.supportedFields.includes("pageSize")) input.pageSize = 5;
   if (cap.supportedFields.includes("first")) input.first = 5;
   if (cap.supportedFields.includes("limit")) input.limit = 5;

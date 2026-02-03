@@ -35,6 +35,30 @@ export async function runBuildWorkflows(
     const json = JSON.parse(content);
     const workflows = Array.isArray(json.workflows) ? json.workflows : [];
     const triggers = Array.isArray(json.triggers) ? json.triggers : [];
+    const actionIds = new Set((ctx.spec.actions ?? []).map((action) => action.id));
+    for (const workflow of workflows) {
+      const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+      for (const node of nodes) {
+        if (node?.type === "action" && node.actionId && !actionIds.has(node.actionId)) {
+          throw {
+            type: "COMPILER_ERROR",
+            code: "ACTION_ID_NOT_FOUND",
+            message: `Workflow references undefined actionId: ${node.actionId}`,
+            stage: "build-workflows",
+          };
+        }
+      }
+    }
+    for (const trigger of triggers) {
+      if (trigger?.actionId && !actionIds.has(trigger.actionId)) {
+        throw {
+          type: "COMPILER_ERROR",
+          code: "ACTION_ID_NOT_FOUND",
+          message: `Trigger references undefined actionId: ${trigger.actionId}`,
+          stage: "build-workflows",
+        };
+      }
+    }
     return { specPatch: { workflows, triggers } };
   } catch {
     return { specPatch: { workflows: [], triggers: [] } };

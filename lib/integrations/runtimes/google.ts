@@ -31,11 +31,12 @@ export class GoogleRuntime implements IntegrationRuntime {
       integrationId: "google",
       paramsSchema: z.object({
         maxResults: z.number().optional(),
+        limit: z.number().optional(),
         q: z.string().optional(),
       }),
       execute: async (params, context, trace) => {
         const { token } = context;
-        const maxResults = params.maxResults || 20;
+        const maxResults = params.maxResults ?? params.limit ?? 10;
         const q = params.q || "";
         
         // Gmail API requires query params
@@ -70,8 +71,7 @@ export class GoogleRuntime implements IntegrationRuntime {
             
             const messages = data.messages || [];
             if (messages.length > 0) {
-                // Fetch details for the first few to populate a table
-                const detailed = await Promise.all(messages.slice(0, 10).map(async (m: any) => {
+                const detailed = await Promise.all(messages.slice(0, maxResults).map(async (m: any) => {
                     try {
                         const dRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}`, {
                              headers: { Authorization: `Bearer ${token}` }

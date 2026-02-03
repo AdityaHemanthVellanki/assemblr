@@ -127,6 +127,59 @@ async function runTests() {
     log("❌ FAIL", "red");
   }
 
+  total++;
+  log("\nTest 6: Compiler enforces workflow actionId consistency", "yellow");
+  const buildWorkflowsPath = path.join(process.cwd(), "lib/toolos/compiler/stages/build-workflows.ts");
+  const t6 = checkFileContains(buildWorkflowsPath, [
+    "ACTION_ID_NOT_FOUND",
+    "COMPILER_ERROR",
+    "build-workflows",
+    "Workflow references undefined actionId",
+  ]);
+  if (t6) {
+    log("✅ PASS", "green");
+    passed++;
+  } else {
+    log("❌ FAIL", "red");
+  }
+
+  total++;
+  log("\nTest 7: Compiler failures finalize lifecycle and stop polling", "yellow");
+  const toolChatPath = path.join(process.cwd(), "lib/ai/tool-chat.ts");
+  const t7 = checkFileContains(toolChatPath, [
+    "FAILED_COMPILATION",
+    "finalizeToolExecution",
+    "data_ready: false",
+    "view_ready: false",
+  ]);
+  if (t7) {
+    log("✅ PASS", "green");
+    passed++;
+  } else {
+    log("❌ FAIL", "red");
+  }
+
+  total++;
+  log("\nTest 8: Answer contract failures are non-fatal", "yellow");
+  const t8 = checkFileContains(toolChatPath, ["Answer contract skipped"]);
+  if (t8) {
+    log("✅ PASS", "green");
+    passed++;
+  } else {
+    log("❌ FAIL", "red");
+  }
+
+  total++;
+  log("\nTest 9: Lifecycle schema includes FAILED_COMPILATION", "yellow");
+  const specPath = path.join(process.cwd(), "lib/toolos/spec.ts");
+  const t9 = checkFileContains(specPath, ["FAILED_COMPILATION"]);
+  if (t9) {
+    log("✅ PASS", "green");
+    passed++;
+  } else {
+    log("❌ FAIL", "red");
+  }
+
   log(`\nSummary: ${passed}/${total} tests passed.`, passed === total ? "green" : "red");
   
   if (passed !== total) {

@@ -8,9 +8,19 @@ import { encryptJson } from "@/lib/security/encryption";
 
 import { fetchAndPersistSchemas } from "@/lib/schema/store";
 import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
+import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 import { getResumeContext } from "@/app/actions/oauth";
 
 export const dynamic = "force-dynamic";
+
+function normalizeScopes(scopes: string[] | string | null | undefined) {
+  if (!scopes) return [];
+  if (Array.isArray(scopes)) return scopes.filter(Boolean);
+  return scopes
+    .split(/[ ,]+/g)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 export async function GET(
   req: Request,
@@ -333,6 +343,12 @@ export async function GET(
       google_email: googleInfo?.email,
     };
 
+    const uiConfig = getIntegrationUIConfig(providerId);
+    const requiredScopes = uiConfig.auth.type === "oauth" ? uiConfig.auth.scopes ?? [] : [];
+    const grantedScopes = normalizeScopes(tokens.scope);
+    const missingScopes = requiredScopes.filter((s) => !grantedScopes.includes(s));
+    const integrationStatus = missingScopes.length > 0 ? "missing_permissions" : "active";
+
     // 3. Store Updated Credentials and Activate
     const encrypted = encryptJson(tokenSet);
 
@@ -345,9 +361,12 @@ export async function GET(
           integration_id: providerId,
           encrypted_credentials: JSON.stringify(encrypted),
           status: "active",
-      source: "oauth_callback",
-      oauth_client_id: null, // Hosted doesn't store client ID in DB
+          source: "oauth_callback",
+          oauth_client_id: null,
           provider_account_id: providerAccountId,
+          scopes: grantedScopes,
+          connected_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         },
         { onConflict: "org_id,integration_id" }
       );
@@ -355,6 +374,34 @@ export async function GET(
     if (upsertError) {
       console.error("Failed to store tokens", upsertError);
       return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
+    }
+
+    await supabase.from("org_integrations").upsert(
+      {
+        org_id: storedState.orgId,
+        integration_id: providerId,
+        status: integrationStatus,
+        scopes: grantedScopes,
+        connected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "org_id,integration_id" }
+    );
+
+    await supabase.from("integration_audit_logs").insert({
+      org_id: storedState.orgId,
+      integration_id: providerId,
+      event_type: "connection_succeeded",
+      metadata: { scopes: grantedScopes, missing_scopes: missingScopes },
+    });
+
+    if (missingScopes.length > 0) {
+      await supabase.from("integration_audit_logs").insert({
+        org_id: storedState.orgId,
+        integration_id: providerId,
+        event_type: "missing_permissions",
+        metadata: { scopes: grantedScopes, missing_scopes: missingScopes },
+      });
     }
 
     // 4. Run Health Check & Persist Status
@@ -383,6 +430,17 @@ export async function GET(
         .update({ status: "schema_failed" })
         .eq("org_id", storedState.orgId)
         .eq("integration_id", providerId);
+      await supabase
+        .from("org_integrations")
+        .update({ status: "error", updated_at: new Date().toISOString() })
+        .eq("org_id", storedState.orgId)
+        .eq("integration_id", providerId);
+      await supabase.from("integration_audit_logs").insert({
+        org_id: storedState.orgId,
+        integration_id: providerId,
+        event_type: "schema_discovery_failed",
+        metadata: { error: "Schema discovery failed" },
+      });
         
       return redirectWithError("Schema discovery failed", storedState.redirectPath);
     }

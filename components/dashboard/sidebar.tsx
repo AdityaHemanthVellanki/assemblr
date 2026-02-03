@@ -4,11 +4,11 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal } from "lucide-react";
+import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { APP_NAME } from "@/lib/branding";
-import { type OrgRole } from "@/lib/permissions-shared";
+import { type OrgRole, canManageIntegrations } from "@/lib/permissions-shared";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ import {
 
 export function Sidebar({
   className,
-  role: _role,
+  role,
 }: {
   className?: string;
   role: OrgRole;
@@ -170,6 +170,19 @@ export function Sidebar({
   const visibleProjects = normalizedQuery
     ? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
     : projects;
+  const integrationsHref = "/dashboard/integrations";
+  const integrationsActive = pathname?.startsWith(integrationsHref);
+  const canManage = canManageIntegrations(role);
+  const navItems = [
+    {
+      id: "integrations",
+      label: "Integrations",
+      href: integrationsHref,
+      icon: Plug,
+      disabled: !canManage,
+      tooltip: "You don’t have permission to manage integrations.",
+    },
+  ];
 
   return (
     <aside
@@ -205,6 +218,42 @@ export function Sidebar({
               <Plus className="h-4 w-4" />
               New Chat
             </button>
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              if (item.disabled) {
+                return (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "rounded-md px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground opacity-60 cursor-not-allowed",
+                      integrationsActive ? "bg-accent/50" : "",
+                    )}
+                    role="link"
+                    aria-disabled="true"
+                    title={item.tooltip}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                );
+              }
+
+              return (
+                <Link
+                  key={item.id}
+                  href={item.href}
+                  className={cn(
+                    "rounded-md px-3 py-2 text-sm transition flex items-center gap-2",
+                    integrationsActive
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/40",
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="truncate">{item.label}</span>
+                </Link>
+              );
+            })}
         </div>
 
       </div>

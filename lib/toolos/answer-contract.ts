@@ -3,57 +3,119 @@ import type { AnswerContract, ActionSpec } from "@/lib/toolos/spec";
 type OutputEntry = { action: ActionSpec; output: any };
 
 export function validateFetchedData(outputs: OutputEntry[], contract: AnswerContract | undefined | null) {
+  const normalizedOutputs = outputs.map((entry) => ({
+    ...entry,
+    output: normalizeOutputForContract(entry.output, contract),
+  }));
   if (!contract) {
-    return { outputs, violations: [] as Array<{ actionId: string; dropped: number }> };
+    return { outputs: normalizedOutputs, violations: [] as Array<{ actionId: string; dropped: number }> };
   }
-  if (contract.entity_type !== "email") {
-    return { outputs, violations: [] as Array<{ actionId: string; dropped: number }> };
-  }
+  const entityType = contract.entity_type.toLowerCase();
   const constraint = contract.required_constraints[0];
-  if (!constraint) {
-    return { outputs, violations: [] as Array<{ actionId: string; dropped: number }> };
-  }
-  
-  // Enhanced Constraint Logic: Support Time-based filtering
-  // If the constraint looks like a time window (e.g. "last 24 hours"), we apply date filtering.
-  const value = constraint.value.toLowerCase();
-  const isTimeConstraint = /last\s+\d+\s+(hour|day|week|month|year)s?/.test(value) || 
-                          value.includes("newer_than") || 
-                          value.includes("since");
+  const value = constraint?.value?.toLowerCase();
+  const isTimeConstraint =
+    value &&
+    (/last\s+\d+\s+(hour|day|week|month|year)s?/.test(value) ||
+      value.includes("newer_than") ||
+      value.includes("since"));
 
   const violations: Array<{ actionId: string; dropped: number }> = [];
-  outputs.forEach((entry) => {
-    if (entry.action.integrationId !== "google") {
-      return;
+  const validatedOutputs = normalizedOutputs.map((entry) => {
+    const normalized = normalizeRows(entry.output, entityType);
+    if (entityType !== "email") {
+      return entry;
     }
-    const normalized = normalizeRows(entry.output);
-    
-    let kept = 0;
-    if (isTimeConstraint) {
-        kept = normalized.filter((row) => checkTimeConstraint(row, value)).length;
-    } else {
-        kept = normalized.filter((row) => includesConstraint(row, value)).length;
+    const requiredCheck = filterRequiredEmailFields(normalized);
+    if (requiredCheck.dropped > 0) {
+      violations.push({ actionId: entry.action.id, dropped: requiredCheck.dropped });
     }
-
-    const dropped = normalized.length - kept;
-    if (dropped > 0) {
-      console.warn(`[AnswerContract] Violation in ${entry.action.id}: Dropped ${dropped} rows. Keeping all rows (Lossless Mode).`);
-      violations.push({ actionId: entry.action.id, dropped });
+    if (value) {
+      const kept = isTimeConstraint
+        ? normalized.filter((row) => checkTimeConstraint(row, value))
+        : normalized.filter((row) => includesConstraint(row, value));
+      const dropped = normalized.length - kept.length;
+      if (dropped > 0) {
+        violations.push({ actionId: entry.action.id, dropped });
+      }
     }
+    return entry;
   });
-  return { outputs, violations };
+  return { outputs: validatedOutputs, violations };
 }
 
-function normalizeRows(output: any): Array<Record<string, any>> {
+function normalizeOutputForContract(output: any, contract: AnswerContract | undefined | null) {
+  if (!contract) return output;
+  const entityType = contract.entity_type.toLowerCase();
+  const shape = contract.result_shape;
+  const listShape = contract.list_shape ?? "array";
+  const isList = listShape === "array" || shape?.kind === "list" || entityType === "email";
+  if (!isList) return output;
+  const rows = normalizeRows(output, entityType);
+  const ordered = applyListOrdering(rows, shape);
+  return applyListLimit(ordered, shape);
+}
+
+function applyListOrdering(rows: Array<Record<string, any>>, shape?: AnswerContract["result_shape"]) {
+  const orderBy = shape?.order_by;
+  if (!orderBy) return rows;
+  const direction = shape?.order_direction ?? "desc";
+  const sorted = [...rows].sort((a, b) => {
+    const aValue = a?.[orderBy];
+    const bValue = b?.[orderBy];
+    const aNum = typeof aValue === "number" ? aValue : Number(aValue);
+    const bNum = typeof bValue === "number" ? bValue : Number(bValue);
+    if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+      return direction === "asc" ? aNum - bNum : bNum - aNum;
+    }
+    const aText = String(aValue ?? "");
+    const bText = String(bValue ?? "");
+    return direction === "asc" ? aText.localeCompare(bText) : bText.localeCompare(aText);
+  });
+  return sorted;
+}
+
+function applyListLimit(rows: Array<Record<string, any>>, shape?: AnswerContract["result_shape"]) {
+  if (!shape?.limit) return rows;
+  return rows.slice(0, shape.limit);
+}
+
+function normalizeRows(output: any, entityType?: string): Array<Record<string, any>> {
   if (Array.isArray(output)) {
-    return output.map((row) => normalizeEmailRow(row) ?? row);
+    return output.map((row) => normalizeRowByEntity(row, entityType) ?? row);
   }
   if (output && typeof output === "object") {
+    const messages = Array.isArray((output as any).messages) ? (output as any).messages : null;
+    if (messages) {
+      return messages.map((row: any) => normalizeRowByEntity(row, entityType) ?? row);
+    }
     return Object.values(output)
       .filter((value) => value && typeof value === "object")
-      .map((row) => normalizeEmailRow(row) ?? (row as Record<string, any>));
+      .flatMap((row) => {
+        if (Array.isArray(row)) {
+          return row.map((inner) => normalizeRowByEntity(inner, entityType) ?? inner);
+        }
+        return [normalizeRowByEntity(row, entityType) ?? (row as Record<string, any>)];
+      });
   }
   return [];
+}
+
+function normalizeRowByEntity(row: any, entityType?: string) {
+  if (entityType === "email") {
+    return normalizeEmailRow(row);
+  }
+  return row as Record<string, any>;
+}
+
+function filterRequiredEmailFields(rows: Array<Record<string, any>>) {
+  const kept = rows.filter((row) => {
+    const from = String(row?.from ?? "").trim();
+    const subject = String(row?.subject ?? "").trim();
+    const snippet = String(row?.snippet ?? "").trim();
+    const date = String(row?.date ?? row?.internalDate ?? "").trim();
+    return from.length > 0 && subject.length > 0 && snippet.length > 0 && date.length > 0;
+  });
+  return { rows: kept, dropped: rows.length - kept.length };
 }
 
 function checkTimeConstraint(row: Record<string, any>, constraintValue: string): boolean {
@@ -105,10 +167,13 @@ function normalizeEmailRow(row: any): Record<string, any> | null {
   const findHeader = (name: string) =>
     headers.find((h: any) => String(h?.name ?? "").toLowerCase() === name.toLowerCase())?.value ?? "";
   return {
+    id: row?.id,
+    threadId: row?.threadId,
     from: findHeader("from"),
     subject: findHeader("subject"),
     snippet: row?.snippet ?? "",
     body: row?.snippet ?? "",
     date: findHeader("date") || "",
+    internalDate: row?.internalDate,
   };
 }

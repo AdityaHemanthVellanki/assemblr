@@ -28,6 +28,23 @@ export async function DELETE(
   }
 
   const supabase = await createSupabaseServerClient();
+  await supabase
+    .from("org_integrations")
+    .update({
+      status: "revoked",
+      connected_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("org_id", ctx.orgId)
+    .eq("integration_id", integrationId);
+
+  await supabase.from("integration_audit_logs").insert({
+    org_id: ctx.orgId,
+    integration_id: integrationId,
+    event_type: "revoked",
+    metadata: {},
+  });
+
   const delRes = await supabase
     .from("integration_connections")
     .delete()

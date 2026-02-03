@@ -95,6 +95,8 @@ export function ToolRenderer({
   const [timeline, setTimeline] = React.useState<TimelineEvent[]>([]);
   const [timelineLoading, setTimelineLoading] = React.useState(false);
   const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
+  const [pollingInterval, setPollingInterval] = React.useState<number | null>(1500);
+  const authBackoffRef = React.useRef<number | null>(null);
   
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
@@ -296,6 +298,36 @@ export function ToolRenderer({
     }
   }, [toolId]);
 
+  const fetchStatus = React.useCallback(async () => {
+    try {
+      const payload = await safeFetch<{
+        status: string | null;
+        error: string | null;
+        done: boolean;
+        lifecycle_state: string | null;
+        build_logs: any[] | null;
+        view_ready: boolean;
+        view_spec: any;
+        data_ready: boolean;
+        data_snapshot: any;
+        data_fetched_at: string | null;
+      }>(`/api/tools/${toolId}/status`);
+
+      if (payload.status === "unauthenticated") {
+        setAuthStatus("unauthenticated");
+        return "unauthenticated";
+      }
+      setAuthStatus("authenticated");
+      return "authenticated";
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
+        setAuthStatus("unauthenticated");
+        return "unauthenticated";
+      }
+      return null;
+    }
+  }, [toolId]);
+
   const saveBudget = React.useCallback(
     async (patch: { monthlyLimit?: number; perRunLimit?: number }) => {
       try {
@@ -388,6 +420,35 @@ export function ToolRenderer({
     // Fetch result once
     void fetchResult();
   }, [spec, authStatus, fetchResult, error]);
+
+  React.useEffect(() => {
+    if (!spec || !isToolSystemSpec(spec)) return;
+    if (pollingInterval === null) return;
+    let cancelled = false;
+    let intervalId: number | null = null;
+
+    const poll = async () => {
+      const status = await fetchStatus();
+      if (cancelled) return;
+      if (status === "unauthenticated") {
+        if (intervalId) clearInterval(intervalId);
+        intervalId = null;
+        setPollingInterval(null);
+        if (authBackoffRef.current) window.clearTimeout(authBackoffRef.current);
+        authBackoffRef.current = window.setTimeout(() => {
+          setPollingInterval(1500);
+        }, 5000);
+      }
+    };
+
+    void poll();
+    intervalId = window.setInterval(poll, pollingInterval);
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+      if (authBackoffRef.current) window.clearTimeout(authBackoffRef.current);
+    };
+  }, [spec, fetchStatus, pollingInterval]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;

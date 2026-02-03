@@ -1,6 +1,7 @@
 import { createSupabaseAdminClient as defaultCreateSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadIntegrationConnections as defaultLoadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { IntegrationNotConnectedError } from "@/lib/errors/integration-errors";
+import { getIntegrationUIConfig } from "@/lib/integrations/registry";
 
 // Define minimal interface to avoid circular dependency with tool-compiler.ts
 interface MinimalStageContext {
@@ -14,6 +15,20 @@ interface MinimalStageContext {
 interface Dependencies {
   createSupabaseAdminClient?: typeof defaultCreateSupabaseAdminClient;
   loadIntegrationConnections?: typeof defaultLoadIntegrationConnections;
+  loadOrgIntegrations?: (input: {
+    supabase: unknown;
+    orgId: string;
+    integrationIds: string[];
+  }) => Promise<Array<{ integration_id: string; status?: string | null; scopes?: string[] | null }>>;
+}
+
+function normalizeScopes(scopes: string[] | string | null | undefined) {
+  if (!scopes) return [];
+  if (Array.isArray(scopes)) return scopes.filter(Boolean);
+  return scopes
+    .split(/[ ,]+/g)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export async function runCheckIntegrationReadiness(
@@ -63,6 +78,55 @@ export async function runCheckIntegrationReadiness(
     // This error will be caught by the API handler and returned to frontend
     throw new IntegrationNotConnectedError({
       integrationIds: missingIntegrations,
+      blockingActions: allBlockingActions,
+      requiredBy: allBlockingActions,
+    });
+  }
+
+  const loadOrgIntegrations =
+    deps.loadOrgIntegrations ??
+    (async (input: { supabase: unknown; orgId: string; integrationIds: string[] }) => {
+      const { data, error } = await (input.supabase as any)
+        .from("org_integrations")
+        .select("integration_id, status, scopes")
+        .eq("org_id", input.orgId)
+        .in("integration_id", input.integrationIds);
+      if (error) {
+        throw new Error(error.message);
+      }
+      return (data ?? []) as Array<{ integration_id: string; status?: string | null; scopes?: string[] | null }>;
+    });
+
+  const orgIntegrations = await loadOrgIntegrations({
+    supabase: adminClient,
+    orgId,
+    integrationIds: requiredIntegrations,
+  });
+
+  const orgIntegrationsById = new Map(
+    orgIntegrations.map((row) => [row.integration_id, row]),
+  );
+
+  const missingPermissions: string[] = [];
+  for (const integrationId of requiredIntegrations) {
+    const row = orgIntegrationsById.get(integrationId);
+    if (!row) continue;
+    const ui = getIntegrationUIConfig(integrationId);
+    const requiredScopes = ui.auth.type === "oauth" ? ui.auth.scopes ?? [] : [];
+    const grantedScopes = normalizeScopes(row.scopes ?? []);
+    const missingScopes = requiredScopes.filter((s) => !grantedScopes.includes(s));
+    if (row.status === "missing_permissions" || row.status === "revoked" || missingScopes.length > 0) {
+      missingPermissions.push(integrationId);
+      const blockingActions = spec.actions
+        .filter((a) => a.integrationId === integrationId)
+        .map((a) => a.name);
+      allBlockingActions.push(...blockingActions);
+    }
+  }
+
+  if (missingPermissions.length > 0) {
+    throw new IntegrationNotConnectedError({
+      integrationIds: missingPermissions,
       blockingActions: allBlockingActions,
       requiredBy: allBlockingActions,
     });

@@ -1,5 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
+import { loadMemory, type MemoryScope } from "@/lib/toolos/memory-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,25 @@ export async function GET(
   try {
     const { toolId } = await params;
     const supabase = await createSupabaseServerClient();
+    const { data: authData } = await supabase.auth.getUser();
+    const authUser = authData?.user ?? null;
+    if (!authUser) {
+      return jsonResponse(
+        {
+          status: "unauthenticated",
+          error: null,
+          done: false,
+          lifecycle_state: null,
+          build_logs: null,
+          view_ready: false,
+          view_spec: null,
+          data_ready: false,
+          data_snapshot: null,
+          data_fetched_at: null,
+        },
+        { status: 200 },
+      );
+    }
     const { data: project, error: projectError } = await (supabase.from("projects") as any)
       .select("id, org_id, spec, active_version_id, status, error_message, updated_at, lifecycle_done, view_ready, view_spec, data_snapshot, data_ready, data_fetched_at, finalized_at, finalizing")
       .eq("id", toolId)
@@ -33,10 +53,31 @@ export async function GET(
       .eq("org_id", project.org_id)
       .single();
 
+    const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
+    const lifecycleState = await loadMemory({
+      scope,
+      namespace: "tool_builder",
+      key: "lifecycle_state",
+    });
+    const buildLogs = await loadMemory({
+      scope,
+      namespace: "tool_builder",
+      key: "build_logs",
+    });
+
+    const resolvedLifecycleState =
+      typeof lifecycleState === "string"
+        ? lifecycleState
+        : (lifecycleState as any)?.state ?? null;
+    const resolvedBuildLogs = Array.isArray(buildLogs)
+      ? buildLogs
+      : (buildLogs as any)?.logs ?? null;
+
     const responseSnapshot = renderState?.snapshot ?? null;
     const responseViewSpec = renderState?.view_spec ?? null;
     const responseDataReady = renderState?.data_ready === true;
     const responseViewReady = renderState?.view_ready === true;
+    const responseBuildLogs = Array.isArray(resolvedBuildLogs) ? resolvedBuildLogs : null;
 
     console.log("[STATUS]", { toolId, data_ready: project.data_ready, view_ready: project.view_ready });
 
@@ -44,6 +85,8 @@ export async function GET(
       status: project.status,
       error: project.error_message ?? null,
       done: project.lifecycle_done ?? Boolean(project.view_ready && project.data_ready),
+      lifecycle_state: resolvedLifecycleState ?? null,
+      build_logs: responseBuildLogs,
       view_ready: responseViewReady,
       view_spec: responseViewSpec,
       data_ready: responseDataReady,
