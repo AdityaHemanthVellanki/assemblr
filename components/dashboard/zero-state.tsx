@@ -10,22 +10,25 @@ const SUGGESTIONS = [
     title: "Sprint Planning",
     description: "Look at Linear and create a sprint plan for the next 2 weeks",
     icon: Zap,
-    color: "text-blue-500",
+    color: "text-blue-400",
     bg: "bg-blue-500/10",
+    border: "border-blue-500/20",
   },
   {
     title: "Summarize Meetings",
     description: "Summarize my key meetings this week from Google Calendar",
     icon: Calendar,
-    color: "text-orange-500",
-    bg: "bg-orange-500/10",
+    color: "text-amber-400",
+    bg: "bg-amber-500/10",
+    border: "border-amber-500/20",
   },
   {
     title: "Scan Emails",
     description: "Check my emails and send out meetings to anyone needed",
     icon: Mail,
-    color: "text-red-500",
-    bg: "bg-red-500/10",
+    color: "text-rose-400",
+    bg: "bg-rose-500/10",
+    border: "border-rose-500/20",
   },
 ];
 
@@ -47,28 +50,31 @@ export function ZeroStateView({
 
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
+      {/* Radial gradient background */}
+      <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.4),_transparent_70%)]" />
+
       <div className="flex w-full max-w-3xl flex-col items-center gap-8">
-        
+        {/* Hero text */}
         <div className="text-center space-y-4">
-          <h1 className="text-4xl font-bold tracking-tight sm:text-6xl">
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
             {titlePrefix}{" "}
-            <span className="bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-500 bg-clip-text text-transparent">
               {highlightWord}
             </span>
           </h1>
-          <p className="text-lg text-muted-foreground">
+          <p className="text-base text-muted-foreground sm:text-lg">
             {CHAT_HERO_SUBTITLE}
           </p>
         </div>
 
         {/* Prompt Bar */}
-        <div className="w-full py-8">
+        <div className="w-full py-6">
           <PromptBar
             value={inputValue}
             onChange={onInputChange}
             onSubmit={onSubmit}
             variant="centered"
-            className="shadow-2xl"
+            className="shadow-[0_16px_40px_rgba(8,10,25,0.35)]"
           />
         </div>
 
@@ -78,14 +84,24 @@ export function ZeroStateView({
             <button
               key={card.title}
               onClick={() => onSuggestionClick(card.description)}
-              className="group relative flex flex-col gap-3 rounded-xl border bg-card/50 p-4 text-left transition-all hover:bg-card hover:shadow-md hover:border-primary/20"
+              className={cn(
+                "group relative flex flex-col gap-3 rounded-2xl border bg-background/40 p-5 text-left backdrop-blur-sm transition-all duration-200",
+                "hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.25)]",
+                card.border
+              )}
             >
-              <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center transition-colors", card.bg, card.color)}>
+              <div
+                className={cn(
+                  "h-9 w-9 rounded-xl flex items-center justify-center transition-colors",
+                  card.bg,
+                  card.color
+                )}
+              >
                 <card.icon className="h-4 w-4" />
               </div>
-              <div className="space-y-1">
-                <div className="font-semibold">{card.title}</div>
-                <div className="text-xs text-muted-foreground line-clamp-2">
+              <div className="space-y-1.5">
+                <div className="font-semibold text-foreground/90">{card.title}</div>
+                <div className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
                   {card.description}
                 </div>
               </div>

@@ -17,25 +17,25 @@ type ConnectionMode = "zero_input" | "oauth" | "guided" | "advanced";
 
 type FieldDef =
   | {
-      kind: "string";
-      id: string;
-      label: string;
-      placeholder?: string;
-      required?: boolean;
-      secret?: boolean;
-    }
+    kind: "string";
+    id: string;
+    label: string;
+    placeholder?: string;
+    required?: boolean;
+    secret?: boolean;
+  }
   | {
-      kind: "number";
-      id: string;
-      label: string;
-      placeholder?: string;
-      required?: boolean;
-    }
+    kind: "number";
+    id: string;
+    label: string;
+    placeholder?: string;
+    required?: boolean;
+  }
   | {
-      kind: "boolean";
-      id: string;
-      label: string;
-    };
+    kind: "boolean";
+    id: string;
+    label: string;
+  };
 
 type IntegrationAuthSchema =
   | { type: "api_key"; fields: FieldDef[]; advancedFields?: FieldDef[] }
@@ -69,10 +69,10 @@ function statusDotClass(status: string) {
 }
 
 function statusLabel(status: string, connected: boolean) {
-    if (!connected) return "Not connected";
-    if (status === "active") return "Healthy";
-    if (status === "error") return "Error";
-    return "Connected";
+  if (!connected) return "Not connected";
+  if (status === "active") return "Healthy";
+  if (status === "error") return "Error";
+  return "Connected";
 }
 
 function safeJsonMessage(err: unknown) {
@@ -211,28 +211,28 @@ export default function IntegrationsPage() {
     // If it's an OAuth integration, skip the modal and redirect immediately.
     // The "connectionMode" logic might vary, but all 5 supported tools are "hosted_oauth".
     if (current.connectionMode === ("hosted_oauth" as any) || current.auth.type === "oauth") {
-        try {
-            // Set local loading state (optimistic)
-            setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
-            setIsConnecting(true);
-            
-            const oauthUrl = await startOAuthFlow({
-                providerId: integrationId,
-                currentPath: window.location.pathname + window.location.search,
-                integrationMode: "manual", // Default for global page
-                // No chat/tool context
-            });
-            
-            router.push(oauthUrl);
-            return;
-        } catch (e) {
-            console.error("Connect failed", e);
-            setPageError(e instanceof Error ? e.message : String(e));
-            setIsConnecting(false);
-            // Revert status
-            await load(); // Refresh to get true status
-            return;
-        }
+      try {
+        // Set local loading state (optimistic)
+        setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
+        setIsConnecting(true);
+
+        const oauthUrl = await startOAuthFlow({
+          providerId: integrationId,
+          currentPath: window.location.pathname + window.location.search,
+          integrationMode: "manual", // Default for global page
+          // No chat/tool context
+        });
+
+        router.push(oauthUrl);
+        return;
+      } catch (e) {
+        console.error("Connect failed", e);
+        setPageError(e instanceof Error ? e.message : String(e));
+        setIsConnecting(false);
+        // Revert status
+        await load(); // Refresh to get true status
+        return;
+      }
     }
 
     // Pre-fill defaults for other types (e.g. database/api_key)
@@ -241,7 +241,7 @@ export default function IntegrationsPage() {
       initialValues.port = 5432;
     }
     setFormValues(initialValues);
-    
+
     // Create a clean config object to avoid mutating state ref
     const config: IntegrationUiConfig = {
       id: current.id,
@@ -280,7 +280,7 @@ export default function IntegrationsPage() {
     try {
       // Zero input delay
       if (active.connectionMode === "zero_input") {
-         await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 800));
       }
 
       await safeFetch("/api/integrations", {
@@ -294,14 +294,14 @@ export default function IntegrationsPage() {
 
       // If OAuth, redirect to start flow
       if (active.connectionMode === "oauth") {
-         setIsConnecting(true);
-         const oauthUrl = await startOAuthFlow({
-            providerId: active.id,
-            currentPath: window.location.pathname + window.location.search,
-            integrationMode: "manual",
-         });
-         router.push(oauthUrl);
-         return; // Don't close modal or reload, we are leaving
+        setIsConnecting(true);
+        const oauthUrl = await startOAuthFlow({
+          providerId: active.id,
+          currentPath: window.location.pathname + window.location.search,
+          integrationMode: "manual",
+        });
+        router.push(oauthUrl);
+        return; // Don't close modal or reload, we are leaving
       }
 
       closeModal();
@@ -338,9 +338,10 @@ export default function IntegrationsPage() {
   }, [active, activeStatus, submitting, formError, submit]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
+    <div className="mx-auto w-full max-w-6xl space-y-8 px-6 py-8">
+      {/* Page Header */}
+      <div className="space-y-2">
+        <h1 className="text-3xl font-semibold tracking-tight">Integrations</h1>
         <p className="text-muted-foreground">Connect your tools to power real, live dashboards</p>
       </div>
 
@@ -359,25 +360,28 @@ export default function IntegrationsPage() {
             placeholder="Search integrations..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            className="bg-muted/30"
           />
         </div>
         <div className="flex items-center gap-2">
           {["all", "connected", "not_connected"].map((m) => (
-            <Button
+            <button
               key={m}
               type="button"
-              variant={filter === m ? "default" : "outline"}
               onClick={() => setFilter(m as FilterMode)}
-              className="capitalize"
+              className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors capitalize ${filter === m
+                  ? "bg-foreground text-background"
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
             >
               {m.replace("_", " ")}
-            </Button>
+            </button>
           ))}
         </div>
       </div>
 
       {pageError ? (
-        <div className="rounded-md border border-border bg-destructive/10 p-4 text-sm text-destructive">
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
           {pageError}
         </div>
       ) : null}
@@ -386,19 +390,20 @@ export default function IntegrationsPage() {
         {(loading ? Array.from({ length: 6 }) : visible).map((item, idx) => {
           if (loading) {
             return (
-              <Card key={`skeleton-${idx}`} className="h-[140px] animate-pulse bg-muted/50">
-                <CardHeader />
-              </Card>
+              <div key={`skeleton-${idx}`} className="h-[140px] rounded-2xl border border-border/60 bg-muted/20 animate-pulse" />
             );
           }
 
           const i = item as IntegrationListItem;
           return (
-            <Card key={i.id} className="flex flex-col border border-border transition-colors hover:border-foreground/20">
-              <CardHeader className="space-y-3">
+            <div
+              key={i.id}
+              className="flex flex-col rounded-2xl border border-border/60 bg-background/40 p-5 backdrop-blur-sm transition-all duration-200 hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.25)]"
+            >
+              <div className="space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background p-1">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background p-1.5">
                       <Image
                         src={i.logoUrl}
                         alt=""
@@ -409,8 +414,8 @@ export default function IntegrationsPage() {
                       />
                     </div>
                     <div className="min-w-0">
-                      <CardTitle className="truncate text-base">{i.name}</CardTitle>
-                      <CardDescription className="truncate">{i.category}</CardDescription>
+                      <h3 className="truncate text-base font-semibold text-foreground/90">{i.name}</h3>
+                      <p className="truncate text-sm text-muted-foreground">{i.category}</p>
                     </div>
                   </div>
 
@@ -420,21 +425,22 @@ export default function IntegrationsPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-3 pt-2">
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/40">
                   <div className="text-xs text-muted-foreground truncate">
                     {i.connected ? `Synced ${formatTimestamp(i.updatedAt || i.connectedAt || "")}` : "Ready to connect"}
                   </div>
                   <Button
                     type="button"
-                    variant={i.connected ? "secondary" : "default"}
+                    variant={i.connected ? "ghost" : "default"}
                     size="sm"
+                    className="rounded-full"
                     onClick={() => void openConnect(i.id)}
                   >
                     {i.connected ? "Manage" : "Connect"}
                   </Button>
                 </div>
-              </CardHeader>
-            </Card>
+              </div>
+            </div>
           );
         })}
       </div>
@@ -451,14 +457,14 @@ export default function IntegrationsPage() {
           <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
             <div className="space-y-1">
               <h2 className="text-lg font-semibold flex items-center gap-2">
-                 <Image
-                    src={active.logoUrl}
-                    alt=""
-                    width={20}
-                    height={20}
-                    className="h-5 w-5 object-contain"
-                    unoptimized
-                  />
+                <Image
+                  src={active.logoUrl}
+                  alt=""
+                  width={20}
+                  height={20}
+                  className="h-5 w-5 object-contain"
+                  unoptimized
+                />
                 {active.name}
               </h2>
               <p className="text-sm text-muted-foreground">{active.description}</p>
@@ -466,12 +472,11 @@ export default function IntegrationsPage() {
 
             <div className="mt-8 space-y-6">
               {activeStatus?.connected ? (
-                <div className={`rounded-md border p-3 text-sm ${
-                    activeStatus.status === "error" 
-                    ? "border-destructive/20 bg-destructive/10 text-destructive" 
+                <div className={`rounded-md border p-3 text-sm ${activeStatus.status === "error"
+                    ? "border-destructive/20 bg-destructive/10 text-destructive"
                     : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                }`}>
-                   {activeStatus.status === "error" ? "⚠ Connection Error" : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
+                  }`}>
+                  {activeStatus.status === "error" ? "⚠ Connection Error" : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
                 </div>
               ) : null}
 
@@ -482,74 +487,74 @@ export default function IntegrationsPage() {
               ) : null}
 
               {/* MODE SPECIFIC UI */}
-              
+
               {/* Zero Input */}
               {active.connectionMode === "zero_input" && !activeStatus?.connected ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
-                   <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                   <p className="text-sm text-muted-foreground">Connecting to {active.name}...</p>
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  <p className="text-sm text-muted-foreground">Connecting to {active.name}...</p>
                 </div>
               ) : null}
 
               {/* Generic Form (Guided / Advanced / OAuth with fields) */}
               {(active.connectionMode === "guided" || active.connectionMode === "advanced" || active.connectionMode === "oauth") && !activeStatus?.connected ? (
-                <form 
+                <form
                   onSubmit={(e) => { e.preventDefault(); void submit(); }}
                   className="space-y-4"
                 >
                   {/* OAuth BYOO Info */}
                   {active.connectionMode === "oauth" && (
-                     <div className="text-xs text-muted-foreground bg-muted p-3 rounded space-y-2 mb-4 border border-border">
-                        <p className="font-semibold text-foreground">Bring Your Own App (BYOO)</p>
-                        <p>
-                          To connect {active.name}, you must create an OAuth App in their developer portal.
-                        </p>
-                        <div className="space-y-1">
-                          <p className="font-medium">Redirect URI:</p>
-                          <code className="block bg-background p-2 rounded border border-border select-all break-all">
-                            {origin}/api/oauth/callback/{active.id}
-                          </code>
-                        </div>
-                     </div>
+                    <div className="text-xs text-muted-foreground bg-muted p-3 rounded space-y-2 mb-4 border border-border">
+                      <p className="font-semibold text-foreground">Bring Your Own App (BYOO)</p>
+                      <p>
+                        To connect {active.name}, you must create an OAuth App in their developer portal.
+                      </p>
+                      <div className="space-y-1">
+                        <p className="font-medium">Redirect URI:</p>
+                        <code className="block bg-background p-2 rounded border border-border select-all break-all">
+                          {origin}/api/oauth/callback/{active.id}
+                        </code>
+                      </div>
+                    </div>
                   )}
 
                   {"fields" in active.auth && active.auth.fields && active.auth.fields.map((f) => (
-                    <FieldRenderer 
-                      key={f.id} 
-                      field={f} 
-                      value={formValues[f.id]} 
+                    <FieldRenderer
+                      key={f.id}
+                      field={f}
+                      value={formValues[f.id]}
                       onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
                     />
                   ))}
 
                   {"advancedFields" in active.auth && active.auth.advancedFields && active.auth.advancedFields.length > 0 && (
                     <div className="pt-2">
-                       <button
-                         type="button"
-                         onClick={() => setAdvancedOpen(!advancedOpen)}
-                         className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                       >
-                         {advancedOpen ? "Hide" : "Show"} Advanced Options
-                       </button>
-                       {advancedOpen && (
-                         <div className="mt-3 space-y-4 border-l-2 border-border pl-4">
-                           {active.auth.advancedFields.map((f) => (
-                              <FieldRenderer 
-                                key={f.id} 
-                                field={f} 
-                                value={formValues[f.id]} 
-                                onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
-                              />
-                           ))}
-                         </div>
-                       )}
+                      <button
+                        type="button"
+                        onClick={() => setAdvancedOpen(!advancedOpen)}
+                        className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        {advancedOpen ? "Hide" : "Show"} Advanced Options
+                      </button>
+                      {advancedOpen && (
+                        <div className="mt-3 space-y-4 border-l-2 border-border pl-4">
+                          {active.auth.advancedFields.map((f) => (
+                            <FieldRenderer
+                              key={f.id}
+                              field={f}
+                              value={formValues[f.id]}
+                              onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
                   <div className="pt-4 flex justify-end">
-                     <Button type="submit" disabled={submitting}>
-                       {submitting ? "Processing..." : active.connectionMode === "oauth" ? "Connect & Authorize" : "Connect"}
-                     </Button>
+                    <Button type="submit" disabled={submitting}>
+                      {submitting ? "Processing..." : active.connectionMode === "oauth" ? "Connect & Authorize" : "Connect"}
+                    </Button>
                   </div>
                 </form>
               ) : null}
@@ -564,20 +569,20 @@ export default function IntegrationsPage() {
                 {activeStatus?.connected && (
                   <div className="flex items-center gap-2">
                     {disconnectMode ? (
-                       <>
-                         <Button 
-                           type="button" 
-                           variant="destructive" 
-                           onClick={() => void disconnect()}
-                           disabled={submitting}
-                         >
-                           Confirm Disconnect
-                         </Button>
-                       </>
+                      <>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          onClick={() => void disconnect()}
+                          disabled={submitting}
+                        >
+                          Confirm Disconnect
+                        </Button>
+                      </>
                     ) : (
-                      <Button 
-                        type="button" 
-                        variant="outline" 
+                      <Button
+                        type="button"
+                        variant="outline"
                         className="text-destructive hover:bg-destructive/10"
                         onClick={() => setDisconnectMode(true)}
                         disabled={submitting}

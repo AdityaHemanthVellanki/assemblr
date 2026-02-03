@@ -167,3 +167,144 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ==========================================================================
+   Design System Tokens - Extracted from Use Cases Page
+   ========================================================================== */
+
+:root {
+  /* Shadow tokens - Premium depth effects */
+  --shadow-sm: 0 2px 8px rgba(8, 10, 25, 0.08);
+  --shadow-md: 0 8px 24px rgba(8, 10, 25, 0.12);
+  --shadow-lg: 0 16px 40px rgba(8, 10, 25, 0.2);
+  --shadow-xl: 0 24px 60px rgba(8, 10, 25, 0.25);
+  --shadow-card: 0 16px 40px rgba(8, 10, 25, 0.35);
+  --shadow-card-hover: 0 20px 50px rgba(8, 10, 25, 0.4);
+  --shadow-hero: 0 30px 80px rgba(6, 10, 25, 0.45);
+  
+  /* Transition tokens */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+  --transition-spring: 400ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dark {
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 16px 40px rgba(8, 10, 25, 0.35);
+  --shadow-card-hover: 0 20px 50px rgba(8, 10, 25, 0.45);
+  --shadow-hero: 0 30px 80px rgba(6, 10, 25, 0.45);
+}
+
+/* ==========================================================================
+   Utility Classes - Consistent Component Styling
+   ========================================================================== */
+
+@layer utilities {
+  /* Glass card effect - primary container style */
+  .glass-card {
+    @apply rounded-2xl border border-border/60 bg-background/40 backdrop-blur-sm;
+    box-shadow: var(--shadow-card);
+    transition: all var(--transition-base);
+  }
+  
+  .glass-card:hover {
+    @apply border-primary/40;
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  /* Glass panel - for larger containers */
+  .glass-panel {
+    @apply rounded-[28px] border border-border/60 bg-background/40 backdrop-blur-xl;
+    box-shadow: var(--shadow-hero);
+  }
+
+  /* Category pill - filter/toggle buttons */
+  .category-pill {
+    @apply shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors;
+  }
+  
+  .category-pill-inactive {
+    @apply bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground;
+  }
+  
+  .category-pill-active {
+    @apply bg-foreground text-background;
+  }
+
+  /* Section header styling */
+  .section-header {
+    @apply text-xs uppercase tracking-[0.2em] text-muted-foreground;
+  }
+
+  /* Page container - consistent max-width and padding */
+  .page-container {
+    @apply mx-auto max-w-7xl px-6;
+  }
+
+  /* Hero section background gradient */
+  .hero-gradient {
+    @apply bg-gradient-to-b from-muted/20 to-background;
+  }
+
+  /* Radial gradient overlay - for ambient effects */
+  .radial-overlay {
+    @apply absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.4),_transparent_70%)];
+  }
+
+  /* Status indicator dots */
+  .status-dot {
+    @apply h-2 w-2 rounded-full;
+  }
+  
+  .status-dot-success {
+    @apply bg-emerald-500;
+  }
+  
+  .status-dot-error {
+    @apply bg-red-500;
+  }
+  
+  .status-dot-warning {
+    @apply bg-amber-500;
+  }
+  
+  .status-dot-info {
+    @apply bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.6)];
+  }
+
+  /* Scrollbar hiding utility */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Smooth transitions for interactive elements */
+  .transition-smooth {
+    transition: all var(--transition-base);
+  }
+
+  /* Live indicator animation */
+  .live-indicator {
+    @apply h-2 w-2 rounded-full bg-blue-400;
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { 
+      opacity: 0.4;
+      box-shadow: 0 0 8px rgba(96, 165, 250, 0.6);
+    }
+    50% { 
+      opacity: 1;
+      box-shadow: 0 0 12px rgba(96, 165, 250, 0.9);
+    }
+  }
+}

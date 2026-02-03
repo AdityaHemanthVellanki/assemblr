@@ -82,7 +82,7 @@ export function Sidebar({
   // Reload when path changes (e.g. new chat created elsewhere)
   React.useEffect(() => {
     if (pathname === '/app/chat' || pathname?.startsWith('/dashboard/projects/')) {
-        void loadProjects();
+      void loadProjects();
     }
   }, [pathname, loadProjects]);
 
@@ -101,11 +101,11 @@ export function Sidebar({
         router.push(`/dashboard/projects/${json.id}`);
         // We push the new project to state immediately to avoid lag
         setProjects(prev => [{
-            id: json.id,
-            name: "New chat",
-            updatedAt: new Date().toISOString(),
-            isValidSpec: true,
-            specError: null
+          id: json.id,
+          name: "New chat",
+          updatedAt: new Date().toISOString(),
+          isValidSpec: true,
+          specError: null
         }, ...prev]);
       }
     } catch {
@@ -125,7 +125,7 @@ export function Sidebar({
     }
 
     const newName = editName.trim();
-    
+
     // Optimistic update
     setProjects(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
     setEditingId(null);
@@ -162,7 +162,7 @@ export function Sidebar({
 
       // Redirect if we were on that page
       if (pathname?.includes(deletingId)) {
-         router.push('/app/chat');
+        router.push('/app/chat');
       }
     } catch (err) {
       console.error(err);
@@ -204,80 +204,83 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "flex h-full w-64 flex-col border-r border-border bg-background",
+        "flex h-full w-64 flex-col border-r border-border/60 bg-background/50 backdrop-blur-sm",
         className,
       )}
     >
-      <div className="flex h-14 items-center gap-2 px-4 font-bold text-lg text-primary cursor-pointer" onClick={() => router.push('/app/chat')}>
-        <div className="h-6 w-6 rounded bg-primary/20 flex items-center justify-center">
-            <div className="h-3 w-3 rounded-full bg-primary" />
+      <div
+        className="flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80"
+        onClick={() => router.push('/app/chat')}
+      >
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600">
+          <span className="text-xs font-bold text-white">A</span>
         </div>
-        {APP_NAME}
+        <span className="text-base font-semibold text-foreground">{APP_NAME}</span>
       </div>
 
       <div className="flex flex-col gap-6 px-3 py-2">
         <div className="relative">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input 
-            placeholder="Search chats..." 
-            className="pl-8 h-9 bg-muted/50 border-none"
+          <Input
+            placeholder="Search chats..."
+            className="pl-8 h-9 bg-muted/30 border-border/40 focus:bg-muted/50"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
 
         <div className="flex flex-col gap-1">
-            <button
-              type="button"
-              onClick={handleNewChat}
-              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground text-muted-foreground"
-            >
-              <Plus className="h-4 w-4" />
-              New Chat
-            </button>
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = item.href === useCasesHref ? useCasesActive : integrationsActive;
-              if (item.disabled) {
-                return (
-                  <div
-                    key={item.id}
-                    className={cn(
-                      "rounded-md px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground opacity-60 cursor-not-allowed",
-                      active ? "bg-accent/50" : "",
-                    )}
-                    role="link"
-                    aria-disabled="true"
-                    title={item.tooltip}
-                  >
-                    <Icon className="h-4 w-4" />
-                    <span className="truncate">{item.label}</span>
-                  </div>
-                );
-              }
-
+          <button
+            type="button"
+            onClick={handleNewChat}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 hover:bg-accent hover:text-accent-foreground text-muted-foreground"
+          >
+            <Plus className="h-4 w-4" />
+            New Chat
+          </button>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = item.href === useCasesHref ? useCasesActive : integrationsActive;
+            if (item.disabled) {
               return (
-                <Link
+                <div
                   key={item.id}
-                  href={item.href}
                   className={cn(
-                    "rounded-md px-3 py-2 text-sm transition flex items-center gap-2",
-                    active
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent/40",
+                    "rounded-md px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground opacity-60 cursor-not-allowed",
+                    active ? "bg-accent/50" : "",
                   )}
+                  role="link"
+                  aria-disabled="true"
+                  title={item.tooltip}
                 >
                   <Icon className="h-4 w-4" />
                   <span className="truncate">{item.label}</span>
-                </Link>
+                </div>
               );
-            })}
+            }
+
+            return (
+              <Link
+                key={item.id}
+                href={item.href}
+                className={cn(
+                  "rounded-lg px-3 py-2 text-sm transition-all duration-200 flex items-center gap-2",
+                  active
+                    ? "bg-accent text-accent-foreground font-medium"
+                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
         </div>
 
       </div>
 
       <ScrollArea className="flex-1 px-3">
-         <div className="flex flex-col gap-2 py-2">
+        <div className="flex flex-col gap-2 py-2">
           {projectsLoading && projects.length === 0 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
           ) : projectsError ? (
@@ -313,10 +316,10 @@ export function Sidebar({
                   <Link
                     href={`/dashboard/projects/${project.id}`}
                     className={cn(
-                      "truncate rounded-md px-3 py-2 text-sm transition flex items-center gap-2 block pr-14",
+                      "truncate rounded-lg px-3 py-2 text-sm transition-all duration-200 flex items-center gap-2 block pr-14",
                       active
                         ? "bg-accent text-accent-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/40",
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                       isInvalid ? "opacity-50 pointer-events-none" : "",
                     )}
                     aria-disabled={isInvalid}
@@ -364,7 +367,7 @@ export function Sidebar({
               );
             })
           )}
-         </div>
+        </div>
       </ScrollArea>
 
       <Dialog open={!!deletingId} onOpenChange={(open) => !open && setDeletingId(null)}>

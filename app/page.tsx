@@ -315,9 +315,9 @@ function SimulationSection() {
                 reduceMotion
                   ? undefined
                   : {
-                      opacity: index === stepIndex ? 1 : 0.5,
-                      borderColor: index === stepIndex ? "rgba(99,102,241,0.5)" : "rgba(148,163,184,0.2)",
-                    }
+                    opacity: index === stepIndex ? 1 : 0.5,
+                    borderColor: index === stepIndex ? "rgba(99,102,241,0.5)" : "rgba(148,163,184,0.2)",
+                  }
               }
               transition={{ duration: 0.4 }}
             >
@@ -345,18 +345,17 @@ function SimulationSection() {
                 reduceMotion
                   ? undefined
                   : {
-                      opacity: stepIndex >= 1 ? 1 : 0.6,
-                      y: stepIndex >= 1 ? 0 : 6,
-                    }
+                    opacity: stepIndex >= 1 ? 1 : 0.6,
+                    y: stepIndex >= 1 ? 0 : 6,
+                  }
               }
               transition={{ duration: 0.4, delay: index * 0.05 }}
             >
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-foreground/90">{integration.name}</span>
                 <span
-                  className={`text-[10px] uppercase tracking-[0.2em] ${
-                    integration.status === "linked" ? "text-blue-400" : "text-muted-foreground"
-                  }`}
+                  className={`text-[10px] uppercase tracking-[0.2em] ${integration.status === "linked" ? "text-blue-400" : "text-muted-foreground"
+                    }`}
                 >
                   {stepIndex >= 1 ? "linked" : "standby"}
                 </span>
@@ -548,7 +547,30 @@ export default function Home() {
   return (
     <LazyMotion features={() => import("framer-motion").then((mod) => mod.domAnimation)}>
       <div className="dark min-h-dvh bg-background text-foreground">
-        <main className="relative overflow-hidden">
+        {/* Navigation Header */}
+        <header className="fixed top-0 left-0 right-0 z-50 border-b border-border/30 bg-background/80 backdrop-blur-xl">
+          <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+            <Link href="/" className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600">
+                <span className="text-sm font-bold text-white">A</span>
+              </div>
+              <span className="text-lg font-semibold">Assemblr</span>
+            </Link>
+            <div className="flex items-center gap-6">
+              <Link
+                href="/use-cases"
+                className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Use Cases
+              </Link>
+              <EnterSystemButton className="h-9 px-4 text-sm">
+                Go to Chat
+              </EnterSystemButton>
+            </div>
+          </nav>
+        </header>
+
+        <main className="relative overflow-hidden pt-20">
           <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.75),_transparent_60%),radial-gradient(circle_at_20%_20%,_rgba(59,130,246,0.2),_transparent_50%)]" />
           <section className="mx-auto flex max-w-6xl flex-col gap-10 px-6 pb-14 pt-16 sm:pb-20 sm:pt-24">
             <div className="text-center space-y-4">
@@ -570,7 +592,7 @@ export default function Home() {
               <EnterSystemButton>Enter the system</EnterSystemButton>
             </div>
           </section>
-          
+
           <section className="mx-auto max-w-6xl px-6 py-16">
             <div className="mb-6 flex items-center justify-between">
               <div className="space-y-2">
