@@ -1,8 +1,8 @@
 
-import { assertNoMocks, assertRealRuntime } from "../lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "../lib/core/guard";
 
 async function run() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   const userId = process.env.E2E_TEST_USER_ID;
   const orgId = process.env.E2E_TEST_ORG_ID;

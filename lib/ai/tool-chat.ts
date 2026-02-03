@@ -27,7 +27,7 @@ import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedInci
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 
 import { IntegrationNotConnectedError, isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
@@ -250,7 +250,7 @@ export async function runToolRuntimePipeline(input: ToolChatRequest) {
 export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   if (input.mode === "create") {
     return runCompilerPipeline(input);
@@ -349,7 +349,7 @@ export async function runCompilerPipeline(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   getServerEnv();
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   if (!input.connectedIntegrationIds || input.connectedIntegrationIds.length === 0) {
     const messageText = "Execution blocked: Real credentials for required integrations are required.";

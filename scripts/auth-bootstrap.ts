@@ -1,10 +1,10 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { getServerEnv } from "@/lib/env";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 
 export async function bootstrapRealUserSession() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   const env = getServerEnv();
   

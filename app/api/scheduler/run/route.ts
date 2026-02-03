@@ -2,15 +2,26 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { scheduleMetricExecution } from "@/lib/execution/scheduler";
 import { getServerEnv } from "@/lib/env";
+import { validateRuntimeConfig } from "@/lib/core/guard";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  // Validate Authorization (e.g., cron secret)
   const authHeader = req.headers.get("Authorization");
-  const { CRON_SECRET } = getServerEnv();
-  
-  if (authHeader !== `Bearer ${CRON_SECRET}`) {
+  const env = getServerEnv();
+  const runtimeResult = validateRuntimeConfig();
+  if (!runtimeResult.ok) {
+    return NextResponse.json({ error: runtimeResult.error }, { status: 503 });
+  }
+
+  if (runtimeResult.runtimeEnv === "DEV_WITH_REAL_CREDS") {
+    return NextResponse.json(
+      { error: "Cron is disabled in DEV_WITH_REAL_CREDS. Set RUNTIME_ENV=REAL_RUNTIME and CRON_SECRET to enable." },
+      { status: 503 },
+    );
+  }
+
+  if (!env.CRON_SECRET || authHeader !== `Bearer ${env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

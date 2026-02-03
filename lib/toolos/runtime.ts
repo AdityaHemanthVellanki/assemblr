@@ -3,6 +3,7 @@ import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken, IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 import { CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { StateReducer } from "@/lib/toolos/spec";
 import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
@@ -48,11 +49,8 @@ export async function executeToolAction(params: {
     if (!runtime) {
       throw new Error(`Runtime not found for integration ${action.integrationId}`);
     }
-    // Enforce real runtime at execution time
-    const envType = process.env.RUNTIME_ENV;
-    if (!envType || !["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"].includes(envType)) {
-      throw new Error("Execution blocked: RUNTIME_ENV must be set to REAL_RUNTIME, DEV_WITH_REAL_CREDS, or TEST_WITH_REAL_CREDS.");
-    }
+    const envType = ensureRuntimeOrThrow();
+    assertNoMocks();
     await enforceRateLimit({
       orgId,
       toolId,

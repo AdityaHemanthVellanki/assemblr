@@ -72,7 +72,7 @@ async function runDeterministicTest() {
 
 async function runRegressionTest() {
   const { compileIntent } = await import("../lib/ai/planner");
-  const { assertNoMocks, assertRealRuntime } = await import("../lib/core/guard");
+  const { assertNoMocks, ensureRuntimeOrThrow } = await import("../lib/core/guard");
   const { createSupabaseAdminClient } = await import("../lib/supabase/admin");
   const { loadIntegrationConnections } = await import("../lib/integrations/loadIntegrationConnections");
   const { getCapabilitiesForIntegration } = await import("../lib/capabilities/registry");
@@ -83,7 +83,7 @@ async function runRegressionTest() {
   await runDeterministicTest();
 
   // 1. Setup
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   
   const prompt = "show my latest emails";

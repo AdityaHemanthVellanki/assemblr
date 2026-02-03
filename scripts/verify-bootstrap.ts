@@ -1,9 +1,9 @@
 import { resolveBuildContext } from "../lib/toolos/build-context";
 import { createSupabaseAdminClient } from "../lib/supabase/admin";
-import { assertNoMocks, assertRealRuntime } from "../lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "../lib/core/guard";
 
 async function run() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   console.log("🧪 Starting Bootstrap Verification (Real Credentials Required)...");
 

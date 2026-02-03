@@ -23,6 +23,12 @@ const FORBIDDEN_ENV_PREFIXES = [
   "FAKE_"
 ];
 
+export type RuntimeValidationResult =
+  | { ok: true; runtimeEnv: "REAL_RUNTIME" | "DEV_WITH_REAL_CREDS" | "TEST_WITH_REAL_CREDS" }
+  | { ok: false; error: string; runtimeEnv?: string };
+
+let cachedRuntimeResult: RuntimeValidationResult | null = null;
+
 export function assertNoMocks(env?: NodeJS.ProcessEnv) {
   const processEnv = env ?? process.env;
   const envKeys = Object.keys(processEnv);
@@ -43,13 +49,61 @@ export function assertNoMocks(env?: NodeJS.ProcessEnv) {
   }
 }
 
-export function assertRealRuntime(env?: NodeJS.ProcessEnv) {
+export function validateRuntimeConfig(env?: NodeJS.ProcessEnv): RuntimeValidationResult {
+  if (cachedRuntimeResult) return cachedRuntimeResult;
   const processEnv = env ?? process.env;
   const runtimeEnv = processEnv.RUNTIME_ENV;
+  const devOverride = processEnv.ASSEMBLR_DEV_RUNTIME_ENV;
+  const nodeEnv = processEnv.NODE_ENV ?? "development";
+  const setResult = (result: RuntimeValidationResult) => {
+    cachedRuntimeResult = result;
+    return result;
+  };
+
+  if (!runtimeEnv && nodeEnv === "development") {
+    if (devOverride === "DEV_WITH_REAL_CREDS") {
+      return setResult({ ok: true, runtimeEnv: "DEV_WITH_REAL_CREDS" });
+    }
+    if (devOverride) {
+      return setResult({
+        ok: false,
+        error: `🚨 Invalid ASSEMBLR_DEV_RUNTIME_ENV "${devOverride}". Allowed: DEV_WITH_REAL_CREDS.`,
+        runtimeEnv: devOverride,
+      });
+    }
+    return setResult({
+      ok: false,
+      error: "Assemblr requires explicit runtime configuration. Set RUNTIME_ENV=DEV_WITH_REAL_CREDS in .env.local.",
+    });
+  }
+
   if (!runtimeEnv) {
-    throw new Error("🚨 RUNTIME_ENV is required. Allowed: REAL_RUNTIME, DEV_WITH_REAL_CREDS, TEST_WITH_REAL_CREDS.");
+    return setResult({
+      ok: false,
+      error: "Assemblr requires explicit runtime configuration. Set RUNTIME_ENV=DEV_WITH_REAL_CREDS in .env.local.",
+    });
   }
+
   if (!["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"].includes(runtimeEnv)) {
-    throw new Error(`🚨 Invalid RUNTIME_ENV "${runtimeEnv}". Allowed: REAL_RUNTIME, DEV_WITH_REAL_CREDS, TEST_WITH_REAL_CREDS.`);
+    return setResult({
+      ok: false,
+      error: `🚨 Invalid RUNTIME_ENV "${runtimeEnv}". Allowed: REAL_RUNTIME, DEV_WITH_REAL_CREDS, TEST_WITH_REAL_CREDS.`,
+      runtimeEnv,
+    });
   }
+
+  const resolvedRuntimeEnv = runtimeEnv as "REAL_RUNTIME" | "DEV_WITH_REAL_CREDS" | "TEST_WITH_REAL_CREDS";
+  return setResult({ ok: true, runtimeEnv: resolvedRuntimeEnv });
+}
+
+export function ensureRuntimeOrThrow(env?: NodeJS.ProcessEnv) {
+  const result = validateRuntimeConfig(env);
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+  return result.runtimeEnv;
+}
+
+export function assertRealRuntime(env?: NodeJS.ProcessEnv) {
+  return validateRuntimeConfig(env);
 }

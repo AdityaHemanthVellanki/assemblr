@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validateRuntimeConfig } from "@/lib/core/guard";
 
 function emptyToUndefined(value: unknown) {
   if (typeof value !== "string") return value;
@@ -14,10 +15,29 @@ function optionalUrl() {
   return z.preprocess(emptyToUndefined, z.string().url().optional());
 }
 
+function buildEnvErrorMessage(raw: NodeJS.ProcessEnv, issues: z.ZodIssue[]) {
+  const lines = [
+    "Assemblr requires explicit runtime configuration.",
+    "Set RUNTIME_ENV=DEV_WITH_REAL_CREDS in .env.local.",
+    "CRON_SECRET is required in REAL_RUNTIME and TEST_WITH_REAL_CREDS.",
+  ];
+  const invalidFields = Array.from(
+    new Set(
+      issues
+        .map((issue) => issue.path.join("."))
+        .filter((path) => path.length > 0),
+    ),
+  );
+  if (invalidFields.length > 0) {
+    lines.push(`Invalid or missing env: ${invalidFields.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
 const serverEnvSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).optional(),
-    RUNTIME_ENV: z.enum(["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"]),
+    RUNTIME_ENV: z.enum(["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"]).optional(),
 
     SUPABASE_URL: z.string().url(),
     SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
@@ -78,11 +98,25 @@ const serverEnvSchema = z
 
     DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
     
-    CRON_SECRET: z.string().min(1, "CRON_SECRET is required"),
+    CRON_SECRET: optionalString(),
   })
   .superRefine((env, ctx) => {
     if (env.APP_BASE_URL?.startsWith("http://")) {
       console.warn("⚠️  WARNING: APP_BASE_URL is using http://. OAuth providers (Slack, Notion, etc.) require HTTPS.");
+    }
+    if (env.NODE_ENV !== "development" && !env.RUNTIME_ENV) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["RUNTIME_ENV"],
+        message: "RUNTIME_ENV is required outside development.",
+      });
+    }
+    if ((env.RUNTIME_ENV === "REAL_RUNTIME" || env.RUNTIME_ENV === "TEST_WITH_REAL_CREDS") && !env.CRON_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["CRON_SECRET"],
+        message: "CRON_SECRET is required for REAL_RUNTIME and TEST_WITH_REAL_CREDS",
+      });
     }
   });
 
@@ -90,8 +124,16 @@ let cachedEnv: z.infer<typeof serverEnvSchema> | undefined;
 
 export function getServerEnv() {
   const raw = process.env;
-  cachedEnv ??= serverEnvSchema.parse({
+  if (cachedEnv) return cachedEnv;
+  const runtimeResult = validateRuntimeConfig(raw);
+  const runtimeEnv = runtimeResult.ok ? runtimeResult.runtimeEnv : raw.RUNTIME_ENV;
+  const parseResult = serverEnvSchema.safeParse({
     ...raw,
+    RUNTIME_ENV: runtimeEnv,
   });
+  if (!parseResult.success) {
+    throw new Error(buildEnvErrorMessage(raw, parseResult.error.issues));
+  }
+  cachedEnv = parseResult.data;
   return cachedEnv;
 }

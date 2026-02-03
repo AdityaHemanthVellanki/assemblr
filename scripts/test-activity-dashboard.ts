@@ -3,7 +3,7 @@
 import { getActivityDashboardSpec } from "../lib/ai/templates/activity-dashboard";
 import { sanitizeIntegrationsForIntent, buildExecutionGraph, validateCompiledIntent } from "../lib/ai/planner-logic";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -12,7 +12,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 async function run() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   throw new Error("Mock downgrade tests are disabled. Use live integrations for validation.");
   console.log("Test 1: Activity Dashboard with NO capabilities (Downgrade Path)...");

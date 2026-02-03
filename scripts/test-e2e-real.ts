@@ -1,6 +1,6 @@
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
@@ -12,7 +12,7 @@ import { ensureToolIdentity, canExecuteTool } from "@/lib/toolos/lifecycle";
 import { computeSpecHash } from "@/lib/spec/toolSpec";
 
 async function runTest() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   console.log("🚀 Starting Assemblr End-to-End Real System Test");
 

@@ -4,7 +4,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { countSnapshotRecords } from "@/lib/toolos/materialization";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 
 type Scenario = {
@@ -111,7 +111,7 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
 }
 
 async function runE2E() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   const admin = createSupabaseAdminClient();
   const session = await bootstrapRealUserSession();

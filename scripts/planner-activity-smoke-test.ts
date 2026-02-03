@@ -21,7 +21,7 @@ import type { OrgPolicy } from "@/lib/core/governance";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { getCapabilitiesForIntegration } from "@/lib/capabilities/registry";
-import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -30,7 +30,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 async function run() {
-  assertRealRuntime();
+  ensureRuntimeOrThrow();
   assertNoMocks();
   const compileIntent = await loadCompileIntent();
   const prompt = "Build a tool to explore activity across my tools";
