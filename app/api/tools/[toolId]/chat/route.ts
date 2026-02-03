@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat, resumeToolExecution } from "@/lib/ai/tool-chat";
+import { processToolChat, resumeToolExecution, maybeAutoRenameChat } from "@/lib/ai/tool-chat";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -208,6 +208,7 @@ export async function POST(
       }
     }
 
+    let chatTitle: string | null = null;
     if (!execution) {
       const { data: msgRow, error: msgError } = await (supabase.from("chat_messages") as any)
         .insert({
@@ -222,6 +223,14 @@ export async function POST(
         console.error("Failed to save message", msgError);
         return errorResponse("Failed to save message", 500);
       }
+      try {
+        chatTitle = await maybeAutoRenameChat({
+          supabase,
+          toolId,
+          orgId: ctx.orgId,
+          firstUserMessage: userMessage,
+        });
+      } catch {}
 
       try {
         execution = await createExecution({
@@ -288,6 +297,10 @@ export async function POST(
       selectedIntegrationIds,
       executionId: execution.id,
     });
+
+    if (chatTitle) {
+      result.metadata = { ...(result.metadata ?? {}), chatTitle };
+    }
 
     if (mode === "create" && (result.metadata as any)?.persist === true) {
       const { error: updateError } = await supabase

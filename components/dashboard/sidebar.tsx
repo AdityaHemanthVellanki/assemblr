@@ -71,6 +71,14 @@ export function Sidebar({
     void loadProjects();
   }, [loadProjects]);
 
+  React.useEffect(() => {
+    const handleRefresh = () => {
+      void loadProjects();
+    };
+    window.addEventListener("projects:refresh", handleRefresh);
+    return () => window.removeEventListener("projects:refresh", handleRefresh);
+  }, [loadProjects]);
+
   // Reload when path changes (e.g. new chat created elsewhere)
   React.useEffect(() => {
     if (pathname === '/app/chat' || pathname?.startsWith('/dashboard/projects/')) {

@@ -2,7 +2,7 @@
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline } from "@/lib/ai/tool-chat";
+import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline, maybeAutoRenameChat } from "@/lib/ai/tool-chat";
 import { isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
@@ -197,6 +197,7 @@ export async function sendChatMessage(
     }
   }
 
+  let chatTitle: string | null = null;
   if (!execution) {
     const { data: msgRow, error: msgError } = await supabase
       .from("chat_messages")
@@ -212,6 +213,14 @@ export async function sendChatMessage(
     if (msgError || !msgRow) {
       return { error: "Failed to save message" };
     }
+    try {
+      chatTitle = await maybeAutoRenameChat({
+        supabase,
+        toolId: effectiveToolId,
+        orgId,
+        firstUserMessage: message,
+      });
+    } catch {}
 
     try {
       execution = await createExecution({
@@ -338,6 +347,7 @@ export async function sendChatMessage(
     metadata: {
       executionId: execution.id,
       status: execution.status,
+      ...(chatTitle ? { chatTitle } : {}),
       ...result.metadata,
     },
   };

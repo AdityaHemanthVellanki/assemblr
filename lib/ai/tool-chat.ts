@@ -116,6 +116,118 @@ const TIME_BUDGETS = {
   firstRenderMs: 3000,
 };
 
+const DEFAULT_CHAT_TITLES = new Set(
+  ["new chat", "new tool", "untitled", "untitled project", "untitled chat", "new chat", "new tool", "new tool chat"]
+    .map((value) => value.trim().toLowerCase()),
+);
+
+function normalizeChatTitle(value: string) {
+  return value.trim().toLowerCase();
+}
+
+export function isDefaultChatTitle(value?: string | null) {
+  if (!value) return true;
+  return DEFAULT_CHAT_TITLES.has(normalizeChatTitle(value));
+}
+
+function titleCase(input: string) {
+  return input
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => {
+      if (word.toUpperCase() === word && word.length <= 6) return word;
+      const lower = word.toLowerCase();
+      return `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`;
+    })
+    .join(" ");
+}
+
+export async function generateChatTitle(params: {
+  firstUserMessage: string;
+  intent?: string;
+  goal?: string;
+}) {
+  const message = params.firstUserMessage.trim();
+  if (!message) return null;
+  const env = getServerEnv();
+  if (!env.AZURE_OPENAI_DEPLOYMENT_NAME) return null;
+  const systemPrompt =
+    "Generate a short, clear, human-readable title (3–7 words) that summarizes the user’s intent. Do not include verbs like build, create, show. Do not include punctuation. Return only the title.";
+  const intentLine = params.intent ? `Intent: ${params.intent}` : "";
+  const goalLine = params.goal ? `Goal: ${params.goal}` : "";
+  const userContent = [message, intentLine, goalLine].filter(Boolean).join("\n");
+  let raw = "";
+  try {
+    const response = await getAzureOpenAIClient().chat.completions.create({
+      model: env.AZURE_OPENAI_DEPLOYMENT_NAME,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.2,
+      max_tokens: 24,
+    });
+    raw = response.choices[0]?.message?.content ?? "";
+  } catch {
+    return null;
+  }
+  let title = raw.replace(/[\r\n]+/g, " ").trim();
+  if (title.startsWith('"') && title.endsWith('"')) {
+    title = title.slice(1, -1).trim();
+  }
+  title = title.replace(/[.?!,:;'"`]/g, "").replace(/\s+/g, " ").trim();
+  if (!title) return null;
+  let words = title.split(" ").filter(Boolean);
+  if (words.length < 3) {
+    if (words.length === 1) {
+      words = ["Recent", words[0], "Overview"];
+    } else {
+      words = ["Recent", ...words];
+    }
+  }
+  if (words.length > 7) {
+    words = words.slice(0, 7);
+  }
+  return titleCase(words.join(" "));
+}
+
+export async function maybeAutoRenameChat(params: {
+  supabase: any;
+  toolId: string;
+  orgId: string;
+  firstUserMessage: string;
+  intent?: string;
+  goal?: string;
+}) {
+  const { data: project } = await (params.supabase.from("projects") as any)
+    .select("name")
+    .eq("id", params.toolId)
+    .eq("org_id", params.orgId)
+    .single();
+  if (!project || !isDefaultChatTitle(project.name)) return null;
+
+  const { count } = await (params.supabase.from("chat_messages") as any)
+    .select("id", { count: "exact", head: true })
+    .eq("tool_id", params.toolId)
+    .eq("role", "user");
+  if (count !== 1) return null;
+
+  const title = await generateChatTitle({
+    firstUserMessage: params.firstUserMessage,
+    intent: params.intent,
+    goal: params.goal,
+  });
+  if (!title || isDefaultChatTitle(title)) return null;
+
+  const { error } = await (params.supabase.from("projects") as any)
+    .update({ name: title, updated_at: new Date().toISOString() })
+    .eq("id", params.toolId)
+    .eq("org_id", params.orgId);
+  if (error) return null;
+
+  return title;
+}
+
 async function createToolBuilderSystemPrompt(input: {
   orgId: string;
   toolId: string;

@@ -194,6 +194,9 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
             if (data?.spec) {
               onSpecUpdate(data.spec);
             }
+            if (data?.metadata?.chatTitle) {
+              window.dispatchEvent(new CustomEvent("projects:refresh"));
+            }
           })
           .catch((error) => {
             if (error instanceof ApiError && error.status === 401) {
@@ -325,6 +328,9 @@ export function ChatPanel({ toolId, initialMessages = [], onSpecUpdate }: ChatPa
       }
       if (data?.metadata?.executionId) {
         setLastExecutionId(data.metadata.executionId);
+      }
+      if (data?.metadata?.chatTitle) {
+        window.dispatchEvent(new CustomEvent("projects:refresh"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
