@@ -51,7 +51,7 @@ export async function GET(
       .select("snapshot, view_spec, data_ready, view_ready")
       .eq("tool_id", toolId)
       .eq("org_id", project.org_id)
-      .single();
+      .maybeSingle();
 
     const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
     const lifecycleState = await loadMemory({
@@ -73,18 +73,20 @@ export async function GET(
       ? buildLogs
       : (buildLogs as any)?.logs ?? null;
 
-    const responseSnapshot = renderState?.snapshot ?? null;
-    const responseViewSpec = renderState?.view_spec ?? null;
-    const responseDataReady = renderState?.data_ready === true;
-    const responseViewReady = renderState?.view_ready === true;
+    const responseSnapshot = renderState?.snapshot ?? project.data_snapshot ?? null;
+    const responseViewSpec = renderState?.view_spec ?? project.view_spec ?? null;
+    const responseDataReady = renderState?.data_ready === true || project.data_ready === true;
+    const responseViewReady = renderState?.view_ready === true || project.view_ready === true;
     const responseBuildLogs = Array.isArray(resolvedBuildLogs) ? resolvedBuildLogs : null;
+    const terminalStatus = ["READY", "FAILED", "CORRUPTED"].includes(project.status);
+    const done = Boolean(project.lifecycle_done || terminalStatus || responseViewReady || responseDataReady);
 
     console.log("[STATUS]", { toolId, data_ready: project.data_ready, view_ready: project.view_ready });
 
     return jsonResponse({
       status: project.status,
       error: project.error_message ?? null,
-      done: project.lifecycle_done ?? Boolean(project.view_ready && project.data_ready),
+      done,
       lifecycle_state: resolvedLifecycleState ?? null,
       build_logs: responseBuildLogs,
       view_ready: responseViewReady,

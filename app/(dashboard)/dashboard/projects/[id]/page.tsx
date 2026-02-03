@@ -6,7 +6,7 @@ import { getServerEnv } from "@/lib/env";
 import { parseToolSpec } from "@/lib/spec/toolSpec";
 import { loadMemory, type MemoryScope } from "@/lib/toolos/memory-store";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
-import { ToolLifecycleStateSchema } from "@/lib/toolos/spec";
+import { ToolLifecycleStateSchema, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function ProjectPage({
@@ -32,7 +32,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, spec, active_version_id, org_id, status, error_message"
+      "id, spec, active_version_id, org_id, status, error_message, view_spec, view_ready, data_snapshot, data_ready"
     )
     .eq("id", toolId)
     .single();
@@ -46,10 +46,10 @@ export default async function ProjectPage({
   const [projectRes, renderStateRes] = await Promise.all([
     projectResPromise,
     (supabase.from("tool_render_state") as any)
-      .select("snapshot, view_spec")
+      .select("snapshot, view_spec, data_ready, view_ready")
       .eq("tool_id", toolId)
       .eq("org_id", ctx.orgId)
-      .single(),
+      .maybeSingle(),
   ]);
 
   if (projectRes.error) {
@@ -134,10 +134,19 @@ export default async function ProjectPage({
       | undefined,
   }));
 
-  const viewSpecPayload =
-    Array.isArray(renderStateRes?.data?.view_spec)
-      ? { views: renderStateRes?.data?.view_spec }
-      : renderStateRes?.data?.view_spec ?? null;
+  const rawViewSpec = renderStateRes?.data?.view_spec ?? projectRes.data.view_spec ?? null;
+  const viewSpecPayload = rawViewSpec
+    ? coerceViewSpecPayload(Array.isArray(rawViewSpec) ? { views: rawViewSpec } : rawViewSpec)
+    : null;
+  const dataSnapshot = renderStateRes?.data?.snapshot ?? projectRes.data.data_snapshot ?? null;
+  const viewReady =
+    typeof renderStateRes?.data?.view_ready === "boolean"
+      ? renderStateRes?.data?.view_ready
+      : projectRes.data.view_ready ?? Boolean(viewSpecPayload);
+  const dataReady =
+    typeof renderStateRes?.data?.data_ready === "boolean"
+      ? renderStateRes?.data?.data_ready
+      : projectRes.data.data_ready ?? Boolean(dataSnapshot);
 
   return (
     <ProjectWorkspace
@@ -150,9 +159,9 @@ export default async function ProjectPage({
         status: projectRes.data.status,
         error_message: projectRes.data.error_message,
         view_spec: viewSpecPayload,
-        view_ready: Boolean(viewSpecPayload),
-        data_snapshot: renderStateRes?.data?.snapshot ?? null,
-        data_ready: Boolean(renderStateRes?.data?.snapshot),
+        view_ready: viewReady,
+        data_snapshot: dataSnapshot,
+        data_ready: dataReady,
       }}
       initialMessages={messages}
       role={role}

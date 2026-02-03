@@ -11,12 +11,11 @@ import type { BuildStep } from "@/components/dashboard/build-progress-panel";
 import { resumeChatExecution, sendChatMessage } from "@/app/actions/chat";
 import { startOAuthFlow } from "@/app/actions/oauth";
 import { ToolSpec } from "@/lib/spec/toolSpec";
-import { type ViewSpecPayload } from "@/lib/toolos/spec";
+import { ViewSpecPayloadSchema, coerceViewSpecPayload, type ToolLifecycleState, type ViewSpecPayload } from "@/lib/toolos/spec";
 import Image from "next/image";
 import { type SnapshotRecords } from "@/lib/toolos/materialization";
 import { canEditProjects, type OrgRole } from "@/lib/permissions-shared";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
-import { type ToolLifecycleState } from "@/lib/toolos/spec";
 import { safeFetch } from "@/lib/api/client";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -55,6 +54,14 @@ interface ProjectWorkspaceProps {
   shareVersionId?: string | null;
 }
 
+function normalizeViewSpecPayload(input: unknown): ViewSpecPayload | null {
+  if (!input) return null;
+  const candidate = Array.isArray(input) ? { views: input } : input;
+  const parsed = ViewSpecPayloadSchema.safeParse(candidate);
+  if (parsed.success) return parsed.data;
+  return coerceViewSpecPayload(candidate);
+}
+
 export function ProjectWorkspace({
   project,
   initialMessages,
@@ -86,7 +93,9 @@ export function ProjectWorkspace({
   const [activeVersionId, setActiveVersionId] = React.useState<string | null>(null);
   const [promotingVersionId, setPromotingVersionId] = React.useState<string | null>(null);
   const [initError, setInitError] = React.useState<string | null>(
-    project?.status === "FAILED" ? project?.error_message ?? "Tool initialization failed." : null
+    project?.status === "FAILED" || project?.status === "CORRUPTED"
+      ? project?.error_message ?? "Tool initialization failed."
+      : null
   );
   const [specErrorState, setSpecErrorState] = React.useState<string | null>(
     project?.spec_error ?? null
@@ -122,7 +131,9 @@ export function ProjectWorkspace({
   // DB-Backed State (Single Source of Truth)
   const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
   const [viewReady, setViewReady] = React.useState<boolean>(project?.view_ready ?? false);
-  const [viewSpec, setViewSpec] = React.useState<ViewSpecPayload | null>(project?.view_spec ?? null);
+  const [viewSpec, setViewSpec] = React.useState<ViewSpecPayload | null>(() =>
+    normalizeViewSpecPayload(project?.view_spec ?? null),
+  );
   const [dataReady, setDataReady] = React.useState<boolean>(project?.data_ready ?? false);
   const [dataSnapshot, setDataSnapshot] = React.useState<Record<string, any> | null>(project?.data_snapshot ?? null);
 
@@ -132,15 +143,20 @@ export function ProjectWorkspace({
   
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
-  const canRenderTool = Boolean(toolId && viewSpec);
+  const canRenderTool = Boolean(toolId && viewSpec && viewReady);
 
   // Polling for lifecycle status when not ready
   React.useEffect(() => {
     if (!toolId) return;
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | null = null;
+    const maxAttempts = 160;
+    const maxDurationMs = 4 * 60 * 1000;
+    const startedAt = Date.now();
+    let attempts = 0;
     const poll = async () => {
         try {
+            attempts += 1;
             const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
             if (cancelled) return;
 
@@ -165,9 +181,10 @@ export function ProjectWorkspace({
             }
 
             if (res.view_spec) {
-                 const normalized =
-                   Array.isArray(res.view_spec) ? { views: res.view_spec } : res.view_spec;
-                 setViewSpec(normalized);
+                 const normalized = normalizeViewSpecPayload(res.view_spec);
+                 if (normalized) {
+                   setViewSpec(normalized);
+                 }
             }
 
             if (res.lifecycle_state || res.build_logs) {
@@ -175,13 +192,23 @@ export function ProjectWorkspace({
               setBuildSteps(deriveBuildSteps(res.lifecycle_state ?? null, buildLogs));
             }
 
-            if (res.status === "FAILED") {
-                 // Terminal state: failure
+            const terminalStatus = ["READY", "FAILED", "CORRUPTED"].includes(res.status);
+            const elapsed = Date.now() - startedAt;
+            const maxedOut = attempts >= maxAttempts || elapsed >= maxDurationMs;
+
+            if (res.status === "FAILED" || res.status === "CORRUPTED") {
                  setInitError(res.error || "Tool initialization failed.");
-                 if (interval) clearInterval(interval);
-                 interval = null;
             }
-            if (res.done) {
+            if (res.view_ready && !res.view_spec) {
+                 setInitError(res.error || "Render state missing.");
+            }
+            if (res.data_ready && !res.data_snapshot) {
+                 setInitError(res.error || "Data snapshot missing.");
+            }
+            if (maxedOut && !res.done && !terminalStatus && !res.view_ready) {
+                 setInitError((prev) => prev ?? "Status polling timed out. Please retry.");
+            }
+            if (res.done || terminalStatus || res.view_ready || maxedOut) {
                  if (interval) clearInterval(interval);
                  interval = null;
             }

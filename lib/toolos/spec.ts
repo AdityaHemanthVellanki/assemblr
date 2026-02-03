@@ -376,6 +376,28 @@ export const ViewSpecPayloadSchema = z.object({
 });
 export type ViewSpecPayload = z.infer<typeof ViewSpecPayloadSchema>;
 
+export function coerceViewSpecPayload(input: unknown): ViewSpecPayload {
+  const parsed = ViewSpecPayloadSchema.safeParse(input);
+  if (parsed.success) return parsed.data;
+  const base = input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, any>) : {};
+  const repaired = {
+    views: Array.isArray(base.views) ? base.views : [],
+    goal_plan: base.goal_plan ?? undefined,
+    intent_contract: base.intent_contract ?? undefined,
+    semantic_plan: base.semantic_plan ?? undefined,
+    goal_validation: base.goal_validation ?? undefined,
+    decision: base.decision ?? undefined,
+    integration_statuses: base.integration_statuses ?? undefined,
+    answer_contract: base.answer_contract ?? undefined,
+    query_plans: Array.isArray(base.query_plans) ? base.query_plans : [],
+    tool_graph: base.tool_graph ?? undefined,
+    assumptions: Array.isArray(base.assumptions) ? base.assumptions : undefined,
+  };
+  const repairedParsed = ViewSpecPayloadSchema.safeParse(repaired);
+  if (repairedParsed.success) return repairedParsed.data;
+  return { views: [], query_plans: [] };
+}
+
 export const AutomationCapabilitiesSchema = z.object({
   canRunWithoutUI: z.boolean(),
   supportedTriggers: z.array(z.string()).default([]),
@@ -407,6 +429,12 @@ export const ToolLifecycleStateSchema = z.enum([
   "READY",
   "FAILED",
   "FAILED_COMPILATION",
+  "TOOL_CREATED",
+  "INTEGRATIONS_RUNNING",
+  "DATA_COLLECTED",
+  "DATA_VALIDATED",
+  "RENDER_STATE_READY",
+  "VIEW_READY",
   "INIT",
   "INTENT_PARSED",
   "ENTITIES_EXTRACTED",

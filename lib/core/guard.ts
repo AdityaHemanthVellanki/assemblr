@@ -107,3 +107,7 @@ export function ensureRuntimeOrThrow(env?: NodeJS.ProcessEnv) {
 export function assertRealRuntime(env?: NodeJS.ProcessEnv) {
   return validateRuntimeConfig(env);
 }
+
+export function getRuntimeValidationResult() {
+  return cachedRuntimeResult;
+}

@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { getIntegrationTokenStatus, getValidAccessToken } from "@/lib/integrations/tokenRefresh";
@@ -27,7 +27,7 @@ import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedInci
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
-import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
+import { getRuntimeValidationResult } from "@/lib/core/guard";
 
 import { IntegrationNotConnectedError, isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
@@ -56,6 +56,26 @@ export interface ToolChatResponse {
   requiresIntegrations?: boolean;
   missingIntegrations?: string[];
   requiredIntegrations?: string[];
+}
+
+function runtimeGuardResponse(): ToolChatResponse | null {
+  const runtimeResult = getRuntimeValidationResult();
+  if (!runtimeResult) {
+    const messageText = "Runtime not initialized. Restart the server to apply configuration.";
+    return {
+      explanation: messageText,
+      message: { type: "text", content: messageText },
+      metadata: { status: "runtime_uninitialized" },
+    };
+  }
+  if (!runtimeResult.ok) {
+    return {
+      explanation: runtimeResult.error,
+      message: { type: "text", content: runtimeResult.error },
+      metadata: { status: "runtime_invalid", runtimeEnv: runtimeResult.runtimeEnv ?? null },
+    };
+  }
+  return null;
 }
 
 type BuildStep = {
@@ -250,8 +270,8 @@ export async function runToolRuntimePipeline(input: ToolChatRequest) {
 export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
-  ensureRuntimeOrThrow();
-  assertNoMocks();
+  const runtimeGate = runtimeGuardResponse();
+  if (runtimeGate) return runtimeGate;
   if (input.mode === "create") {
     return runCompilerPipeline(input);
   }
@@ -349,8 +369,8 @@ export async function runCompilerPipeline(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   getServerEnv();
-  ensureRuntimeOrThrow();
-  assertNoMocks();
+  const runtimeGate = runtimeGuardResponse();
+  if (runtimeGate) return runtimeGate;
   if (!input.connectedIntegrationIds || input.connectedIntegrationIds.length === 0) {
     const messageText = "Execution blocked: Real credentials for required integrations are required.";
     return {

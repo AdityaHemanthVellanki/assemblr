@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug } from "lucide-react";
+import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { APP_NAME } from "@/lib/branding";
@@ -179,9 +179,18 @@ export function Sidebar({
     ? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
     : projects;
   const integrationsHref = "/dashboard/integrations";
+  const useCasesHref = "/use-cases";
   const integrationsActive = pathname?.startsWith(integrationsHref);
+  const useCasesActive = pathname?.startsWith(useCasesHref);
   const canManage = canManageIntegrations(role);
   const navItems = [
+    {
+      id: "use-cases",
+      label: "Use Cases",
+      href: useCasesHref,
+      icon: Sparkles,
+      disabled: false,
+    },
     {
       id: "integrations",
       label: "Integrations",
@@ -228,13 +237,14 @@ export function Sidebar({
             </button>
             {navItems.map((item) => {
               const Icon = item.icon;
+              const active = item.href === useCasesHref ? useCasesActive : integrationsActive;
               if (item.disabled) {
                 return (
                   <div
                     key={item.id}
                     className={cn(
                       "rounded-md px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground opacity-60 cursor-not-allowed",
-                      integrationsActive ? "bg-accent/50" : "",
+                      active ? "bg-accent/50" : "",
                     )}
                     role="link"
                     aria-disabled="true"
@@ -252,7 +262,7 @@ export function Sidebar({
                   href={item.href}
                   className={cn(
                     "rounded-md px-3 py-2 text-sm transition flex items-center gap-2",
-                    integrationsActive
+                    active
                       ? "bg-accent text-accent-foreground font-medium"
                       : "text-muted-foreground hover:bg-accent/40",
                   )}
