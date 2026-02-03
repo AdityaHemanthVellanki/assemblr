@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "@/styles/globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
-import { assertNoMocks } from "@/lib/core/guard";
+import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -24,6 +24,7 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  assertRealRuntime();
   assertNoMocks();
   
   return (

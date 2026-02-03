@@ -3,6 +3,7 @@
 import { getActivityDashboardSpec } from "../lib/ai/templates/activity-dashboard";
 import { sanitizeIntegrationsForIntent, buildExecutionGraph, validateCompiledIntent } from "../lib/ai/planner-logic";
 import type { ToolSpec } from "@/lib/spec/toolSpec";
+import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -11,6 +12,9 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 async function run() {
+  assertRealRuntime();
+  assertNoMocks();
+  throw new Error("Mock downgrade tests are disabled. Use live integrations for validation.");
   console.log("Test 1: Activity Dashboard with NO capabilities (Downgrade Path)...");
   
   // 1. Get Template
@@ -24,7 +28,11 @@ async function run() {
   
   // 4. Verify Downgrade
   assert(intent.tool_mutation, "Expected tool_mutation");
-  const actions = intent.tool_mutation.actionsAdded || [];
+  if (!intent.tool_mutation) {
+    throw new Error("Expected tool_mutation");
+  }
+  const mutation = intent.tool_mutation!;
+  const actions = mutation.actionsAdded || [];
   const fetchAction = actions.find((a: any) => a.id === "fetch_activities");
   assert(fetchAction, "fetch_activities action missing");
   
@@ -50,7 +58,7 @@ async function run() {
   
   // Test 2: UI Structure & Wiring
   console.log("Test 2: UI Structure & Wiring...");
-  const pages = intent.tool_mutation.pagesAdded || [];
+  const pages = mutation.pagesAdded || [];
   assert(pages.length === 1, "Expected 1 page");
   const page = pages[0];
   const filters = page.components.find((c: any) => c.id === "filters_container");

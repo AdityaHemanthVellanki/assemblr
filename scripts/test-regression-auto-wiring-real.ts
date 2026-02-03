@@ -72,7 +72,10 @@ async function runDeterministicTest() {
 
 async function runRegressionTest() {
   const { compileIntent } = await import("../lib/ai/planner");
-  const { assertNoMocks } = await import("../lib/core/guard");
+  const { assertNoMocks, assertRealRuntime } = await import("../lib/core/guard");
+  const { createSupabaseAdminClient } = await import("../lib/supabase/admin");
+  const { loadIntegrationConnections } = await import("../lib/integrations/loadIntegrationConnections");
+  const { getCapabilitiesForIntegration } = await import("../lib/capabilities/registry");
   
   console.log("🚀 Starting Auto-Wiring Regression Test (Production Mode)");
   
@@ -80,19 +83,38 @@ async function runRegressionTest() {
   await runDeterministicTest();
 
   // 1. Setup
+  assertRealRuntime();
   assertNoMocks();
   
   const prompt = "show my latest emails";
   console.log(`\n1. Generating Spec for prompt: "${prompt}"...`);
-  
+  const orgId = process.env.E2E_TEST_ORG_ID;
+  if (!orgId) {
+      throw new Error("E2E_TEST_ORG_ID must be set for regression test.");
+  }
+  const admin = createSupabaseAdminClient();
+  const connections = await loadIntegrationConnections({ supabase: admin, orgId });
+  const integrationIds = connections.map((c: any) => c.integration_id);
+  if (integrationIds.length === 0) {
+      throw new Error("No active integration connections found for org. Real credentials are required.");
+  }
+  const { data: orgIntegrations, error } = await (admin.from("org_integrations") as any)
+      .select("integration_id, scopes")
+      .eq("org_id", orgId)
+      .in("integration_id", integrationIds);
+  if (error) {
+      throw new Error(`Failed to load org integrations: ${error.message}`);
+  }
+  const scopesById = new Map((orgIntegrations ?? []).map((row: any) => [row.integration_id, row.scopes ?? []]));
   const context = {
-      integrations: {
-          google: {
+      integrations: integrationIds.reduce<Record<string, any>>((acc, id: string) => {
+          acc[id] = {
               connected: true,
-              capabilities: ["google_gmail_list", "google_calendar_list"],
-              scopes: ["https://www.googleapis.com/auth/gmail.readonly"]
-          }
-      }
+              capabilities: getCapabilitiesForIntegration(id).map((c: any) => c.id),
+              scopes: scopesById.get(id) ?? [],
+          };
+          return acc;
+      }, {}),
   };
 
   try {

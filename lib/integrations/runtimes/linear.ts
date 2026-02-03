@@ -28,20 +28,59 @@ export class LinearRuntime implements IntegrationRuntime {
       paramsSchema: z.object({
         first: z.number().optional(),
         includeArchived: z.boolean().optional(),
+        assigneeId: z.string().optional(),
+        teamId: z.string().optional(),
+        cycleId: z.string().optional(),
+        stateId: z.string().optional(),
+        completedAfter: z.string().optional(),
+        completedBefore: z.string().optional(),
+        updatedAfter: z.string().optional(),
+        updatedBefore: z.string().optional(),
+        labels: z.array(z.string()).optional(),
       }),
       execute: async (params, context, trace) => {
         const { token } = context;
         const startTime = Date.now();
         let status: "success" | "error" = "success";
-        
-        // Construct GraphQL Query
         const limit = params.first || 50;
-        // Filter for active issues (excluding completed/canceled if possible, but 'state' filter is complex)
-        // For now, we fetch all and let the user filter, or rely on Linear's default sort.
-        // To be safe against 500 errors, we use no filter.
-        const filter = ""; 
-        
-        const query = `query { issues(first: ${limit} ${filter}) { nodes { id title state { name } createdAt updatedAt assignee { name } } } }`;
+        const filter: Record<string, any> = {};
+        if (params.assigneeId) filter.assignee = { id: { eq: params.assigneeId } };
+        if (params.teamId) filter.team = { id: { eq: params.teamId } };
+        if (params.cycleId) filter.cycle = { id: { eq: params.cycleId } };
+        if (params.stateId) filter.state = { id: { eq: params.stateId } };
+        if (params.completedAfter || params.completedBefore) {
+            filter.completedAt = {
+                ...(params.completedAfter ? { gte: params.completedAfter } : {}),
+                ...(params.completedBefore ? { lte: params.completedBefore } : {}),
+            };
+        }
+        if (params.updatedAfter || params.updatedBefore) {
+            filter.updatedAt = {
+                ...(params.updatedAfter ? { gte: params.updatedAfter } : {}),
+                ...(params.updatedBefore ? { lte: params.updatedBefore } : {}),
+            };
+        }
+        if (params.labels && params.labels.length > 0) {
+            filter.labels = { some: { name: { in: params.labels } } };
+        }
+        const query = `
+          query Issues($first: Int, $filter: IssueFilter) {
+            issues(first: $first, filter: $filter) {
+              nodes {
+                id
+                identifier
+                title
+                state { id name }
+                createdAt
+                updatedAt
+                completedAt
+                assignee { id name }
+                project { id name }
+                cycle { id name startsAt endsAt }
+              }
+            }
+          }
+        `;
 
         try {
             const res = await fetch("https://api.linear.app/graphql", {
@@ -50,7 +89,7 @@ export class LinearRuntime implements IntegrationRuntime {
                     "Content-Type": "application/json",
                     Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify({ query })
+                body: JSON.stringify({ query, variables: { first: limit, filter: Object.keys(filter).length ? filter : undefined } })
             });
             
             // Check for Bearer if needed
@@ -126,6 +165,216 @@ export class LinearRuntime implements IntegrationRuntime {
                 trace.logIntegrationAccess({
                     integrationId: "linear",
                     capabilityId: "linear_teams_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_projects_list"] = {
+        id: "linear_projects_list",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            first: z.number().optional(),
+            includeArchived: z.boolean().optional(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const limit = params.first || 50;
+            const query = `
+              query Projects($first: Int, $includeArchived: Boolean) {
+                projects(first: $first, includeArchived: $includeArchived) {
+                  nodes { id name state startDate targetDate }
+                }
+              }
+            `;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { first: limit, includeArchived: params.includeArchived ?? false } })
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.projects?.nodes || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_projects_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_cycles_list"] = {
+        id: "linear_cycles_list",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            first: z.number().optional(),
+            includeArchived: z.boolean().optional(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const limit = params.first || 50;
+            const query = `
+              query Cycles($first: Int, $includeArchived: Boolean) {
+                cycles(first: $first, includeArchived: $includeArchived) {
+                  nodes { id name startsAt endsAt }
+                }
+              }
+            `;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { first: limit, includeArchived: params.includeArchived ?? false } })
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.cycles?.nodes || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_cycles_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_labels_list"] = {
+        id: "linear_labels_list",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            first: z.number().optional(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const limit = params.first || 50;
+            const query = `
+              query Labels($first: Int) {
+                issueLabels(first: $first) {
+                  nodes { id name }
+                }
+              }
+            `;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { first: limit } })
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.issueLabels?.nodes || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_labels_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime
+                });
+            }
+        }
+    };
+
+    this.capabilities["linear_workflow_states_list"] = {
+        id: "linear_workflow_states_list",
+        integrationId: "linear",
+        paramsSchema: z.object({
+            first: z.number().optional(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const limit = params.first || 50;
+            const query = `
+              query WorkflowStates($first: Int) {
+                workflowStates(first: $first) {
+                  nodes { id name type }
+                }
+              }
+            `;
+            try {
+                const res = await fetch("https://api.linear.app/graphql", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ query, variables: { first: limit } })
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`Linear API error: ${res.statusText}`);
+                }
+                const json = await res.json();
+                if (json.errors) {
+                    status = "error";
+                    throw new Error(`Linear GraphQL Error: ${json.errors[0].message}`);
+                }
+                return json.data?.workflowStates?.nodes || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "linear",
+                    capabilityId: "linear_workflow_states_list",
                     params,
                     status,
                     latency_ms: Date.now() - startTime

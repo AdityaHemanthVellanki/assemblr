@@ -2,6 +2,7 @@ import { createSupabaseAdminClient as defaultCreateSupabaseAdminClient } from "@
 import { loadIntegrationConnections as defaultLoadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { IntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { getIntegrationUIConfig } from "@/lib/integrations/registry";
+import { getIntegrationTokenStatus, getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 
 // Define minimal interface to avoid circular dependency with tool-compiler.ts
 interface MinimalStageContext {
@@ -108,6 +109,7 @@ export async function runCheckIntegrationReadiness(
   );
 
   const missingPermissions: string[] = [];
+  const invalidCredentials: string[] = [];
   for (const integrationId of requiredIntegrations) {
     const row = orgIntegrationsById.get(integrationId);
     if (!row) continue;
@@ -122,11 +124,30 @@ export async function runCheckIntegrationReadiness(
         .map((a) => a.name);
       allBlockingActions.push(...blockingActions);
     }
+
+    try {
+      const tokenStatus = await getIntegrationTokenStatus(orgId, integrationId);
+      if (tokenStatus.status !== "valid") {
+        invalidCredentials.push(integrationId);
+        continue;
+      }
+      await getValidAccessToken(orgId, integrationId);
+    } catch {
+      invalidCredentials.push(integrationId);
+    }
   }
 
   if (missingPermissions.length > 0) {
     throw new IntegrationNotConnectedError({
       integrationIds: missingPermissions,
+      blockingActions: allBlockingActions,
+      requiredBy: allBlockingActions,
+    });
+  }
+
+  if (invalidCredentials.length > 0) {
+    throw new IntegrationNotConnectedError({
+      integrationIds: Array.from(new Set(invalidCredentials)),
       blockingActions: allBlockingActions,
       requiredBy: allBlockingActions,
     });

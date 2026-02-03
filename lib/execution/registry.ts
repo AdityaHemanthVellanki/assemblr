@@ -82,6 +82,10 @@ export class RuntimeActionRegistry {
       );
     }
     const run = async (params?: Record<string, any>, trace?: ExecutionTracer) => {
+      const envType = process.env.RUNTIME_ENV;
+      if (!envType || !["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"].includes(envType)) {
+        throw new Error("Execution blocked: RUNTIME_ENV must be set to REAL_RUNTIME, DEV_WITH_REAL_CREDS, or TEST_WITH_REAL_CREDS.");
+      }
       const tracer = trace || new ExecutionTracer("run");
       const token = await getValidAccessToken(this.orgId, section.integration);
       const context = await runtime.resolveContext(token);

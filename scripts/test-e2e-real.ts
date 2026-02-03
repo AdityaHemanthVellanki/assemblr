@@ -1,6 +1,7 @@
 import { getServerEnv } from "@/lib/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { assertNoMocks } from "@/lib/core/guard";
+import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { IntegrationId, isToolSystemSpec } from "@/lib/toolos/spec";
@@ -11,6 +12,7 @@ import { ensureToolIdentity, canExecuteTool } from "@/lib/toolos/lifecycle";
 import { computeSpecHash } from "@/lib/spec/toolSpec";
 
 async function runTest() {
+  assertRealRuntime();
   assertNoMocks();
   console.log("🚀 Starting Assemblr End-to-End Real System Test");
 
@@ -42,6 +44,11 @@ async function runTest() {
   ];
 
   const supabase = createSupabaseAdminClient();
+  const connections = await loadIntegrationConnections({ supabase, orgId });
+  const connectedIntegrationIds = connections.map((c) => c.integration_id);
+  if (connectedIntegrationIds.length === 0) {
+    throw new Error("No active integration connections found for org. Real credentials are required.");
+  }
 
   for (const scenario of scenarios) {
     console.log(`\n--- Scenario: ${scenario.name} ---`);
@@ -62,7 +69,7 @@ async function runTest() {
         currentSpec: {},
         messages: [],
         userMessage: scenario.prompt,
-        connectedIntegrationIds: [],
+        connectedIntegrationIds,
         mode: "create",
         integrationMode: "auto",
         supabaseClient: supabase,

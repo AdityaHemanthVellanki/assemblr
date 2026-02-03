@@ -175,6 +175,79 @@ export class GoogleRuntime implements IntegrationRuntime {
       }
     };
 
+    this.capabilities["google_drive_file_get"] = {
+      id: "google_drive_file_get",
+      integrationId: "google",
+      paramsSchema: z.object({
+        fileId: z.string(),
+        fields: z.string().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const fields = params.fields || "id,name,owners,modifiedTime,createdTime,webViewLink,permissions";
+        const url = `https://www.googleapis.com/drive/v3/files/${params.fileId}?fields=${encodeURIComponent(fields)}`;
+        try {
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+            if (!res.ok) {
+                status = "error";
+                throw new Error(`Google Drive API error: ${res.statusText}`);
+            }
+            return await res.json();
+        } catch (e) {
+            status = "error";
+            throw e;
+        } finally {
+            trace.logIntegrationAccess({
+                integrationId: "google",
+                capabilityId: "google_drive_file_get",
+                params,
+                status,
+                latency_ms: Date.now() - startTime,
+                metadata: { url }
+            });
+        }
+      }
+    };
+
+    this.capabilities["google_drive_permissions_list"] = {
+      id: "google_drive_permissions_list",
+      integrationId: "google",
+      paramsSchema: z.object({
+        fileId: z.string(),
+        pageSize: z.number().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const pageSize = params.pageSize || 100;
+        const url = `https://www.googleapis.com/drive/v3/files/${params.fileId}/permissions?pageSize=${pageSize}`;
+        try {
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+            if (!res.ok) {
+                status = "error";
+                throw new Error(`Google Drive API error: ${res.statusText}`);
+            }
+            const data = await res.json();
+            return data.permissions || [];
+        } catch (e) {
+            status = "error";
+            throw e;
+        } finally {
+            trace.logIntegrationAccess({
+                integrationId: "google",
+                capabilityId: "google_drive_permissions_list",
+                params,
+                status,
+                latency_ms: Date.now() - startTime,
+                metadata: { url }
+            });
+        }
+      }
+    };
+
     this.capabilities["google_gmail_reply"] = {
       id: "google_gmail_reply",
       integrationId: "google",
@@ -294,6 +367,223 @@ export class GoogleRuntime implements IntegrationRuntime {
         }
       },
     };
+
+    this.capabilities["google_docs_get"] = {
+      id: "google_docs_get",
+      integrationId: "google",
+      paramsSchema: z.object({
+        documentId: z.string(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const url = `https://docs.googleapis.com/v1/documents/${params.documentId}`;
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
+            status = "error";
+            throw new Error(`Google Docs API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_docs_get",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
+        }
+      }
+    };
+
+    this.capabilities["google_docs_create"] = {
+      id: "google_docs_create",
+      integrationId: "google",
+      paramsSchema: z.object({
+        title: z.string(),
+        content: z.string().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        try {
+          const createRes = await fetch("https://docs.googleapis.com/v1/documents", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ title: params.title }),
+          });
+          if (!createRes.ok) {
+            status = "error";
+            throw new Error(`Google Docs API error: ${createRes.statusText}`);
+          }
+          const doc = await createRes.json();
+          const content = params.content?.trim();
+          if (content) {
+            await fetch(`https://docs.googleapis.com/v1/documents/${doc.documentId}:batchUpdate`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [
+                  {
+                    insertText: {
+                      location: { index: 1 },
+                      text: content,
+                    },
+                  },
+                ],
+              }),
+            });
+          }
+          return doc;
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_docs_create",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+          });
+        }
+      }
+    };
+
+    this.capabilities["google_sheets_get"] = {
+      id: "google_sheets_get",
+      integrationId: "google",
+      paramsSchema: z.object({
+        spreadsheetId: z.string(),
+        ranges: z.array(z.string()).optional(),
+        includeGridData: z.boolean().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const query = new URLSearchParams();
+        if (params.ranges && params.ranges.length > 0) {
+          params.ranges.forEach((range: string) => query.append("ranges", range));
+        }
+        if (params.includeGridData !== undefined) {
+          query.append("includeGridData", params.includeGridData ? "true" : "false");
+        }
+        const url = `https://sheets.googleapis.com/v4/spreadsheets/${params.spreadsheetId}?${query.toString()}`;
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
+            status = "error";
+            throw new Error(`Google Sheets API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_sheets_get",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
+        }
+      }
+    };
+
+    this.capabilities["google_sheets_update"] = {
+      id: "google_sheets_update",
+      integrationId: "google",
+      paramsSchema: z.object({
+        spreadsheetId: z.string(),
+        range: z.string(),
+        values: z.array(z.array(z.any())),
+        valueInputOption: z.string().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const valueInputOption = params.valueInputOption || "USER_ENTERED";
+        const url = `https://sheets.googleapis.com/v4/spreadsheets/${params.spreadsheetId}/values/${encodeURIComponent(params.range)}?valueInputOption=${encodeURIComponent(valueInputOption)}`;
+        try {
+          const res = await fetch(url, {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ values: params.values }),
+          });
+          if (!res.ok) {
+            status = "error";
+            throw new Error(`Google Sheets API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_sheets_update",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
+        }
+      }
+    };
+
+    this.capabilities["google_slides_get"] = {
+      id: "google_slides_get",
+      integrationId: "google",
+      paramsSchema: z.object({
+        presentationId: z.string(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+        const url = `https://slides.googleapis.com/v1/presentations/${params.presentationId}`;
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
+            status = "error";
+            throw new Error(`Google Slides API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_slides_get",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
+        }
+      }
+    };
   }
 }
 
@@ -301,6 +591,8 @@ const WRITE_CAPABILITIES = new Set([
   "google_gmail_reply",
   "google_gmail_archive",
   "google_gmail_label",
+  "google_docs_create",
+  "google_sheets_update",
 ]);
 
 function buildRawEmail(params: { to: string; subject: string; body: string }) {

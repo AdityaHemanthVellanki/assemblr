@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { RUNTIMES } from "@/lib/integrations/map";
 import { getValidAccessToken, IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
@@ -46,6 +47,11 @@ export async function executeToolAction(params: {
     const runtime = RUNTIMES[action.integrationId];
     if (!runtime) {
       throw new Error(`Runtime not found for integration ${action.integrationId}`);
+    }
+    // Enforce real runtime at execution time
+    const envType = process.env.RUNTIME_ENV;
+    if (!envType || !["REAL_RUNTIME", "DEV_WITH_REAL_CREDS", "TEST_WITH_REAL_CREDS"].includes(envType)) {
+      throw new Error("Execution blocked: RUNTIME_ENV must be set to REAL_RUNTIME, DEV_WITH_REAL_CREDS, or TEST_WITH_REAL_CREDS.");
     }
     await enforceRateLimit({
       orgId,
@@ -100,6 +106,24 @@ export async function executeToolAction(params: {
       const startedAt = Date.now();
       console.log(`[Runtime] Fetching token for ${action.integrationId}...`);
       const token = await getValidAccessToken(orgId, action.integrationId);
+      if (run) {
+        const envType = process.env.RUNTIME_ENV ?? "unknown";
+        const credentialHash = createHash("sha256").update(token).digest("hex");
+        runLogs.push({
+          id: `${action.id}:credential_verification`,
+          timestamp: new Date().toISOString(),
+          status: "info",
+          actionId: action.id,
+          integrationId: action.integrationId,
+          credential_source: "integration_connections",
+          credential_hash: credentialHash,
+          orgId,
+          userId: userId ?? null,
+          environment: envType,
+          real_credentials: true,
+          live_data: true,
+        });
+      }
       const context = await runtime.resolveContext(token);
       if (runtime.checkPermissions) {
         runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);

@@ -567,6 +567,12 @@ export function ToolRenderer({
     if (!Array.isArray(runDetails?.logs)) return null;
     return runDetails.logs[scrubIndex] ?? null;
   }, [runDetails, scrubIndex]);
+  const credentialAudit = React.useMemo(() => {
+    if (!Array.isArray(runDetails?.logs)) return null;
+    const logs = runDetails.logs.filter((log) => log?.credential_hash);
+    if (!logs.length) return null;
+    return logs[logs.length - 1];
+  }, [runDetails]);
 
   React.useEffect(() => {
     if (!activeView || !actionSpecs.length) return;
@@ -1038,6 +1044,22 @@ export function ToolRenderer({
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6">
               <div className="flex flex-col gap-4">
                 <ExecutionTimeline steps={runTimeline} />
+                <div className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs">
+                  <div className="text-muted-foreground">Credential Verification</div>
+                  {credentialAudit ? (
+                    <>
+                      <div>This execution used REAL credentials and LIVE data.</div>
+                      <div>Integration: {credentialAudit.integrationId}</div>
+                      <div>Credential Source: {credentialAudit.credential_source}</div>
+                      <div>Credential Hash: {credentialAudit.credential_hash}</div>
+                      <div>Org ID: {credentialAudit.orgId}</div>
+                      <div>User ID: {credentialAudit.userId ?? "unknown"}</div>
+                      <div>Environment: {credentialAudit.environment}</div>
+                    </>
+                  ) : (
+                    <div>No credential verification logs found.</div>
+                  )}
+                </div>
                 <div className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs">
                   <div className="text-muted-foreground">Timeline scrubber</div>
                   <input

@@ -19,8 +19,8 @@ export type BuildContext = {
  * - a valid org_id that EXISTS in DB
  * - valid org membership
  *
- * It MUST create missing state.
- * It MUST NOT throw for absence.
+ * It MUST NOT create missing state.
+ * It MUST throw for absence.
  */
 export async function resolveBuildContext(
   userId: string,
@@ -34,7 +34,7 @@ export async function resolveBuildContext(
     throw new Error(`User ${userId} not found or invalid`);
   }
 
-  // 2. Resolve or Create Organization
+  // 2. Resolve Organization
   let orgId = targetOrgId;
   let orgExists = false;
 
@@ -45,22 +45,6 @@ export async function resolveBuildContext(
       .maybeSingle();
 
     if (data) {
-      orgExists = true;
-    } else {
-      const { data: createdOrg, error: createError } = await (supabase.from("organizations") as any)
-        .upsert(
-          {
-            id: orgId,
-            name: `${user.user.email ?? "User"}'s Workspace`,
-          },
-          { onConflict: "id" },
-        )
-        .select("id")
-        .single();
-
-      if (createError || !createdOrg) {
-        throw new Error(`Failed to create organization ${orgId}: ${createError?.message}`);
-      }
       orgExists = true;
     }
   }
@@ -75,19 +59,7 @@ export async function resolveBuildContext(
     if (memberships && memberships.length > 0) {
       orgId = memberships[0].org_id;
     } else {
-      // Create a completely new bootstrap organization
-      const { data: newOrg, error: createError } = await (supabase.from("organizations") as any)
-        .insert({
-          name: `${user.user.email ?? "User"}'s Workspace`,
-        })
-        .select("id")
-        .single();
-
-      if (createError || !newOrg) {
-        // This is a catastrophic failure of the DB if we can't even create a fresh org
-        throw new Error(`Failed to create bootstrap organization: ${createError?.message}`);
-      }
-      orgId = newOrg.id;
+      throw new Error(`No organization membership found for user ${userId}`);
     }
   }
 
@@ -104,14 +76,7 @@ export async function resolveBuildContext(
     .maybeSingle();
 
   if (!membership) {
-    const { error: joinError } = await (supabase.from("memberships") as any).insert({
-      user_id: userId,
-      org_id: orgId,
-      role: "owner",
-    });
-    if (joinError && joinError.code !== "23505") {
-      throw new Error(`Failed to create membership for ${userId} in ${orgId}`);
-    }
+    throw new Error(`User ${userId} is not a member of org ${orgId}`);
   }
 
   return {

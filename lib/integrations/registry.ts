@@ -31,7 +31,17 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     connectionMode: "hosted_oauth",
     auth: {
       type: "oauth",
-      scopes: ["channels:read", "chat:write", "files:read"],
+      scopes: [
+        "channels:read",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "chat:write",
+        "files:read",
+        "search:read",
+        "users:read",
+      ],
     },
   },
   {
@@ -74,6 +84,7 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/documents",
         "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/calendar",
       ],

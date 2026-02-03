@@ -4,6 +4,8 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { countSnapshotRecords } from "@/lib/toolos/materialization";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
+import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
+import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 
 type Scenario = {
   name: string;
@@ -31,6 +33,11 @@ const scenarios: Scenario[] = [
 ];
 
 async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, orgId: string, userId: string, scenario: Scenario) {
+  const connections = await loadIntegrationConnections({ supabase: admin, orgId });
+  const connectedIntegrationIds = connections.map((c) => c.integration_id);
+  if (connectedIntegrationIds.length === 0) {
+    throw new Error("No active integration connections found for org. Real credentials are required.");
+  }
   const { data: toolRow, error: toolError } = await (admin.from("projects") as any)
     .insert({
       org_id: orgId,
@@ -52,7 +59,7 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
     userId,
     messages: [],
     userMessage: scenario.prompt,
-    connectedIntegrationIds: ["google", "github"],
+    connectedIntegrationIds,
     mode: "create",
   });
 
@@ -104,6 +111,8 @@ async function runScenario(admin: ReturnType<typeof createSupabaseAdminClient>, 
 }
 
 async function runE2E() {
+  assertRealRuntime();
+  assertNoMocks();
   const admin = createSupabaseAdminClient();
   const session = await bootstrapRealUserSession();
   const orgId = session.orgId;

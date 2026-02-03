@@ -80,6 +80,89 @@ export class NotionRuntime implements IntegrationRuntime {
         }
     };
 
+    this.capabilities["notion_databases_query"] = {
+        id: "notion_databases_query",
+        integrationId: "notion",
+        paramsSchema: z.object({
+            databaseId: z.string(),
+            filter: z.any().optional(),
+            sorts: z.array(z.any()).optional(),
+            pageSize: z.number().optional(),
+            startCursor: z.string().optional(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const res = await fetch(`https://api.notion.com/v1/databases/${params.databaseId}/query`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    filter: params.filter,
+                    sorts: params.sorts,
+                    page_size: params.pageSize ?? 100,
+                    start_cursor: params.startCursor
+                })
+            });
+            if (!res.ok) {
+                const errBody = await res.text();
+                throw new Error(`Notion API Error: ${res.statusText} - ${errBody}`);
+            }
+            const json = await res.json();
+            return json.results || [];
+        }
+    };
+
+    this.capabilities["notion_database_retrieve"] = {
+        id: "notion_database_retrieve",
+        integrationId: "notion",
+        paramsSchema: z.object({
+            databaseId: z.string(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const res = await fetch(`https://api.notion.com/v1/databases/${params.databaseId}`, {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json"
+                }
+            });
+            if (!res.ok) {
+                const errBody = await res.text();
+                throw new Error(`Notion API Error: ${res.statusText} - ${errBody}`);
+            }
+            return await res.json();
+        }
+    };
+
+    this.capabilities["notion_page_retrieve"] = {
+        id: "notion_page_retrieve",
+        integrationId: "notion",
+        paramsSchema: z.object({
+            pageId: z.string(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const res = await fetch(`https://api.notion.com/v1/pages/${params.pageId}`, {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json"
+                }
+            });
+            if (!res.ok) {
+                const errBody = await res.text();
+                throw new Error(`Notion API Error: ${res.statusText} - ${errBody}`);
+            }
+            return await res.json();
+        }
+    };
+
     this.capabilities["notion_block_children_list"] = {
         id: "notion_block_children_list",
         integrationId: "notion",

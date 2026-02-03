@@ -1,6 +1,7 @@
 import { validateCompiledIntent, repairCompiledIntent } from "@/lib/ai/planner-logic";
 import { CompiledIntent } from "@/lib/core/intent";
 import { ToolSpec } from "@/lib/spec/toolSpec";
+import { assertNoMocks, assertRealRuntime } from "@/lib/core/guard";
 
 // Mock types
 type MockIntent = CompiledIntent;
@@ -43,6 +44,9 @@ function expectNotThrows(fn: () => void) {
 }
 
 async function runTests() {
+  assertRealRuntime();
+  assertNoMocks();
+  throw new Error("Mock lifecycle trigger tests are disabled. Use live integration flows for validation.");
   console.log("Running Lifecycle Trigger Guardrail Tests...");
 
   // Test 1: Action with no trigger -> auto-attached (onPageLoad)

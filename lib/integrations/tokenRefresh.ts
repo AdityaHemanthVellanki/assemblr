@@ -19,6 +19,27 @@ type TokenStatus = {
   accessToken?: string;
 };
 
+function assertRealCredentialValue(value: unknown, label: string) {
+  if (!value || typeof value !== "string") {
+    throw new IntegrationAuthError(label, "missing_credentials", `Missing ${label} credential value.`);
+  }
+  const lower = value.toLowerCase();
+  if (
+    lower.includes("dummy") ||
+    lower.includes("fake") ||
+    lower.includes("mock") ||
+    lower.includes("placeholder") ||
+    lower.includes("example-key") ||
+    lower.includes("example_token") ||
+    lower.includes("test-token") ||
+    lower.startsWith("test_") ||
+    lower.startsWith("mock_") ||
+    lower.startsWith("dummy_")
+  ) {
+    throw new IntegrationAuthError(label, "missing_credentials", `Invalid ${label} credential value.`);
+  }
+}
+
 async function loadIntegrationCredentials(orgId: string, integrationId: string) {
   let connection: any;
   let supabase: any;
@@ -63,6 +84,15 @@ async function loadIntegrationCredentials(orgId: string, integrationId: string) 
   }
 
   const credentials = decryptJson(encrypted) as any;
+  if (!credentials || typeof credentials !== "object") {
+    throw new IntegrationAuthError(integrationId, "missing_credentials", `Missing credentials for ${integrationId}`);
+  }
+  if (credentials.access_token) {
+    assertRealCredentialValue(credentials.access_token, integrationId);
+  }
+  if (credentials.refresh_token) {
+    assertRealCredentialValue(credentials.refresh_token, integrationId);
+  }
   return { credentials, supabase };
 }
 
@@ -85,6 +115,9 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
   const accessToken = credentials.access_token;
   const refreshToken = credentials.refresh_token;
   const expiresAt = credentials.expires_at; // timestamp in ms
+  if (!accessToken || typeof accessToken !== "string") {
+    throw new IntegrationAuthError(integrationId, "missing_credentials", `Missing access token for ${integrationId}`);
+  }
 
   // Check if expired or expiring in 5 minutes
   if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
@@ -99,6 +132,7 @@ export async function getValidAccessToken(orgId: string, integrationId: string):
           console.warn(`Token expired for ${integrationId} and no refresh token available`);
           throw new IntegrationAuthError(integrationId, "missing_credentials", `Access token expired for ${integrationId} and no refresh token available. Re-connection required.`);
       }
+      assertRealCredentialValue(refreshToken, integrationId);
 
       console.log(`Refreshing token for ${integrationId}...`);
 

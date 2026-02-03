@@ -210,6 +210,312 @@ export class GitHubRuntime implements IntegrationRuntime {
         }
     };
 
+    this.capabilities["github_issues_search"] = {
+        id: "github_issues_search",
+        integrationId: "github",
+        paramsSchema: z.object({
+            q: z.string(),
+            sort: z.string().optional(),
+            order: z.enum(["asc", "desc"]).optional(),
+            per_page: z.number().optional()
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const query = new URLSearchParams();
+            query.append("q", params.q);
+            if (params.sort) query.append("sort", params.sort);
+            if (params.order) query.append("order", params.order);
+            if (params.per_page) query.append("per_page", String(params.per_page));
+            const url = `https://api.github.com/search/issues?${query.toString()}`;
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json"
+                    }
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                const data = await res.json();
+                return data.items || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_issues_search",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_pull_requests_search"] = {
+        id: "github_pull_requests_search",
+        integrationId: "github",
+        paramsSchema: z.object({
+            q: z.string(),
+            sort: z.string().optional(),
+            order: z.enum(["asc", "desc"]).optional(),
+            per_page: z.number().optional()
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            const query = new URLSearchParams();
+            query.append("q", params.q);
+            if (params.sort) query.append("sort", params.sort);
+            if (params.order) query.append("order", params.order);
+            if (params.per_page) query.append("per_page", String(params.per_page));
+            const url = `https://api.github.com/search/issues?${query.toString()}`;
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json"
+                    }
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                const data = await res.json();
+                return data.items || [];
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_pull_requests_search",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_pull_request_get"] = {
+        id: "github_pull_request_get",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            pull_number: z.number(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, pull_number } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pull_number}`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                    },
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_pull_request_get",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_pull_request_reviews_list"] = {
+        id: "github_pull_request_reviews_list",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            pull_number: z.number(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, pull_number } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pull_number}/reviews`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                    },
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_pull_request_reviews_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_pull_request_comments_list"] = {
+        id: "github_pull_request_comments_list",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            pull_number: z.number(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo, pull_number } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}/issues/${pull_number}/comments`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                    },
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_pull_request_comments_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_repo_get"] = {
+        id: "github_repo_get",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo } = params;
+            const url = `https://api.github.com/repos/${owner}/${repo}`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                    },
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_repo_get",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
+    this.capabilities["github_repo_collaborators_list"] = {
+        id: "github_repo_collaborators_list",
+        integrationId: "github",
+        paramsSchema: z.object({
+            owner: z.string(),
+            repo: z.string(),
+            per_page: z.number().optional(),
+        }),
+        execute: async (params, context, trace) => {
+            const { token } = context;
+            const { owner, repo } = params;
+            const perPage = params.per_page ?? 100;
+            const url = `https://api.github.com/repos/${owner}/${repo}/collaborators?per_page=${perPage}`;
+            const startTime = Date.now();
+            let status: "success" | "error" = "success";
+            try {
+                const res = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.v3+json",
+                    },
+                });
+                if (!res.ok) {
+                    status = "error";
+                    throw new Error(`GitHub API error: ${res.statusText}`);
+                }
+                return await res.json();
+            } catch (e) {
+                status = "error";
+                throw e;
+            } finally {
+                trace.logIntegrationAccess({
+                    integrationId: "github",
+                    capabilityId: "github_repo_collaborators_list",
+                    params,
+                    status,
+                    latency_ms: Date.now() - startTime,
+                    metadata: { url }
+                });
+            }
+        }
+    };
+
     this.capabilities["github_issue_comment"] = {
         id: "github_issue_comment",
         integrationId: "github",

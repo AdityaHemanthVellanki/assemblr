@@ -53,7 +53,9 @@ export class SlackRuntime implements IntegrationRuntime {
         integrationId: "slack",
         paramsSchema: z.object({
             channel: z.string().optional(),
-            limit: z.number().optional()
+            limit: z.number().optional(),
+            oldest: z.string().optional(),
+            latest: z.string().optional()
         }),
         execute: async (params, context) => {
             const { token } = context;
@@ -88,13 +90,130 @@ export class SlackRuntime implements IntegrationRuntime {
 
             // 2. Fetch History
             const limit = params.limit || 20;
-            const res = await fetch(`https://slack.com/api/conversations.history?channel=${channelId}&limit=${limit}`, {
+            const query = new URLSearchParams();
+            query.append("channel", channelId);
+            query.append("limit", String(limit));
+            if (params.oldest) query.append("oldest", params.oldest);
+            if (params.latest) query.append("latest", params.latest);
+            const res = await fetch(`https://slack.com/api/conversations.history?${query.toString()}`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             const json = await res.json();
             if (!json.ok) throw new Error(`Slack API Error (History): ${json.error}`);
             
             return json.messages || [];
+        }
+    };
+
+    this.capabilities["slack_thread_replies_list"] = {
+        id: "slack_thread_replies_list",
+        integrationId: "slack",
+        paramsSchema: z.object({
+            channel: z.string(),
+            threadTs: z.string(),
+            limit: z.number().optional(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const limit = params.limit || 50;
+            const query = new URLSearchParams();
+            query.append("channel", params.channel);
+            query.append("ts", params.threadTs);
+            query.append("limit", String(limit));
+            const res = await fetch(`https://slack.com/api/conversations.replies?${query.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (Replies): ${json.error}`);
+            return json.messages || [];
+        }
+    };
+
+    this.capabilities["slack_users_list"] = {
+        id: "slack_users_list",
+        integrationId: "slack",
+        paramsSchema: z.object({
+            limit: z.number().optional(),
+            cursor: z.string().optional(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const query = new URLSearchParams();
+            if (params.limit) query.append("limit", String(params.limit));
+            if (params.cursor) query.append("cursor", params.cursor);
+            const res = await fetch(`https://slack.com/api/users.list?${query.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (Users): ${json.error}`);
+            return json.members || [];
+        }
+    };
+
+    this.capabilities["slack_search_messages"] = {
+        id: "slack_search_messages",
+        integrationId: "slack",
+        paramsSchema: z.object({
+            query: z.string(),
+            count: z.number().optional(),
+            sort: z.enum(["score", "timestamp"]).optional(),
+            sort_dir: z.enum(["asc", "desc"]).optional(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const query = new URLSearchParams();
+            query.append("query", params.query);
+            if (params.count) query.append("count", String(params.count));
+            if (params.sort) query.append("sort", params.sort);
+            if (params.sort_dir) query.append("sort_dir", params.sort_dir);
+            const res = await fetch(`https://slack.com/api/search.messages?${query.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (Search): ${json.error}`);
+            return json.messages?.matches || [];
+        }
+    };
+
+    this.capabilities["slack_conversation_info"] = {
+        id: "slack_conversation_info",
+        integrationId: "slack",
+        paramsSchema: z.object({
+            channel: z.string(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const query = new URLSearchParams();
+            query.append("channel", params.channel);
+            const res = await fetch(`https://slack.com/api/conversations.info?${query.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (Conversation Info): ${json.error}`);
+            return json.channel || {};
+        }
+    };
+
+    this.capabilities["slack_files_list"] = {
+        id: "slack_files_list",
+        integrationId: "slack",
+        paramsSchema: z.object({
+            types: z.string().optional(),
+            count: z.number().optional(),
+            page: z.number().optional(),
+        }),
+        execute: async (params, context) => {
+            const { token } = context;
+            const query = new URLSearchParams();
+            if (params.types) query.append("types", params.types);
+            if (params.count) query.append("count", String(params.count));
+            if (params.page) query.append("page", String(params.page));
+            const res = await fetch(`https://slack.com/api/files.list?${query.toString()}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(`Slack API Error (Files): ${json.error}`);
+            return json.files || [];
         }
     };
 

@@ -1,6 +1,11 @@
 
 import { validateCompiledIntent, analyzeActionReachability, repairCompiledIntent } from "../lib/ai/planner-logic";
 import { CompiledIntent } from "../lib/core/intent";
+import { assertNoMocks, assertRealRuntime } from "../lib/core/guard";
+
+assertRealRuntime();
+assertNoMocks();
+throw new Error("Mock trigger regression tests are disabled. Use live integration flows for validation.");
 
 // Mock helper to create a valid base CompiledIntent
 function createMockIntent(mutation: any): CompiledIntent {
