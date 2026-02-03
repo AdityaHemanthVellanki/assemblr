@@ -140,7 +140,7 @@ export function ProjectWorkspace({
   // Derived state
   const isZeroState = messages.length === 0;
   // Use DB status for lifecycle state
-  
+
   // FIX: Allow 'ready' status as well
   // We strictly check DB status here. No inferred state.
   const canRenderTool = Boolean(toolId && viewSpec && viewReady);
@@ -155,66 +155,86 @@ export function ProjectWorkspace({
     const startedAt = Date.now();
     let attempts = 0;
     const poll = async () => {
-        try {
-            attempts += 1;
-            const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
-            if (cancelled) return;
+      try {
+        attempts += 1;
+        const res = await safeFetch<any>(`/api/tools/${toolId}/status`);
+        if (cancelled) return;
 
-            // Update local state from DB response
-            if (res.status) setProjectStatus(res.status);
-
-            if (res.error) {
-                 setInitError(res.error);
-            }
-
-            if (typeof res.data_ready === "boolean") {
-                 setDataReady(res.data_ready);
-            }
-
-            if (res.data_snapshot) {
-                 setDataSnapshot(res.data_snapshot);
-                 setDataReady(true);
-            }
-
-            if (typeof res.view_ready === "boolean") {
-                 setViewReady(res.view_ready);
-            }
-
-            if (res.view_spec) {
-                 const normalized = normalizeViewSpecPayload(res.view_spec);
-                 if (normalized) {
-                   setViewSpec(normalized);
-                 }
-            }
-
-            if (res.lifecycle_state || res.build_logs) {
-              const buildLogs = Array.isArray(res.build_logs) ? res.build_logs : null;
-              setBuildSteps(deriveBuildSteps(res.lifecycle_state ?? null, buildLogs));
-            }
-
-            const terminalStatus = ["READY", "FAILED", "CORRUPTED"].includes(res.status);
-            const elapsed = Date.now() - startedAt;
-            const maxedOut = attempts >= maxAttempts || elapsed >= maxDurationMs;
-
-            if (res.status === "FAILED" || res.status === "CORRUPTED") {
-                 setInitError(res.error || "Tool initialization failed.");
-            }
-            if (res.view_ready && !res.view_spec) {
-                 setInitError(res.error || "Render state missing.");
-            }
-            if (res.data_ready && !res.data_snapshot) {
-                 setInitError(res.error || "Data snapshot missing.");
-            }
-            if (maxedOut && !res.done && !terminalStatus && !res.view_ready) {
-                 setInitError((prev) => prev ?? "Status polling timed out. Please retry.");
-            }
-            if (res.done || terminalStatus || res.view_ready || maxedOut) {
-                 if (interval) clearInterval(interval);
-                 interval = null;
-            }
-        } catch (e) {
-            console.error("Status poll failed", e);
+        // CRITICAL FIX: Stop immediately on configuration/runtime errors
+        if (res.error?.includes("RUNTIME_ENV") || res.error?.includes("runtime configuration") || res.error?.includes("explicit runtime")) {
+          setInitError(res.error);
+          if (interval) clearInterval(interval);
+          interval = null;
+          return;
         }
+
+        // Stop on unauthenticated
+        if (res.status === "unauthenticated") {
+          setInitError("Session expired. Please log in again.");
+          if (interval) clearInterval(interval);
+          interval = null;
+          return;
+        }
+
+        // Update local state from DB response
+        if (res.status) setProjectStatus(res.status);
+
+        if (res.error) {
+          setInitError(res.error);
+        }
+
+        if (typeof res.data_ready === "boolean") {
+          setDataReady(res.data_ready);
+        }
+
+        if (res.data_snapshot) {
+          setDataSnapshot(res.data_snapshot);
+          setDataReady(true);
+        }
+
+        if (typeof res.view_ready === "boolean") {
+          setViewReady(res.view_ready);
+        }
+
+        if (res.view_spec) {
+          const normalized = normalizeViewSpecPayload(res.view_spec);
+          if (normalized) {
+            setViewSpec(normalized);
+          }
+        }
+
+        if (res.lifecycle_state || res.build_logs) {
+          const buildLogs = Array.isArray(res.build_logs) ? res.build_logs : null;
+          setBuildSteps(deriveBuildSteps(res.lifecycle_state ?? null, buildLogs));
+        }
+
+        const terminalStatus = ["READY", "FAILED", "CORRUPTED"].includes(res.status);
+        const elapsed = Date.now() - startedAt;
+        const maxedOut = attempts >= maxAttempts || elapsed >= maxDurationMs;
+
+        if (res.status === "FAILED" || res.status === "CORRUPTED") {
+          setInitError(res.error || "Tool initialization failed.");
+        }
+        if (res.view_ready && !res.view_spec) {
+          setInitError(res.error || "Render state missing.");
+        }
+        if (res.data_ready && !res.data_snapshot) {
+          setInitError(res.error || "Data snapshot missing.");
+        }
+        if (maxedOut && !res.done && !terminalStatus && !res.view_ready) {
+          // Improved timeout message with context
+          const timeoutMsg = res.error
+            || res.lifecycle_state
+            || `Execution timed out after ${Math.round(elapsed / 1000)}s. The server may be experiencing issues or misconfigured.`;
+          setInitError((prev) => prev ?? timeoutMsg);
+        }
+        if (res.done || terminalStatus || res.view_ready || maxedOut) {
+          if (interval) clearInterval(interval);
+          interval = null;
+        }
+      } catch (e) {
+        console.error("Status poll failed", e);
+      }
     };
 
     void poll();
@@ -224,6 +244,7 @@ export function ProjectWorkspace({
       if (interval) clearInterval(interval);
     };
   }, [toolId]);
+
 
   // Dynamic Header Title
   const headerTitle =
@@ -576,16 +597,16 @@ export function ProjectWorkspace({
   const handleConnectMissing = React.useCallback(async (targetIntegrationId?: string) => {
     if (!pendingPrompt || missingIntegrations.length === 0) return;
     const integrationId = targetIntegrationId || missingIntegrations[0];
-    
+
     setIsConnecting(true);
-    
+
     storePendingPrompt({
       prompt: pendingPrompt,
       requiredIntegrations: pendingRequiredIntegrations,
       messageAdded: pendingMessageAdded,
       executionId: pendingExecutionId,
     });
-    
+
     try {
       const oauthUrl = await startOAuthFlow({
         providerId: integrationId,
@@ -633,7 +654,7 @@ export function ProjectWorkspace({
   React.useEffect(() => {
     const connected = searchParams.get("integration_connected");
     const resumeId = searchParams.get("resumeId");
-    
+
     if (connected !== "true") return;
 
     if (!resumeId) return;
@@ -666,29 +687,29 @@ export function ProjectWorkspace({
         setIntegrationGateOpen(true);
         setMissingIntegrations(response.missingIntegrations ?? []);
         setIntegrationErrorMetadata((response as any).metadata?.integration_error ?? null);
-        
+
         const executionId = (response as any)?.metadata?.executionId ?? null;
         setPendingExecutionId(executionId);
-        
+
         // Retrieve the prompt from the response metadata to ensure subsequent connections work
         const originalPrompt = (response as any)?.metadata?.prompt ?? null;
         if (originalPrompt) {
-            setPendingPrompt(originalPrompt);
-            setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
-            // We don't know if the message was added, but for pending prompt logic it matters less
-            // The important part is that handleConnectMissing has a prompt to work with.
-            setPendingMessageAdded(true); 
-            
-            // Store it in localStorage just in case
-            storePendingPrompt({
-                prompt: originalPrompt,
-                requiredIntegrations: response.requiredIntegrations ?? [],
-                messageAdded: true,
-                executionId,
-            });
+          setPendingPrompt(originalPrompt);
+          setPendingRequiredIntegrations(response.requiredIntegrations ?? []);
+          // We don't know if the message was added, but for pending prompt logic it matters less
+          // The important part is that handleConnectMissing has a prompt to work with.
+          setPendingMessageAdded(true);
+
+          // Store it in localStorage just in case
+          storePendingPrompt({
+            prompt: originalPrompt,
+            requiredIntegrations: response.requiredIntegrations ?? [],
+            messageAdded: true,
+            executionId,
+          });
         }
       }
-      
+
       const data = response as {
         toolId?: string;
         message: { content: string };
@@ -1628,7 +1649,7 @@ function resolveLifecycleStep(
   if (lifecycleState === "DRAFT") return { stepId: "intent", status: "pending" };
   if (lifecycleState === "BUILDING") return { stepId: "compile", status: "running" };
   if (lifecycleState === "READY") return { stepId: "views", status: "success" };
-  
+
   // Map granular build states to UI steps
   if (lifecycleState === "INTENT_PARSED") return { stepId: "intent", status: "success" };
   if (lifecycleState === "ENTITIES_EXTRACTED") return { stepId: "entities", status: "success" };
@@ -1642,11 +1663,11 @@ function resolveLifecycleStep(
   // if (lifecycleState === "COMPILING") return { stepId: "compile", status: "running" };
   // if (lifecycleState === "MATERIALIZED") return { stepId: "views", status: "success" };
   // if (lifecycleState === "ACTIVE") return { stepId: "views", status: "success" };
-  
+
   if (lifecycleState === "FAILED" || lifecycleState === "FAILED_COMPILATION") {
     return { stepId: "compile", status: "error" };
   }
-  
+
   return { stepId: null, status: null };
 }
 

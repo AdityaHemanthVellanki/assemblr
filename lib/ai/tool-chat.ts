@@ -271,18 +271,41 @@ export async function processToolChat(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   const runtimeGate = runtimeGuardResponse();
-  if (runtimeGate) return runtimeGate;
+  if (runtimeGate) {
+    // CRITICAL FIX: Persist FAILED state to DB when runtime guard fails
+    // This ensures polling stops and UI shows the error
+    if (input.toolId) {
+      console.error("[RuntimeGuard] Blocking execution - persisting FAILED state", {
+        toolId: input.toolId,
+        error: runtimeGate.explanation,
+        runtimeEnv: process.env.RUNTIME_ENV ?? "undefined",
+      });
+      try {
+        await finalizeToolExecution({
+          toolId: input.toolId,
+          status: "FAILED",
+          errorMessage: runtimeGate.explanation,
+          view_ready: false,
+          data_ready: false,
+        });
+      } catch (e) {
+        console.error("[RuntimeGuard] Failed to persist failure state:", e);
+      }
+    }
+    return runtimeGate;
+  }
   if (input.mode === "create") {
     return runCompilerPipeline(input);
   }
   return _executeToolRuntime(input);
 }
 
+
 async function _executeToolRuntime(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
   const supabase = createSupabaseAdminClient();
-  
+
   // 1. Fetch Tool & Version
   const { data: project } = await (supabase.from("projects") as any)
     .select("spec, active_version_id, compiled_at")
@@ -306,7 +329,7 @@ async function _executeToolRuntime(
       .select("tool_spec, compiled_tool")
       .eq("id", project.active_version_id)
       .single();
-    
+
     if (version) {
       spec = version.tool_spec as ToolSystemSpec;
       compiledTool = version.compiled_tool as CompiledToolArtifact;
@@ -317,7 +340,7 @@ async function _executeToolRuntime(
   if (!compiledTool) {
     // If spec is empty/invalid, we can't run.
     if (!spec || Object.keys(spec).length === 0) {
-       throw new Error("Tool has no spec and no active version. Cannot execute.");
+      throw new Error("Tool has no spec and no active version. Cannot execute.");
     }
     compiledTool = buildCompiledToolArtifact(spec);
 
@@ -328,17 +351,17 @@ async function _executeToolRuntime(
       console.warn(`[RuntimeRepair] Tool ${input.toolId} has no active version. Auto-repairing...`);
       try {
         const version = await createToolVersion({
-            orgId: input.orgId,
-            toolId: input.toolId,
-            userId: input.userId,
-            spec: spec,
-            compiledTool: compiledTool,
-            baseSpec: null,
-            supabase: supabase,
+          orgId: input.orgId,
+          toolId: input.toolId,
+          userId: input.userId,
+          spec: spec,
+          compiledTool: compiledTool,
+          baseSpec: null,
+          supabase: supabase,
         });
         await promoteToolVersion({ toolId: input.toolId, versionId: version.id, supabase });
         console.log(`[RuntimeRepair] Successfully created and promoted version ${version.id}`);
-        
+
         // Update local reference if needed (though we already have spec/compiledTool)
       } catch (err) {
         console.error("[RuntimeRepair] Failed to auto-repair tool version:", err);
@@ -370,7 +393,30 @@ export async function runCompilerPipeline(
 ): Promise<ToolChatResponse> {
   getServerEnv();
   const runtimeGate = runtimeGuardResponse();
-  if (runtimeGate) return runtimeGate;
+  if (runtimeGate) {
+    // CRITICAL FIX: Persist FAILED state to DB when runtime guard fails
+    // This ensures polling stops and UI shows the error
+    if (input.toolId) {
+      console.error("[RuntimeGuard:Compiler] Blocking execution - persisting FAILED state", {
+        toolId: input.toolId,
+        error: runtimeGate.explanation,
+        runtimeEnv: process.env.RUNTIME_ENV ?? "undefined",
+      });
+      try {
+        await finalizeToolExecution({
+          toolId: input.toolId,
+          status: "FAILED",
+          errorMessage: runtimeGate.explanation,
+          view_ready: false,
+          data_ready: false,
+        });
+      } catch (e) {
+        console.error("[RuntimeGuard:Compiler] Failed to persist failure state:", e);
+      }
+    }
+    return runtimeGate;
+  }
+
   if (!input.connectedIntegrationIds || input.connectedIntegrationIds.length === 0) {
     const messageText = "Execution blocked: Real credentials for required integrations are required.";
     return {
@@ -409,71 +455,71 @@ export async function runCompilerPipeline(
   }
 
   return await withToolBuildLock(input.toolId, async () => {
-  const steps = createBuildSteps();
-  const builderNamespace = "tool_builder";
-  
-  // 0. Resolve Context Securely
-  const supabase = createSupabaseAdminClient();
-  let statusSupabase: any = input.supabaseClient;
-  if (!statusSupabase) {
-    try {
-      statusSupabase = await createSupabaseServerClient();
-    } catch (err) {
-      console.error("[FINALIZE CONTEXT] Server client unavailable, falling back to admin", err);
-      statusSupabase = createSupabaseAdminClient();
+    const steps = createBuildSteps();
+    const builderNamespace = "tool_builder";
+
+    // 0. Resolve Context Securely
+    const supabase = createSupabaseAdminClient();
+    let statusSupabase: any = input.supabaseClient;
+    if (!statusSupabase) {
+      try {
+        statusSupabase = await createSupabaseServerClient();
+      } catch (err) {
+        console.error("[FINALIZE CONTEXT] Server client unavailable, falling back to admin", err);
+        statusSupabase = createSupabaseAdminClient();
+      }
     }
-  }
-  // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
-  // Instead, we verify ownership via resolveBuildContext later.
-  
-  // FIX 1: Canonical Ownership Bootstrap
-  // This guarantees user, org, and membership exist before we start any build
-  if (!input.userId) {
-    throw new Error("Compiler pipeline requires userId");
-  }
-  const buildContext = await resolveBuildContext(input.userId, input.orgId);
-  const userId = buildContext.userId;
-  
-  // Assert orgId matches context if resolved differently?
-  // resolveBuildContext might create a new org if input.orgId is missing/invalid?
-  // No, resolveBuildContext takes orgId and ensures it exists or throws/creates default.
-  // We should trust buildContext.orgId as authoritative.
-  const orgId = buildContext.orgId;
-  const existingExecution = input.executionId ? await getExecutionById(input.executionId) : null;
+    // We don't rely on getUser with input.userId because admin client can't verify session for arbitrary ID easily
+    // Instead, we verify ownership via resolveBuildContext later.
 
-  const toolId = input.toolId;
-  if (!toolId) {
-    throw new Error("Compiler pipeline requires toolId");
-  }
+    // FIX 1: Canonical Ownership Bootstrap
+    // This guarantees user, org, and membership exist before we start any build
+    if (!input.userId) {
+      throw new Error("Compiler pipeline requires userId");
+    }
+    const buildContext = await resolveBuildContext(input.userId, input.orgId);
+    const userId = buildContext.userId;
 
-  const { toolId: ensuredToolId } = await ensureToolIdentity({
-    supabase,
-    toolId,
-    orgId,
-    userId,
-    name: "New Tool",
-    purpose: input.userMessage,
-    sourcePrompt: input.userMessage,
-  });
+    // Assert orgId matches context if resolved differently?
+    // resolveBuildContext might create a new org if input.orgId is missing/invalid?
+    // No, resolveBuildContext takes orgId and ensures it exists or throws/creates default.
+    // We should trust buildContext.orgId as authoritative.
+    const orgId = buildContext.orgId;
+    const existingExecution = input.executionId ? await getExecutionById(input.executionId) : null;
 
-  const { data: existingTool } = await (supabase.from("projects") as any)
-    .select("id, compiled_at, status, active_version_id")
-    .eq("id", ensuredToolId)
-    .single();
+    const toolId = input.toolId;
+    if (!toolId) {
+      throw new Error("Compiler pipeline requires toolId");
+    }
 
-  // FIX: Only redirect to runtime if we have a valid ACTIVE VERSION.
-  // Legacy "compiled_at" check is insufficient and caused the "ToolSpec metadata missing" bug.
-  const canExecuteExisting = await canExecuteTool({ toolId: ensuredToolId });
-  if (canExecuteExisting.ok) {
-    return runToolRuntimePipeline(input);
-  }
+    const { toolId: ensuredToolId } = await ensureToolIdentity({
+      supabase,
+      toolId,
+      orgId,
+      userId,
+      name: "New Tool",
+      purpose: input.userMessage,
+      sourcePrompt: input.userMessage,
+    });
 
-  // FIX 4: Tool State Guardrails
-  // Prevent double compilation if tool is already in a post-creation state
-  // Valid statuses: DRAFT, BUILDING, READY, FAILED
-  // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
-  // If status is READY but no active_version_id (handled above), we recompile.
-  if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
+    const { data: existingTool } = await (supabase.from("projects") as any)
+      .select("id, compiled_at, status, active_version_id")
+      .eq("id", ensuredToolId)
+      .single();
+
+    // FIX: Only redirect to runtime if we have a valid ACTIVE VERSION.
+    // Legacy "compiled_at" check is insufficient and caused the "ToolSpec metadata missing" bug.
+    const canExecuteExisting = await canExecuteTool({ toolId: ensuredToolId });
+    if (canExecuteExisting.ok) {
+      return runToolRuntimePipeline(input);
+    }
+
+    // FIX 4: Tool State Guardrails
+    // Prevent double compilation if tool is already in a post-creation state
+    // Valid statuses: DRAFT, BUILDING, READY, FAILED
+    // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
+    // If status is READY but no active_version_id (handled above), we recompile.
+    if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
       // If we are here, status is READY (or similar) but active_version_id is missing (checked above).
       // So we should actually ALLOW compilation to fix the broken state.
       // But if status is READY and we HAVE active_version_id, we caught it above.
@@ -482,211 +528,211 @@ export async function runCompilerPipeline(
       // If status is "ARCHIVED" (if that exists), we might want to compile?
       // Let's keep it safe: strict check.
       if (existingTool.active_version_id) {
-         return runToolRuntimePipeline(input);
+        return runToolRuntimePipeline(input);
       }
       // If no active version, we proceed to compile (fixing the tool).
-  }
-    
-  let effectiveToolId = ensuredToolId;
-  
-  if (!existingTool) {
-     // FIX 1, 2, 3: Auto-create tool in DB if missing (Source of Truth)
-     // This guarantees the compiler never runs on an ephemeral ID.
-     const newToolId = toolId;
-     
-     const { data: newTool, error: createError } = await supabase
+    }
+
+    let effectiveToolId = ensuredToolId;
+
+    if (!existingTool) {
+      // FIX 1, 2, 3: Auto-create tool in DB if missing (Source of Truth)
+      // This guarantees the compiler never runs on an ephemeral ID.
+      const newToolId = toolId;
+
+      const { data: newTool, error: createError } = await supabase
         .from("projects")
         .insert({
-            id: newToolId,
-            org_id: orgId,
-            name: "New Tool", 
-            status: "DRAFT", // Initial status
-            spec: { actions: [] },
-            compiled_at: null
+          id: newToolId,
+          org_id: orgId,
+          name: "New Tool",
+          status: "DRAFT", // Initial status
+          spec: { actions: [] },
+          compiled_at: null
         })
         .select("id")
         .single();
-        
-     if (createError || !newTool) {
-         throw new Error(`Failed to create tool row: ${createError?.message}`);
-     }
 
-     const { data: verifyProject } = await (supabase.from("projects") as any)
-       .select("id")
-       .eq("id", newToolId)
-       .single();
+      if (createError || !newTool) {
+        throw new Error(`Failed to create tool row: ${createError?.message}`);
+      }
 
-     const { data: verifyTool } = await (supabase.from("tools") as any)
-       .select("id")
-       .eq("id", newToolId)
-       .single();
+      const { data: verifyProject } = await (supabase.from("projects") as any)
+        .select("id")
+        .eq("id", newToolId)
+        .single();
 
-     if (!verifyProject) {
-       throw new Error("Invariant violation: Tool created but not visible in 'projects' table.");
-     }
-     if (!verifyTool) {
-       throw new Error("Invariant violation: Tool created but not visible in 'tools' table. This will cause FK violation.");
-     }
+      const { data: verifyTool } = await (supabase.from("tools") as any)
+        .select("id")
+        .eq("id", newToolId)
+        .single();
 
-     effectiveToolId = newTool.id;
-  } else {
+      if (!verifyProject) {
+        throw new Error("Invariant violation: Tool created but not visible in 'projects' table.");
+      }
+      if (!verifyTool) {
+        throw new Error("Invariant violation: Tool created but not visible in 'tools' table. This will cause FK violation.");
+      }
+
+      effectiveToolId = newTool.id;
+    } else {
       effectiveToolId = existingTool.id;
-  }
-  
-  // 1. Run Pipeline
-  
-  // FIX: Inject effectiveToolId into context
-  const effectiveToolIdValue = effectiveToolId!;
+    }
 
-  await (supabase.from("projects") as any).update({ status: "BUILDING" }).eq("id", effectiveToolIdValue);
-  
-  const systemPrompt = await createToolBuilderSystemPrompt({
-    orgId: orgId, // Use authoritative ID
-    toolId: effectiveToolIdValue,
-    currentSpec: input.currentSpec || null,
-    history: input.messages,
-    capabilities: [], // Will be filled by discovery
-    context: {
+    // 1. Run Pipeline
+
+    // FIX: Inject effectiveToolId into context
+    const effectiveToolIdValue = effectiveToolId!;
+
+    await (supabase.from("projects") as any).update({ status: "BUILDING" }).eq("id", effectiveToolIdValue);
+
+    const systemPrompt = await createToolBuilderSystemPrompt({
+      orgId: orgId, // Use authoritative ID
+      toolId: effectiveToolIdValue,
+      currentSpec: input.currentSpec || null,
+      history: input.messages,
+      capabilities: [], // Will be filled by discovery
+      context: {
         connectedIntegrations: [],
         availableCapabilities: [],
         activeScopes: ["global", "org", "user"]
-    }
-  });
+      }
+    });
 
-  const machine = new ToolBuildStateMachine();
-  const buildId = randomUUID();
-  const builderSessionId = `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`;
-  const builderScope: MemoryScope = {
-    type: "session",
-    sessionId: builderSessionId,
-  };
-  // Use the authoritative orgId from buildContext
-  const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId };
-  let lifecyclePersistenceFailed = false;
-  let buildLogsPersistenceFailed = false;
-  const persistLifecycle = async () => {
-    if (!lifecyclePersistenceFailed) {
-      try {
-        await saveMemory({
-          scope: toolScope,
-          namespace: builderNamespace,
-          key: "lifecycle_state",
-          value: { state: machine.state, buildId },
-        });
-      } catch (err) {
-        lifecyclePersistenceFailed = true;
-        console.error("[LifecyclePersistenceFailed]", err);
-        if (machine && typeof machine.transitionTo === "function") {
-          machine.transitionTo("DEGRADED", "Lifecycle persistence failed", "error");
+    const machine = new ToolBuildStateMachine();
+    const buildId = randomUUID();
+    const builderSessionId = `tool-builder:${input.toolId}:${input.userId ?? "anonymous"}`;
+    const builderScope: MemoryScope = {
+      type: "session",
+      sessionId: builderSessionId,
+    };
+    // Use the authoritative orgId from buildContext
+    const toolScope: MemoryScope = { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId };
+    let lifecyclePersistenceFailed = false;
+    let buildLogsPersistenceFailed = false;
+    const persistLifecycle = async () => {
+      if (!lifecyclePersistenceFailed) {
+        try {
+          await saveMemory({
+            scope: toolScope,
+            namespace: builderNamespace,
+            key: "lifecycle_state",
+            value: { state: machine.state, buildId },
+          });
+        } catch (err) {
+          lifecyclePersistenceFailed = true;
+          console.error("[LifecyclePersistenceFailed]", err);
+          if (machine && typeof machine.transitionTo === "function") {
+            machine.transitionTo("DEGRADED", "Lifecycle persistence failed", "error");
+          }
         }
       }
-    }
-    if (!buildLogsPersistenceFailed) {
-      try {
-        await saveMemory({
-          scope: toolScope,
-          namespace: builderNamespace,
-          key: "build_logs",
-          value: { buildId, logs: machine.logs },
-        });
-      } catch (err) {
-        buildLogsPersistenceFailed = true;
-        console.error("[BuildLogsPersistenceFailed]", err);
+      if (!buildLogsPersistenceFailed) {
+        try {
+          await saveMemory({
+            scope: toolScope,
+            namespace: builderNamespace,
+            key: "build_logs",
+            value: { buildId, logs: machine.logs },
+          });
+        } catch (err) {
+          buildLogsPersistenceFailed = true;
+          console.error("[BuildLogsPersistenceFailed]", err);
+        }
       }
-    }
-  };
-  let lifecycleChain = Promise.resolve();
-  const transition = async (
-    next: Parameters<ToolBuildStateMachine["transition"]>[0],
-    payload: Parameters<ToolBuildStateMachine["transition"]>[1],
-    level?: Parameters<ToolBuildStateMachine["transition"]>[2],
-  ) => {
-    lifecycleChain = lifecycleChain.then(async () => {
-      if (!machine || typeof machine.transitionTo !== "function") {
-        throw new Error("Invalid lifecycle machine instance");
+    };
+    let lifecycleChain = Promise.resolve();
+    const transition = async (
+      next: Parameters<ToolBuildStateMachine["transition"]>[0],
+      payload: Parameters<ToolBuildStateMachine["transition"]>[1],
+      level?: Parameters<ToolBuildStateMachine["transition"]>[2],
+    ) => {
+      lifecycleChain = lifecycleChain.then(async () => {
+        if (!machine || typeof machine.transitionTo !== "function") {
+          throw new Error("Invalid lifecycle machine instance");
+        }
+        machine.transitionTo(next, payload, level);
+        await persistLifecycle();
+      });
+      await lifecycleChain;
+    };
+    const prompt = input.userMessage;
+    const assumptionResolution = resolveAssumptions(prompt);
+    const resolvedPrompt = assumptionResolution.resolvedPrompt;
+    const assumptions = assumptionResolution.assumptions;
+    const completenessScore = assumptionResolution.completenessScore;
+    const integrationRequirement = resolveIntegrationRequirements({
+      prompt,
+      integrationMode: input.integrationMode,
+      selectedIntegrationIds: input.selectedIntegrationIds,
+      requiredIntegrationIds: input.requiredIntegrationIds,
+    });
+    if (integrationRequirement.mismatchMessage) {
+      if (input.executionId) {
+        await updateExecution(input.executionId, { status: "failed" });
       }
-      machine.transitionTo(next, payload, level);
+      return {
+        explanation: integrationRequirement.mismatchMessage,
+        message: { type: "text", content: integrationRequirement.mismatchMessage },
+        metadata: {
+          blocked: true,
+          integration_mode: input.integrationMode ?? "auto",
+          executionId: input.executionId,
+        },
+      };
+    }
+    const requiredIntegrations = integrationRequirement.requiredIntegrations;
+
+    const stepsById = new Map(steps.map((s) => [s.id, s]));
+    let spec: ToolSystemSpec;
+    const latestEvidence: Record<string, DataEvidence> = {};
+    const activeVersionId: string | null = null;
+    let runTokens = 0;
+    const consumeTokens = async (usage?: { total_tokens?: number }) => {
+      if (!usage?.total_tokens) return;
+      runTokens += usage.total_tokens;
+      await consumeToolBudget({
+        orgId: input.orgId,
+        toolId: input.toolId,
+        tokens: usage.total_tokens,
+        runTokens,
+      });
+    };
+
+    try {
       await persistLifecycle();
-    });
-    await lifecycleChain;
-  };
-  const prompt = input.userMessage;
-  const assumptionResolution = resolveAssumptions(prompt);
-  const resolvedPrompt = assumptionResolution.resolvedPrompt;
-  const assumptions = assumptionResolution.assumptions;
-  const completenessScore = assumptionResolution.completenessScore;
-  const integrationRequirement = resolveIntegrationRequirements({
-    prompt,
-    integrationMode: input.integrationMode,
-    selectedIntegrationIds: input.selectedIntegrationIds,
-    requiredIntegrationIds: input.requiredIntegrationIds,
-  });
-  if (integrationRequirement.mismatchMessage) {
-    if (input.executionId) {
-      await updateExecution(input.executionId, { status: "failed" });
-    }
-    return {
-      explanation: integrationRequirement.mismatchMessage,
-      message: { type: "text", content: integrationRequirement.mismatchMessage },
-      metadata: {
-        blocked: true,
-        integration_mode: input.integrationMode ?? "auto",
-        executionId: input.executionId,
-      },
-    };
-  }
-  const requiredIntegrations = integrationRequirement.requiredIntegrations;
-
-  const stepsById = new Map(steps.map((s) => [s.id, s]));
-  let spec: ToolSystemSpec;
-  const latestEvidence: Record<string, DataEvidence> = {};
-  const activeVersionId: string | null = null;
-  let runTokens = 0;
-  const consumeTokens = async (usage?: { total_tokens?: number }) => {
-    if (!usage?.total_tokens) return;
-    runTokens += usage.total_tokens;
-    await consumeToolBudget({
-      orgId: input.orgId,
-      toolId: input.toolId,
-      tokens: usage.total_tokens,
-      runTokens,
-    });
-  };
-
-  try {
-    await persistLifecycle();
-    // NOTE: compiledTool must be declared exactly once.
-    // Do not redeclare inside try/catch or branches.
-    let compiledTool: CompiledToolArtifact | null = null;
-    if (input.executionId) {
-      try {
-        await acquireExecutionLock(input.executionId);
-      } catch (err: any) {
-        return {
-          explanation: "Execution already running.",
-          message: { type: "text", content: "Execution already running." },
-          metadata: { executionId: input.executionId, status: "executing" },
-        };
+      // NOTE: compiledTool must be declared exactly once.
+      // Do not redeclare inside try/catch or branches.
+      let compiledTool: CompiledToolArtifact | null = null;
+      if (input.executionId) {
+        try {
+          await acquireExecutionLock(input.executionId);
+        } catch (err: any) {
+          return {
+            explanation: "Execution already running.",
+            message: { type: "text", content: "Execution already running." },
+            metadata: { executionId: input.executionId, status: "executing" },
+          };
+        }
       }
-    }
-    const stageToStep: Record<string, string> = {
-      "understand-purpose": "intent",
-      "extract-entities": "entities",
-      "resolve-integrations": "integrations",
-      "define-actions": "actions",
-      "build-workflows": "workflows",
-      "design-views": "views",
-      "validate-spec": "compile",
-    };
-    const enterpriseSpec = buildEnterpriseSpec(prompt);
-    const compilerResult = enterpriseSpec
-      ? {
+      const stageToStep: Record<string, string> = {
+        "understand-purpose": "intent",
+        "extract-entities": "entities",
+        "resolve-integrations": "integrations",
+        "define-actions": "actions",
+        "build-workflows": "workflows",
+        "design-views": "views",
+        "validate-spec": "compile",
+      };
+      const enterpriseSpec = buildEnterpriseSpec(prompt);
+      const compilerResult = enterpriseSpec
+        ? {
           spec: enterpriseSpec,
           clarifications: [],
           status: "completed" as const,
           progress: [],
         }
-      : await ToolCompiler.run({
+        : await ToolCompiler.run({
           prompt: resolvedPrompt,
           sessionId: builderSessionId,
           userId: userId,
@@ -718,383 +764,383 @@ export async function runCompilerPipeline(
             markStep(steps, stepId, "error", event.message);
           },
         });
-    if (enterpriseSpec) {
-      markStep(steps, "intent", "success", "Enterprise prompt detected");
-      markStep(steps, "entities", "success", "Enterprise entities defined");
-      markStep(steps, "integrations", "success", "Enterprise integrations selected");
-      markStep(steps, "actions", "success", "Enterprise actions defined");
-      markStep(steps, "workflows", "success", "Enterprise workflows defined");
-      markStep(steps, "compile", "success", "Enterprise spec compiled");
-      await transition("RUNTIME_READY", "Runtime compiled");
-    }
-
-    const canExecute = await canExecuteTool({ toolId: effectiveToolIdValue });
-    if (canExecute.ok) {
-      console.log(`[Compiler] canExecute true for ${effectiveToolIdValue}, redirecting to runtime`);
-      return runToolRuntimePipeline(input);
-    }
-
-    // Mark as compiled
-    if (input.executionId) {
-       await updateExecution(input.executionId, { status: "compiled" });
-    }
-
-    // FIX: Compiler Stage Guard - Ensure spec is valid before processing
-    if (!compilerResult.spec || !compilerResult.spec.actions || !Array.isArray(compilerResult.spec.actions)) {
-         throw new Error("Compiler produced invalid spec: actions array missing or invalid");
-    }
-
-    let intentPlanError: Error | null = null;
-    spec = canonicalizeToolSpec(compilerResult.spec);
-    spec = enforceViewSpecForPrompt(spec, resolvedPrompt);
-    if (enterpriseSpec) {
-      spec = {
-        ...spec,
-        intent_contract: buildFallbackIntentContract(resolvedPrompt),
-        goal_plan: buildFallbackGoalPlan(resolvedPrompt),
-      };
-    } else {
-      try {
-        spec = await applyIntentContract(spec, resolvedPrompt);
-        spec = await applySemanticPlan(spec, resolvedPrompt);
-      } catch (err) {
-        intentPlanError = err as Error;
-        appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
+      if (enterpriseSpec) {
+        markStep(steps, "intent", "success", "Enterprise prompt detected");
+        markStep(steps, "entities", "success", "Enterprise entities defined");
+        markStep(steps, "integrations", "success", "Enterprise integrations selected");
+        markStep(steps, "actions", "success", "Enterprise actions defined");
+        markStep(steps, "workflows", "success", "Enterprise workflows defined");
+        markStep(steps, "compile", "success", "Enterprise spec compiled");
+        await transition("RUNTIME_READY", "Runtime compiled");
       }
-      spec = await applyGoalPlan(spec, resolvedPrompt);
-      if (!intentPlanError) {
+
+      const canExecute = await canExecuteTool({ toolId: effectiveToolIdValue });
+      if (canExecute.ok) {
+        console.log(`[Compiler] canExecute true for ${effectiveToolIdValue}, redirecting to runtime`);
+        return runToolRuntimePipeline(input);
+      }
+
+      // Mark as compiled
+      if (input.executionId) {
+        await updateExecution(input.executionId, { status: "compiled" });
+      }
+
+      // FIX: Compiler Stage Guard - Ensure spec is valid before processing
+      if (!compilerResult.spec || !compilerResult.spec.actions || !Array.isArray(compilerResult.spec.actions)) {
+        throw new Error("Compiler produced invalid spec: actions array missing or invalid");
+      }
+
+      let intentPlanError: Error | null = null;
+      spec = canonicalizeToolSpec(compilerResult.spec);
+      spec = enforceViewSpecForPrompt(spec, resolvedPrompt);
+      if (enterpriseSpec) {
+        spec = {
+          ...spec,
+          intent_contract: buildFallbackIntentContract(resolvedPrompt),
+          goal_plan: buildFallbackGoalPlan(resolvedPrompt),
+        };
+      } else {
         try {
-          spec = await applyAnswerContract(spec, resolvedPrompt);
+          spec = await applyIntentContract(spec, resolvedPrompt);
+          spec = await applySemanticPlan(spec, resolvedPrompt);
         } catch (err) {
-          const warningMessage =
-            err instanceof Error ? `Answer contract skipped: ${err.message}` : "Answer contract skipped";
-          appendStep(stepsById.get("compile"), warningMessage);
+          intentPlanError = err as Error;
+          appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
+        }
+        spec = await applyGoalPlan(spec, resolvedPrompt);
+        if (!intentPlanError) {
+          try {
+            spec = await applyAnswerContract(spec, resolvedPrompt);
+          } catch (err) {
+            const warningMessage =
+              err instanceof Error ? `Answer contract skipped: ${err.message}` : "Answer contract skipped";
+            appendStep(stepsById.get("compile"), warningMessage);
+          }
         }
       }
-    }
-    if (assumptions.length > 0) {
-      const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
-      spec = { ...spec, clarifications: [...existing, ...assumptions] };
-    }
-    transition("INTENT_PARSED", "ToolSpec generated");
-    markStep(steps, "compile", "running", "Validating spec and runtime wiring");
-    const toolSystemValidation = validateToolSystem(spec);
-    if (
-      !toolSystemValidation.entitiesResolved ||
-      !toolSystemValidation.integrationsResolved ||
-      !toolSystemValidation.actionsBound ||
-      !toolSystemValidation.workflowsBound ||
-      !toolSystemValidation.viewsBound
-    ) {
-      const errorMsg = `Tool Validation Failed:\n${toolSystemValidation.errors.join("\n")}`;
-      toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
-      markStep(steps, "compile", "error", "Validation failed");
-      throw new Error(errorMsg);
-    }
-    compiledTool = buildCompiledToolArtifact(spec);
-    if (input.executionId) {
-      await updateExecution(input.executionId, { status: "compiled" });
-    }
-    markStep(steps, "compile", "success", "Runtime compiled");
-    markStep(steps, "views", "running", "Preparing runtime views");
+      if (assumptions.length > 0) {
+        const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
+        spec = { ...spec, clarifications: [...existing, ...assumptions] };
+      }
+      transition("INTENT_PARSED", "ToolSpec generated");
+      markStep(steps, "compile", "running", "Validating spec and runtime wiring");
+      const toolSystemValidation = validateToolSystem(spec);
+      if (
+        !toolSystemValidation.entitiesResolved ||
+        !toolSystemValidation.integrationsResolved ||
+        !toolSystemValidation.actionsBound ||
+        !toolSystemValidation.workflowsBound ||
+        !toolSystemValidation.viewsBound
+      ) {
+        const errorMsg = `Tool Validation Failed:\n${toolSystemValidation.errors.join("\n")}`;
+        toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
+        markStep(steps, "compile", "error", "Validation failed");
+        throw new Error(errorMsg);
+      }
+      compiledTool = buildCompiledToolArtifact(spec);
+      if (input.executionId) {
+        await updateExecution(input.executionId, { status: "compiled" });
+      }
+      markStep(steps, "compile", "success", "Runtime compiled");
+      markStep(steps, "views", "running", "Preparing runtime views");
 
-    const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
-    const normalizedSpecResult = normalizeToolSpec(spec, {
-      sourcePrompt: input.userMessage,
-      enforceVersion: true,
-    });
-    if (!normalizedSpecResult.ok) {
-      console.error("[ToolSpecNormalizationFailed]", {
-        toolId,
-        error: normalizedSpecResult.error,
+      const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
+      const normalizedSpecResult = normalizeToolSpec(spec, {
+        sourcePrompt: input.userMessage,
+        enforceVersion: true,
       });
-      throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
-    }
-    const normalizedSpec = normalizedSpecResult.spec;
-    spec = normalizedSpec;
-    compiledTool = buildCompiledToolArtifact(normalizedSpec);
-    const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
-    const { data: projectSnapshot } = await (supabase.from("projects") as any)
-      .select("spec, active_version_id, status, name, compiled_at")
-      .eq("id", toolId)
-      .single();
-    console.log("[ToolPersistence] Validation Result:", {
+      if (!normalizedSpecResult.ok) {
+        console.error("[ToolSpecNormalizationFailed]", {
+          toolId,
+          error: normalizedSpecResult.error,
+        });
+        throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
+      }
+      const normalizedSpec = normalizedSpecResult.spec;
+      spec = normalizedSpec;
+      compiledTool = buildCompiledToolArtifact(normalizedSpec);
+      const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
+      const { data: projectSnapshot } = await (supabase.from("projects") as any)
+        .select("spec, active_version_id, status, name, compiled_at")
+        .eq("id", toolId)
+        .single();
+      console.log("[ToolPersistence] Validation Result:", {
         success: specValidation.success,
         error: specValidation.success ? null : specValidation.error,
         status: compilerResult.status
-    });
-    
-    // For persistence, we accept "completed" OR "degraded" as valid states if validation passes
-    const shouldPersistVersion = ["completed", "degraded"].includes(compilerResult.status) && specValidation.success;
-    console.log("[ToolPersistence] Should Persist:", shouldPersistVersion);
+      });
 
-    if (shouldPersistVersion) {
-      let createdVersionId: string | null = null;
-      try {
-        if (!existingExecution?.toolVersionId) {
-          // GUARD: Strict Invariant Check
-          const { data: toolCheck } = await (supabase.from("tools") as any).select("id").eq("id", toolId).single();
-          if (!toolCheck) throw new Error("Invariant: Cannot create tool version without tool row in 'tools' table");
+      // For persistence, we accept "completed" OR "degraded" as valid states if validation passes
+      const shouldPersistVersion = ["completed", "degraded"].includes(compilerResult.status) && specValidation.success;
+      console.log("[ToolPersistence] Should Persist:", shouldPersistVersion);
 
-          console.log("[ToolPersistence] Creating version for tool:", toolId);
-          const compiled = compiledTool!;
-          const version = await createToolVersion({
-            orgId,
-            toolId,
-            userId,
-            spec: normalizedSpec,
-            compiledTool: compiled,
-            baseSpec,
-            supabase, // Pass shared client
-          });
-          createdVersionId = version.id;
-          console.log("[ToolPersistence] Version created:", version.id);
-          await promoteToolVersion({ toolId, versionId: version.id, supabase });
-          console.log("[ToolPersistence] Version promoted");
-          if (input.executionId) {
-            await updateExecution(input.executionId, { toolVersionId: version.id });
-          }
-        }
-        console.log("[ToolPersistence] Updating project status to READY");
-        const { error: projectError } = await (supabase.from("projects") as any)
-          .update({
-            spec: normalizedSpec,
-            name: normalizedSpec.name,
-            status: "READY",
-            updated_at: new Date().toISOString(),
-            compiled_at: new Date().toISOString(),
-          })
-          .eq("id", toolId);
-        if (projectError) {
-          throw new Error(`Project update failed: ${projectError.message}`);
-        }
-        console.log("[ToolPersistence] Project updated successfully");
-      } catch (err: any) {
-        console.error("[ToolPersistence] CRITICAL FAILURE:", err);
-        if (createdVersionId) {
-          try {
-            const previousActiveVersionId = projectSnapshot?.active_version_id ?? null;
-            const previousSpec = projectSnapshot?.spec ?? null;
-            const previousStatus = projectSnapshot?.status ?? "DRAFT";
-            const previousName = projectSnapshot?.name ?? "Tool";
-            const previousCompiledAt = projectSnapshot?.compiled_at ?? null;
-            if (previousActiveVersionId) {
-              await (supabase.from("tool_versions") as any)
-                .update({ status: "active" })
-                .eq("id", previousActiveVersionId);
+      if (shouldPersistVersion) {
+        let createdVersionId: string | null = null;
+        try {
+          if (!existingExecution?.toolVersionId) {
+            // GUARD: Strict Invariant Check
+            const { data: toolCheck } = await (supabase.from("tools") as any).select("id").eq("id", toolId).single();
+            if (!toolCheck) throw new Error("Invariant: Cannot create tool version without tool row in 'tools' table");
+
+            console.log("[ToolPersistence] Creating version for tool:", toolId);
+            const compiled = compiledTool!;
+            const version = await createToolVersion({
+              orgId,
+              toolId,
+              userId,
+              spec: normalizedSpec,
+              compiledTool: compiled,
+              baseSpec,
+              supabase, // Pass shared client
+            });
+            createdVersionId = version.id;
+            console.log("[ToolPersistence] Version created:", version.id);
+            await promoteToolVersion({ toolId, versionId: version.id, supabase });
+            console.log("[ToolPersistence] Version promoted");
+            if (input.executionId) {
+              await updateExecution(input.executionId, { toolVersionId: version.id });
             }
-            await (supabase.from("tool_versions") as any)
-              .delete()
-              .eq("id", createdVersionId);
-            await (supabase.from("projects") as any)
-              .update({
-                active_version_id: previousActiveVersionId,
-                spec: previousSpec,
-                status: previousStatus,
-                name: previousName,
-                compiled_at: previousCompiledAt,
-              })
-              .eq("id", toolId);
-          } catch (rollbackError) {
-            console.error("[ToolPersistence] Rollback failed:", rollbackError);
           }
+          console.log("[ToolPersistence] Updating project status to READY");
+          const { error: projectError } = await (supabase.from("projects") as any)
+            .update({
+              spec: normalizedSpec,
+              name: normalizedSpec.name,
+              status: "READY",
+              updated_at: new Date().toISOString(),
+              compiled_at: new Date().toISOString(),
+            })
+            .eq("id", toolId);
+          if (projectError) {
+            throw new Error(`Project update failed: ${projectError.message}`);
+          }
+          console.log("[ToolPersistence] Project updated successfully");
+        } catch (err: any) {
+          console.error("[ToolPersistence] CRITICAL FAILURE:", err);
+          if (createdVersionId) {
+            try {
+              const previousActiveVersionId = projectSnapshot?.active_version_id ?? null;
+              const previousSpec = projectSnapshot?.spec ?? null;
+              const previousStatus = projectSnapshot?.status ?? "DRAFT";
+              const previousName = projectSnapshot?.name ?? "Tool";
+              const previousCompiledAt = projectSnapshot?.compiled_at ?? null;
+              if (previousActiveVersionId) {
+                await (supabase.from("tool_versions") as any)
+                  .update({ status: "active" })
+                  .eq("id", previousActiveVersionId);
+              }
+              await (supabase.from("tool_versions") as any)
+                .delete()
+                .eq("id", createdVersionId);
+              await (supabase.from("projects") as any)
+                .update({
+                  active_version_id: previousActiveVersionId,
+                  spec: previousSpec,
+                  status: previousStatus,
+                  name: previousName,
+                  compiled_at: previousCompiledAt,
+                })
+                .eq("id", toolId);
+            } catch (rollbackError) {
+              console.error("[ToolPersistence] Rollback failed:", rollbackError);
+            }
+          }
+          throw err;
         }
-        throw err;
-      }
-    } else {
+      } else {
         console.warn("[ToolPersistence] Skipping persistence because validation failed or compiler incomplete", {
-            status: compilerResult.status,
-            validationErrors: specValidation.success ? [] : specValidation.error
-        });
-    }
-
-    const lowConfidenceEntities = spec.entities.filter((entity) => (entity.confidence ?? 1) < 0.7);
-    const lowConfidenceActions = spec.actions.filter((action) => (action.confidence ?? 1) < 0.7);
-    if (lowConfidenceEntities.length > 0) {
-      lowConfidenceEntities.forEach((entity) => {
-        appendStep(
-          stepsById.get("entities"),
-          `Low confidence ${entity.name} (${(entity.confidence ?? 0).toFixed(2)})`,
-        );
-      });
-    }
-    if (lowConfidenceActions.length > 0) {
-      lowConfidenceActions.forEach((action) => {
-        appendStep(
-          stepsById.get("actions"),
-          `Low confidence ${action.name} (${(action.confidence ?? 0).toFixed(2)})`,
-        );
-      });
-    }
-
-    const connectedIntegrationIds = input.connectedIntegrationIds ?? [];
-    await transition("RUNTIME_READY", "Validating integrations");
-    const requiredIntegrations = Array.from(
-      new Set([
-        ...(spec.integrations ?? []).map((i) => i.id),
-        ...(spec.actions ?? []).map((a) => a.integrationId).filter(Boolean),
-      ]),
-    ) as IntegrationId[];
-    const missingIntegrationIds = requiredIntegrations.filter(
-      (id) => !connectedIntegrationIds.includes(id),
-    );
-    if (missingIntegrationIds.length > 0) {
-      appendStep(
-        stepsById.get("readiness"),
-        `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
-      );
-      markStep(steps, "readiness", "error", "Integrations required");
-      if (input.executionId) {
-        await updateExecution(input.executionId, {
-          status: "awaiting_integration",
-          requiredIntegrations,
-          missingIntegrations: missingIntegrationIds,
+          status: compilerResult.status,
+          validationErrors: specValidation.success ? [] : specValidation.error
         });
       }
-      const messageText = `Execution blocked: Real credentials for ${missingIntegrationIds.join(", ")} are required.`;
-      return {
-        explanation: messageText,
-        message: { type: "text", content: messageText },
-        spec: { ...spec, lifecycle_state: machine.state },
-        requiresIntegrations: true,
-        missingIntegrations: missingIntegrationIds,
-        requiredIntegrations,
-        metadata: {
-          requiresIntegrations: true,
-          missingIntegrations: missingIntegrationIds,
-          requiredIntegrations,
-          executionId: input.executionId,
-          build_steps: steps,
-          progress: compilerResult.progress,
-        },
-      };
-    }
 
-    markStep(steps, "readiness", "running", "Validating data readiness");
-    
-    // FIX: Pre-runtime Integration Readiness Gate
-    // Must run BEFORE runDataReadiness to avoid EncryptionKeyMismatchError
-    try {
-      await runCheckIntegrationReadiness({
-        spec: spec as any,
-        orgId: buildContext.orgId,
-      });
-    } catch (err) {
-      if (isIntegrationNotConnectedError(err)) {
-        markStep(steps, "readiness", "error", "Integration authorization required");
-        
-        const missingIntegrations = err.integrationIds;
-        const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
+      const lowConfidenceEntities = spec.entities.filter((entity) => (entity.confidence ?? 1) < 0.7);
+      const lowConfidenceActions = spec.actions.filter((action) => (action.confidence ?? 1) < 0.7);
+      if (lowConfidenceEntities.length > 0) {
+        lowConfidenceEntities.forEach((entity) => {
+          appendStep(
+            stepsById.get("entities"),
+            `Low confidence ${entity.name} (${(entity.confidence ?? 0).toFixed(2)})`,
+          );
+        });
+      }
+      if (lowConfidenceActions.length > 0) {
+        lowConfidenceActions.forEach((action) => {
+          appendStep(
+            stepsById.get("actions"),
+            `Low confidence ${action.name} (${(action.confidence ?? 0).toFixed(2)})`,
+          );
+        });
+      }
 
+      const connectedIntegrationIds = input.connectedIntegrationIds ?? [];
+      await transition("RUNTIME_READY", "Validating integrations");
+      const requiredIntegrations = Array.from(
+        new Set([
+          ...(spec.integrations ?? []).map((i) => i.id),
+          ...(spec.actions ?? []).map((a) => a.integrationId).filter(Boolean),
+        ]),
+      ) as IntegrationId[];
+      const missingIntegrationIds = requiredIntegrations.filter(
+        (id) => !connectedIntegrationIds.includes(id),
+      );
+      if (missingIntegrationIds.length > 0) {
+        appendStep(
+          stepsById.get("readiness"),
+          `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
+        );
+        markStep(steps, "readiness", "error", "Integrations required");
         if (input.executionId) {
           await updateExecution(input.executionId, {
             status: "awaiting_integration",
             requiredIntegrations,
-            missingIntegrations,
+            missingIntegrations: missingIntegrationIds,
           });
         }
-        const messageText = `Execution blocked: Real credentials for ${missingIntegrations.join(", ")} are required.`;
+        const messageText = `Execution blocked: Real credentials for ${missingIntegrationIds.join(", ")} are required.`;
         return {
           explanation: messageText,
           message: { type: "text", content: messageText },
           spec: { ...spec, lifecycle_state: machine.state },
           requiresIntegrations: true,
-          missingIntegrations,
+          missingIntegrations: missingIntegrationIds,
           requiredIntegrations,
           metadata: {
             requiresIntegrations: true,
-            missingIntegrations,
+            missingIntegrations: missingIntegrationIds,
             requiredIntegrations,
             executionId: input.executionId,
             build_steps: steps,
             progress: compilerResult.progress,
-            integration_error: {
+          },
+        };
+      }
+
+      markStep(steps, "readiness", "running", "Validating data readiness");
+
+      // FIX: Pre-runtime Integration Readiness Gate
+      // Must run BEFORE runDataReadiness to avoid EncryptionKeyMismatchError
+      try {
+        await runCheckIntegrationReadiness({
+          spec: spec as any,
+          orgId: buildContext.orgId,
+        });
+      } catch (err) {
+        if (isIntegrationNotConnectedError(err)) {
+          markStep(steps, "readiness", "error", "Integration authorization required");
+
+          const missingIntegrations = err.integrationIds;
+          const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
+
+          if (input.executionId) {
+            await updateExecution(input.executionId, {
+              status: "awaiting_integration",
+              requiredIntegrations,
+              missingIntegrations,
+            });
+          }
+          const messageText = `Execution blocked: Real credentials for ${missingIntegrations.join(", ")} are required.`;
+          return {
+            explanation: messageText,
+            message: { type: "text", content: messageText },
+            spec: { ...spec, lifecycle_state: machine.state },
+            requiresIntegrations: true,
+            missingIntegrations,
+            requiredIntegrations,
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations,
+              requiredIntegrations,
+              executionId: input.executionId,
+              build_steps: steps,
+              progress: compilerResult.progress,
+              integration_error: {
                 type: "INTEGRATION_NOT_CONNECTED",
                 integrationIds: err.integrationIds,
                 requiredBy: err.requiredBy,
                 blockingActions: err.blockingActions
-            }
-          },
-        };
+              }
+            },
+          };
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    const readinessStart = Date.now();
-    const readiness = await runDataReadiness(spec, {
-      orgId: buildContext.orgId,
-      toolId: input.toolId,
-      userId,
-      compiledTool: compiledTool!
-    });
-    if (readiness.authErrors.length > 0) {
-      markStep(steps, "readiness", "error", "Integration authorization required");
-      if (input.executionId) {
-        await updateExecution(input.executionId, {
-          status: "awaiting_integration",
-          requiredIntegrations,
-          missingIntegrations: readiness.authErrors,
-        });
-      }
-      const messageText = `Execution blocked: Real credentials for ${readiness.authErrors.join(", ")} are required.`;
-      return {
-        explanation: messageText,
-        message: { type: "text", content: messageText },
-        spec: { ...spec, lifecycle_state: machine.state },
-        requiresIntegrations: true,
-        missingIntegrations: readiness.authErrors,
-        requiredIntegrations,
-        metadata: {
+      const readinessStart = Date.now();
+      const readiness = await runDataReadiness(spec, {
+        orgId: buildContext.orgId,
+        toolId: input.toolId,
+        userId,
+        compiledTool: compiledTool!
+      });
+      if (readiness.authErrors.length > 0) {
+        markStep(steps, "readiness", "error", "Integration authorization required");
+        if (input.executionId) {
+          await updateExecution(input.executionId, {
+            status: "awaiting_integration",
+            requiredIntegrations,
+            missingIntegrations: readiness.authErrors,
+          });
+        }
+        const messageText = `Execution blocked: Real credentials for ${readiness.authErrors.join(", ")} are required.`;
+        return {
+          explanation: messageText,
+          message: { type: "text", content: messageText },
+          spec: { ...spec, lifecycle_state: machine.state },
           requiresIntegrations: true,
           missingIntegrations: readiness.authErrors,
           requiredIntegrations,
-          executionId: input.executionId,
-          build_steps: steps,
-          progress: compilerResult.progress,
-        },
-      };
-    }
-    const readinessDuration = Date.now() - readinessStart;
-    if (readinessDuration > TIME_BUDGETS.readinessMs) {
-      appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
-      await transition("DEGRADED", "Readiness budget exceeded", "warn");
-    }
-    readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
-    markStep(steps, "readiness", "success", "Data readiness checks complete");
-    console.log("[FINALIZE] All integrations completed for tool", input.toolId);
-    markStep(steps, "runtime", "running", "Finalizing tool");
+          metadata: {
+            requiresIntegrations: true,
+            missingIntegrations: readiness.authErrors,
+            requiredIntegrations,
+            executionId: input.executionId,
+            build_steps: steps,
+            progress: compilerResult.progress,
+          },
+        };
+      }
+      const readinessDuration = Date.now() - readinessStart;
+      if (readinessDuration > TIME_BUDGETS.readinessMs) {
+        appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
+        await transition("DEGRADED", "Readiness budget exceeded", "warn");
+      }
+      readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
+      markStep(steps, "readiness", "success", "Data readiness checks complete");
+      console.log("[FINALIZE] All integrations completed for tool", input.toolId);
+      markStep(steps, "runtime", "running", "Finalizing tool");
 
-    try {
-      await saveMemory({
-        scope: { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId },
-        namespace: builderNamespace,
-        key: "lifecycle_state",
-        value: { state: machine.state, buildId },
-      });
-    } catch (err) {
-      console.error("[LifecyclePersistenceFailed]", err);
-    }
+      try {
+        await saveMemory({
+          scope: { type: "tool_org", toolId: input.toolId, orgId: buildContext.orgId },
+          namespace: builderNamespace,
+          key: "lifecycle_state",
+          value: { state: machine.state, buildId },
+        });
+      } catch (err) {
+        console.error("[LifecyclePersistenceFailed]", err);
+      }
 
 
 
 
 
-    let outputs: Array<{ action: any; output: any; error?: any }> = [];
-    let goalEvidence: GoalEvidence | null = null;
-    const integrationStatuses: Record<string, IntegrationStatus> = {};
-    
-    const readActions = (spec.actions || []).filter((action) => action.type === "READ");
-    const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
-    
-    if (spec.initialFetch?.actionId) {
+      let outputs: Array<{ action: any; output: any; error?: any }> = [];
+      let goalEvidence: GoalEvidence | null = null;
+      const integrationStatuses: Record<string, IntegrationStatus> = {};
+
+      const readActions = (spec.actions || []).filter((action) => action.type === "READ");
+      const queryPlanByAction = new Map((spec.query_plans ?? []).map((plan) => [plan.actionId, plan]));
+
+      if (spec.initialFetch?.actionId) {
         const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
         if (initial && !readActions.find(a => a.id === initial.id)) {
-            readActions.unshift(initial);
+          readActions.unshift(initial);
         }
-    }
-    
-    const slackRequired = isSlackRequired(input.userMessage, spec.intent_contract);
-    if (slackRequired) {
+      }
+
+      const slackRequired = isSlackRequired(input.userMessage, spec.intent_contract);
+      if (slackRequired) {
         try {
           const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
           if (status.status !== "valid") {
@@ -1117,9 +1163,9 @@ export async function runCompilerPipeline(
           };
           await updateIntegrationConnectionStatus(buildContext.orgId, "slack", "reauth_required");
         }
-    }
+      }
 
-    if (integrationStatuses.slack?.status === "reauth_required" && integrationStatuses.slack?.required) {
+      if (integrationStatuses.slack?.status === "reauth_required" && integrationStatuses.slack?.required) {
         outputs = [];
         goalEvidence = {
           failed_commits: 0,
@@ -1127,7 +1173,7 @@ export async function runCompilerPipeline(
           related_emails: 0,
           total_emails: 0,
         };
-    } else if (intentPlanError) {
+      } else if (intentPlanError) {
         outputs = [];
         goalEvidence = {
           failed_commits: 0,
@@ -1135,7 +1181,7 @@ export async function runCompilerPipeline(
           related_emails: 0,
           total_emails: 0,
         };
-    } else if (shouldUseSemanticPlannerLoop(spec, input.userMessage)) {
+      } else if (shouldUseSemanticPlannerLoop(spec, input.userMessage)) {
         const planResult = await runSemanticExecutorLoop({
           spec,
           compiledTool: compiledTool!,
@@ -1146,74 +1192,74 @@ export async function runCompilerPipeline(
         });
         outputs = planResult.outputs;
         goalEvidence = planResult.evidence;
-    } else if (readActions.length > 0) {
+      } else if (readActions.length > 0) {
         console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
         markStep(steps, "runtime", "running", "Executing actions...");
-        
+
         for (const action of readActions) {
-            try {
-                 const plan = queryPlanByAction.get(action.id);
-                 const input = buildReadActionInput({ action, plan, spec });
-                 if (action.integrationId === "slack" && !slackRequired) {
-                    if (!integrationStatuses.slack) {
-                      try {
-                        const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
-                        if (status.status !== "valid") {
-                          integrationStatuses.slack = {
-                            integration: "slack",
-                            status: "reauth_required",
-                            reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
-                            required: false,
-                            userActionRequired: true,
-                          };
-                        } else {
-                          integrationStatuses.slack = { integration: "slack", status: "ok", required: false };
-                        }
-                      } catch (err) {
-                        integrationStatuses.slack = {
-                          integration: "slack",
-                          status: "reauth_required",
-                          reason: err instanceof Error ? err.message : "missing_credentials",
-                          required: false,
-                          userActionRequired: true,
-                        };
-                      }
-                    }
-                    if (integrationStatuses.slack?.status === "reauth_required") {
-                      outputs.push({ action, output: null, error: { skipped: true, reason: "slack_reauth_required" } });
-                      continue;
-                    }
-                 }
-                 const result = await executeToolAction({
-                      orgId: buildContext.orgId,
-                      toolId,
-                      compiledTool: compiledTool!,
-                      actionId: action.id,
-                      input,
-                      userId: userId,
-                      triggerId: "initial_run",
-                      recordRun: true
-                 });
-                 if (result.events?.length) {
-                   for (const event of result.events) {
-                     if (event.type === "integration_warning" && event.payload?.integration === "slack") {
-                       integrationStatuses.slack = {
-                         integration: "slack",
-                         status: "reauth_required",
-                         reason: event.payload?.reason ?? "token_expired_no_refresh",
-                         required: slackRequired,
-                         userActionRequired: true,
-                       };
-                     }
-                   }
-                 }
-                 outputs.push({ action, output: result.output });
-            } catch (err) {
-                console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
-                outputs.push({ action, output: null, error: err });
+          try {
+            const plan = queryPlanByAction.get(action.id);
+            const input = buildReadActionInput({ action, plan, spec });
+            if (action.integrationId === "slack" && !slackRequired) {
+              if (!integrationStatuses.slack) {
+                try {
+                  const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
+                  if (status.status !== "valid") {
+                    integrationStatuses.slack = {
+                      integration: "slack",
+                      status: "reauth_required",
+                      reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+                      required: false,
+                      userActionRequired: true,
+                    };
+                  } else {
+                    integrationStatuses.slack = { integration: "slack", status: "ok", required: false };
+                  }
+                } catch (err) {
+                  integrationStatuses.slack = {
+                    integration: "slack",
+                    status: "reauth_required",
+                    reason: err instanceof Error ? err.message : "missing_credentials",
+                    required: false,
+                    userActionRequired: true,
+                  };
+                }
+              }
+              if (integrationStatuses.slack?.status === "reauth_required") {
+                outputs.push({ action, output: null, error: { skipped: true, reason: "slack_reauth_required" } });
+                continue;
+              }
             }
+            const result = await executeToolAction({
+              orgId: buildContext.orgId,
+              toolId,
+              compiledTool: compiledTool!,
+              actionId: action.id,
+              input,
+              userId: userId,
+              triggerId: "initial_run",
+              recordRun: true
+            });
+            if (result.events?.length) {
+              for (const event of result.events) {
+                if (event.type === "integration_warning" && event.payload?.integration === "slack") {
+                  integrationStatuses.slack = {
+                    integration: "slack",
+                    status: "reauth_required",
+                    reason: event.payload?.reason ?? "token_expired_no_refresh",
+                    required: slackRequired,
+                    userActionRequired: true,
+                  };
+                }
+              }
+            }
+            outputs.push({ action, output: result.output });
+          } catch (err) {
+            console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
+            outputs.push({ action, output: null, error: err });
+          }
         }
-    }
+      }
 
       const successfulOutputs = outputs.filter((entry) => !entry.error && entry.output !== null && entry.output !== undefined);
       const derivedResult = await applyEnterpriseDerivedResults({
@@ -1265,7 +1311,7 @@ export async function runCompilerPipeline(
       const recordCount = countSnapshotRecords(snapshotRecords);
       const derivedCount = Array.isArray(derivedResult.rows) ? derivedResult.rows.length : 0;
       const dataReady = recordCount > 0 || derivedCount > 0;
-      
+
       const goalValidation = evaluateGoalSatisfaction({
         prompt: input.userMessage,
         goalPlan: spec.goal_plan,
@@ -1277,9 +1323,9 @@ export async function runCompilerPipeline(
       });
       const decision = decideRendering({ prompt: input.userMessage, result: goalValidation });
       console.log("[GoalValidation]", { goalValidation, decision });
-      
+
       if (recordCount > 0 && !dataReady) {
-         throw new Error("Invariant violated: Records exist but data_ready is false");
+        throw new Error("Invariant violated: Records exist but data_ready is false");
       }
 
       const viewReady = decision.kind === "render" || dataReady;
@@ -1395,7 +1441,7 @@ export async function runCompilerPipeline(
         render_state: renderState.tool_id,
         flags: updatedTool,
       });
-      
+
       // 7. Finalize Environment (REQUIRED)
       // Even if no actions or all failed, we must finalize to ACTIVE or FAILED.
       // This persists the unified environment object and sets status=ACTIVE.
@@ -1405,15 +1451,15 @@ export async function runCompilerPipeline(
         try {
           markStep(steps, "runtime", "running", "Finalizing environment...");
           matResult = await finalizeToolEnvironment(
-              toolId,
-              buildContext.orgId,
-              spec,
-              outputs,
-              null
+            toolId,
+            buildContext.orgId,
+            spec,
+            outputs,
+            null
           );
         } catch (err: any) {
-            console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
-            throw new Error(`Fatal Finalization Error: ${err.message}`);
+          console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
+          throw new Error(`Fatal Finalization Error: ${err.message}`);
         }
 
         const success = matResult.status === "MATERIALIZED";
@@ -1435,77 +1481,90 @@ export async function runCompilerPipeline(
         await completeExecution(input.executionId);
       }
       const assistantSummary = buildAssistantSummary(spec);
-    return {
-      explanation: assistantSummary,
-      message: { type: "text", content: assistantSummary },
-      spec: { ...spec, lifecycle_state: machine.state },
-      metadata: {
-        tokens: runTokens,
-        status: compilerResult.status,
-        versionId: activeVersionId,
-        progress: compilerResult.progress,
-        steps,
-        build_logs: machine.logs,
-        assumptions,
-        completenessScore,
-          executionId: input.executionId,
-      },
-    };
-  } catch (err) {
-    if (isIntegrationNotConnectedError(err)) {
-      console.warn(`[Compiler] Integrations missing: ${err.integrationIds.join(", ")}`);
-      
-      const missingIntegrations = err.integrationIds;
-      // We don't have the full list of required integrations here easily without recalculating, 
-      // but for the error response, the missing ones are the most critical.
-      // We can use the missing ones as "required" for this context if we want to block on them.
-      const requiredIntegrations = missingIntegrations;
-
-      // Mark execution as waiting, NOT failed
-      if (input.executionId) {
-        await updateExecution(input.executionId, {
-          status: "awaiting_integration",
-          requiredIntegrations,
-          missingIntegrations,
-        });
-      }
-
-      // Return structured response
       return {
-        explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
-        message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
-        spec: input.currentSpec ?? {},
-        requiresIntegrations: true,
-        missingIntegrations,
-        requiredIntegrations,
+        explanation: assistantSummary,
+        message: { type: "text", content: assistantSummary },
+        spec: { ...spec, lifecycle_state: machine.state },
         metadata: {
+          tokens: runTokens,
+          status: compilerResult.status,
+          versionId: activeVersionId,
+          progress: compilerResult.progress,
+          steps,
+          build_logs: machine.logs,
+          assumptions,
+          completenessScore,
+          executionId: input.executionId,
+        },
+      };
+    } catch (err) {
+      if (isIntegrationNotConnectedError(err)) {
+        console.warn(`[Compiler] Integrations missing: ${err.integrationIds.join(", ")}`);
+
+        const missingIntegrations = err.integrationIds;
+        // We don't have the full list of required integrations here easily without recalculating, 
+        // but for the error response, the missing ones are the most critical.
+        // We can use the missing ones as "required" for this context if we want to block on them.
+        const requiredIntegrations = missingIntegrations;
+
+        // Mark execution as waiting, NOT failed
+        if (input.executionId) {
+          await updateExecution(input.executionId, {
+            status: "awaiting_integration",
+            requiredIntegrations,
+            missingIntegrations,
+          });
+        }
+
+        // Return structured response
+        return {
+          explanation: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.`,
+          message: { type: "text", content: `Please connect the following integrations to continue: ${missingIntegrations.join(", ")}.` },
+          spec: input.currentSpec ?? {},
           requiresIntegrations: true,
           missingIntegrations,
           requiredIntegrations,
-          executionId: input.executionId,
-          build_steps: steps,
-          integration_error: {
+          metadata: {
+            requiresIntegrations: true,
+            missingIntegrations,
+            requiredIntegrations,
+            executionId: input.executionId,
+            build_steps: steps,
+            integration_error: {
               type: "INTEGRATION_NOT_CONNECTED",
               integrationIds: err.integrationIds, // Updated to array
               integrationId: err.integrationIds[0], // Backwards compatibility if needed
               requiredBy: err.requiredBy,
               blockingActions: err.blockingActions
-          }
-        },
-      };
-    }
+            }
+          },
+        };
+      }
 
-    // Atomic Failure Handling: Mark tool as error
-    const message = err instanceof Error ? err.message : "Build failed";
-    markStep(steps, "compile", "error", message);
-    if (input.executionId) {
-      await updateExecution(input.executionId, { status: "failed", error: message });
-      await completeExecution(input.executionId);
-    }
-    
-    const compilerFailure = isCompilerError(err);
-    if (compilerFailure) {
-      await transition("FAILED_COMPILATION", message, "error");
+      // Atomic Failure Handling: Mark tool as error
+      const message = err instanceof Error ? err.message : "Build failed";
+      markStep(steps, "compile", "error", message);
+      if (input.executionId) {
+        await updateExecution(input.executionId, { status: "failed", error: message });
+        await completeExecution(input.executionId);
+      }
+
+      const compilerFailure = isCompilerError(err);
+      if (compilerFailure) {
+        await transition("FAILED_COMPILATION", message, "error");
+      } else {
+        const isInfraError =
+          message.includes("Timeout") ||
+          message.includes("fetch failed") ||
+          message.includes("ECONNREFUSED") ||
+          message.includes("500") ||
+          message.includes("network");
+        const failureState = isInfraError ? "INFRA_ERROR" : "DEGRADED";
+        await transition(failureState, message, "error");
+      }
+
+      // CRITICAL FIX: Always finalize to FAILED state regardless of error type
+      // This ensures the tool ALWAYS reaches a terminal state
       try {
         await finalizeToolExecution({
           toolId,
@@ -1515,64 +1574,55 @@ export async function runCompilerPipeline(
           view_ready: false,
         });
       } catch (finalizeErr) {
-        console.error("[CompilerFinalizeFailed]", finalizeErr);
+        console.error("[CRITICAL] Failed to finalize tool on error:", finalizeErr);
       }
-    } else {
-      const isInfraError =
-        message.includes("Timeout") ||
-        message.includes("fetch failed") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("500") ||
-        message.includes("network");
-      const failureState = isInfraError ? "INFRA_ERROR" : "DEGRADED";
-      await transition(failureState, message, "error");
-    }
-    
-    if (err instanceof BudgetExceededError) {
-      return {
-        explanation: "Budget limit reached",
-        message: {
-          type: "text",
-          content:
-            err.limitType === "per_run"
-              ? "Run token cap exceeded. Reduce scope or increase the per-run budget."
-              : "Monthly token budget exceeded. Increase the monthly budget to continue.",
-        },
-        metadata: {
-          persist: false,
-          build_steps: steps,
-          state: machine.state,
-          build_logs: machine.logs,
-          budget_error: { type: err.limitType, message: err.message },
-        },
-      };
-    }
-    throw err;
-  }
 
-  const refinements = await withTimeout(
-    runRefinementAgent(spec, consumeTokens),
-    500,
-    "Refinement suggestions timed out",
-  ).catch(() => []);
-  const assistantSummary = buildAssistantSummary(spec);
-  return {
-    explanation: assistantSummary,
-    message: { type: "text", content: assistantSummary },
-    spec: { ...spec, lifecycle_state: machine.state },
-    metadata: {
-      persist: true,
-      build_steps: steps,
-      query_plans: buildQueryPlans(spec),
-      refinements,
-      data_evidence: latestEvidence,
-      state: machine.state,
-      build_logs: machine.logs,
-      active_version_id: activeVersionId,
-      assumptions,
-      completenessScore,
-    },
-  };
+      if (err instanceof BudgetExceededError) {
+        return {
+          explanation: "Budget limit reached",
+          message: {
+            type: "text",
+            content:
+              err.limitType === "per_run"
+                ? "Run token cap exceeded. Reduce scope or increase the per-run budget."
+                : "Monthly token budget exceeded. Increase the monthly budget to continue.",
+          },
+          metadata: {
+            persist: false,
+            build_steps: steps,
+            state: machine.state,
+            build_logs: machine.logs,
+            budget_error: { type: err.limitType, message: err.message },
+          },
+        };
+      }
+      throw err;
+
+    }
+
+    const refinements = await withTimeout(
+      runRefinementAgent(spec, consumeTokens),
+      500,
+      "Refinement suggestions timed out",
+    ).catch(() => []);
+    const assistantSummary = buildAssistantSummary(spec);
+    return {
+      explanation: assistantSummary,
+      message: { type: "text", content: assistantSummary },
+      spec: { ...spec, lifecycle_state: machine.state },
+      metadata: {
+        persist: true,
+        build_steps: steps,
+        query_plans: buildQueryPlans(spec),
+        refinements,
+        data_evidence: latestEvidence,
+        state: machine.state,
+        build_logs: machine.logs,
+        active_version_id: activeVersionId,
+        assumptions,
+        completenessScore,
+      },
+    };
   });
 }
 
@@ -1588,33 +1638,33 @@ export async function resumeToolExecution(params: {
   const statusSupabase = createSupabaseAdminClient();
   const execution = await getExecutionById(params.executionId);
   if (!execution) throw new Error("Execution not found");
-  
+
   if (["compiling", "executing"].includes(execution.status)) {
-     return {
-       explanation: "Execution already running.",
-       message: { type: "text", content: "Execution already running." },
-       metadata: { executionId: params.executionId, status: "executing" },
-     };
+    return {
+      explanation: "Execution already running.",
+      message: { type: "text", content: "Execution already running." },
+      metadata: { executionId: params.executionId, status: "executing" },
+    };
   }
-  
+
   if (execution.status === "completed") {
-      return {
-        explanation: "Execution completed.",
-        message: { type: "text", content: "Execution completed." },
-        metadata: { executionId: params.executionId, status: "completed" },
-      };
+    return {
+      explanation: "Execution completed.",
+      message: { type: "text", content: "Execution completed." },
+      metadata: { executionId: params.executionId, status: "completed" },
+    };
   }
 
   if (["created", "awaiting_integration"].includes(execution.status)) {
-       await updateExecution(params.executionId, { status: "executing" });
+    await updateExecution(params.executionId, { status: "executing" });
   }
 
   // Integration Readiness Gate: Verify all required integrations are connected
   // This must happen before any data fetching or credential access.
   try {
     await runCheckIntegrationReadiness({
-        spec: params.spec as any,
-        orgId: params.orgId,
+      spec: params.spec as any,
+      orgId: params.orgId,
     });
   } catch (err) {
     if (isIntegrationNotConnectedError(err)) {
@@ -1641,10 +1691,10 @@ export async function resumeToolExecution(params: {
           requiredIntegrations,
           executionId: params.executionId,
           integration_error: {
-              type: "INTEGRATION_NOT_CONNECTED",
-              integrationIds: err.integrationIds,
-              requiredBy: err.requiredBy,
-              blockingActions: err.blockingActions
+            type: "INTEGRATION_NOT_CONNECTED",
+            integrationIds: err.integrationIds,
+            requiredBy: err.requiredBy,
+            blockingActions: err.blockingActions
           }
         },
       };
@@ -1826,7 +1876,7 @@ export async function resumeToolExecution(params: {
   const recordCount = countSnapshotRecords(snapshotRecords);
   const derivedCount = Array.isArray(derivedResult.rows) ? derivedResult.rows.length : 0;
   const dataReady = recordCount > 0 || derivedCount > 0;
-  
+
   const goalValidation = evaluateGoalSatisfaction({
     prompt: params.prompt,
     goalPlan: params.spec.goal_plan,
@@ -1837,9 +1887,9 @@ export async function resumeToolExecution(params: {
     hasData: dataReady,
   });
   const decision = decideRendering({ prompt: params.prompt, result: goalValidation });
-  
+
   if (recordCount > 0 && !dataReady) {
-      throw new Error("Invariant violated: Records exist but data_ready is false");
+    throw new Error("Invariant violated: Records exist but data_ready is false");
   }
 
   const viewReady = decision.kind === "render" || dataReady;
@@ -1925,18 +1975,18 @@ export async function applyClarificationAnswer(
   userId: string | undefined | null,
   answer: string
 ): Promise<ToolChatResponse> {
-    // Wrapper to satisfy the requirement "Implement applyClarificationAnswer(answer) -> updates spec"
-    // This re-uses the main pipeline which handles the "resume from pending" logic automatically
-    // via the memory store (pending_questions + base_prompt).
-    return processToolChat({
-        orgId,
-        toolId,
-        userId,
-        messages: [], // Context is in memory
-        userMessage: answer,
-        connectedIntegrationIds: [], // Should be loaded from context if needed, but usually persistent
-        mode: "create",
-    });
+  // Wrapper to satisfy the requirement "Implement applyClarificationAnswer(answer) -> updates spec"
+  // This re-uses the main pipeline which handles the "resume from pending" logic automatically
+  // via the memory store (pending_questions + base_prompt).
+  return processToolChat({
+    orgId,
+    toolId,
+    userId,
+    messages: [], // Context is in memory
+    userMessage: answer,
+    connectedIntegrationIds: [], // Should be loaded from context if needed, but usually persistent
+    mode: "create",
+  });
 }
 
 async function generateIntent(
@@ -2104,8 +2154,8 @@ export function resolveAssumptions(prompt?: string) {
     assumptions.length === 0
       ? prompt
       : `${prompt}\n\nAssumptions applied:\n${assumptions
-          .map((item) => `- ${item.field}: ${item.reason}`)
-          .join("\n")}`;
+        .map((item) => `- ${item.field}: ${item.reason}`)
+        .join("\n")}`;
   return { resolvedPrompt, assumptions, completenessScore };
 }
 
@@ -2729,7 +2779,7 @@ function buildEnterpriseSpec(prompt: string): ToolSystemSpec | null {
       {
         actionId: "google.list_docs",
         integrationId: "google",
-        query: { q: `mimeType="application/vnd.google-apps.document"` , pageSize: 200 },
+        query: { q: `mimeType="application/vnd.google-apps.document"`, pageSize: 200 },
         fields: [],
       },
     ];
@@ -3228,8 +3278,8 @@ function buildAssistantSummary(spec: ToolSystemSpec) {
     readActions > 0 && writeActions > 0
       ? `pulls data and prepares ${writeActions} follow-up action${writeActions > 1 ? "s" : ""}`
       : readActions > 0
-      ? "pulls the latest data"
-      : "prepares targeted actions";
+        ? "pulls the latest data"
+        : "prepares targeted actions";
   return `I built an internal tool that connects to ${integrationText}, ${actionText}, and renders a live view you can refine. Review the output and adjust filters or triggers as needed.`;
 }
 
@@ -3300,7 +3350,7 @@ async function runDataReadiness(
       logs.push(`Missing inputs ${missing.join(", ")} for ${action.name} (${action.integrationId}).`);
       continue;
     }
-    
+
     if (context) {
       try {
         const plan = queryPlanByAction.get(action.id);
@@ -3315,17 +3365,17 @@ async function runDataReadiness(
           continue;
         }
         logs.push(`Executing ${action.name} (${action.integrationId})...`);
-        
+
         const result = await executeToolAction({
-            orgId: context.orgId,
-            toolId: context.toolId,
-            compiledTool: context.compiledTool,
-            actionId: action.id,
-            input: input,
-            userId: context.userId,
-            dryRun: false
+          orgId: context.orgId,
+          toolId: context.toolId,
+          compiledTool: context.compiledTool,
+          actionId: action.id,
+          input: input,
+          userId: context.userId,
+          dryRun: false
         });
-        
+
         const recordCount = Array.isArray(result.output) ? result.output.length : (result.output ? 1 : 0);
         if (recordCount > 0) {
           outputs.push({ action, output: result.output });
@@ -3352,22 +3402,22 @@ async function runDataReadiness(
         }
       } catch (err: any) {
         if (err instanceof IntegrationAuthError || err.name === "IntegrationAuthError") {
-            console.warn(`[Readiness] Auth warning for ${action.integrationId}:`, err.message);
-            logs.push(`⚠️ Auth required for ${action.integrationId}: ${err.message}`);
-            if (!authErrors.includes(action.integrationId)) {
-                authErrors.push(action.integrationId);
-            }
+          console.warn(`[Readiness] Auth warning for ${action.integrationId}:`, err.message);
+          logs.push(`⚠️ Auth required for ${action.integrationId}: ${err.message}`);
+          if (!authErrors.includes(action.integrationId)) {
+            authErrors.push(action.integrationId);
+          }
         } else if (action.integrationId === "slack") {
-            // FIX: Slack failures must not block the build
-            // Slack tokens often expire and don't refresh easily, but it's an optional integration
-            console.warn(`[Readiness] Slack fetch failed (non-fatal):`, err.message);
-            logs.push(`⚠️ Slack fetch failed: ${err.message} (ignoring)`);
+          // FIX: Slack failures must not block the build
+          // Slack tokens often expire and don't refresh easily, but it's an optional integration
+          console.warn(`[Readiness] Slack fetch failed (non-fatal):`, err.message);
+          logs.push(`⚠️ Slack fetch failed: ${err.message} (ignoring)`);
         } else {
-            const msg = err.message || "Unknown error";
-            console.error(`[Readiness] Action ${action.name} failed:`, err);
-            
-            // STRICT MODE: Any data fetch failure fails the build
-            throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
+          const msg = err.message || "Unknown error";
+          console.error(`[Readiness] Action ${action.name} failed:`, err);
+
+          // STRICT MODE: Any data fetch failure fails the build
+          throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
         }
       }
     } else {
@@ -3632,13 +3682,13 @@ function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: 
   const fields = derivedEntity?.fields.length
     ? derivedEntity.fields
     : [
-        { name: "repo", type: "string" },
-        { name: "commitSha", type: "string" },
-        { name: "failureType", type: "string" },
-        { name: "failedAt", type: "string" },
-        { name: "emailCount", type: "number" },
-        { name: "emails", type: "array" },
-      ];
+      { name: "repo", type: "string" },
+      { name: "commitSha", type: "string" },
+      { name: "failureType", type: "string" },
+      { name: "failedAt", type: "string" },
+      { name: "emailCount", type: "number" },
+      { name: "emails", type: "array" },
+    ];
   const derivedEntities: ToolSystemSpec["derived_entities"] = [
     ...(spec.derived_entities ?? []),
     {
@@ -3650,16 +3700,16 @@ function augmentSpecForGoalPlan(spec: ToolSystemSpec, prompt: string, goalPlan: 
   const entities: ToolSystemSpec["entities"] = spec.entities.some((entity) => entity.name === "FailureIncident")
     ? spec.entities
     : [
-        ...spec.entities,
-        {
-          name: "FailureIncident",
-          sourceIntegration: "github",
-          derived: true,
-          fields,
-          identifiers: ["commitSha"],
-          supportedActions: [],
-        },
-      ];
+      ...spec.entities,
+      {
+        name: "FailureIncident",
+        sourceIntegration: "github",
+        derived: true,
+        fields,
+        identifiers: ["commitSha"],
+        supportedActions: [],
+      },
+    ];
   const actions = ensureGoalActions(spec.actions);
   const views = ensureGoalViews(spec.views);
   const integrations = ensureGoalIntegrations(spec.integrations, actions);
@@ -3697,16 +3747,16 @@ function augmentSpecForIntent(
   const entities: ToolSystemSpec["entities"] = spec.entities.some((entity) => entity.name === "NotionTodo")
     ? spec.entities
     : [
-        ...spec.entities,
-        {
-          name: "NotionTodo",
-          sourceIntegration: "notion",
-          derived: true,
-          fields,
-          identifiers: ["task", "pageId"],
-          supportedActions: [],
-        },
-      ];
+      ...spec.entities,
+      {
+        name: "NotionTodo",
+        sourceIntegration: "notion",
+        derived: true,
+        fields,
+        identifiers: ["task", "pageId"],
+        supportedActions: [],
+      },
+    ];
   const derivedEntities: ToolSystemSpec["derived_entities"] = [
     ...(spec.derived_entities ?? []),
     {
@@ -3849,12 +3899,12 @@ async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promis
   const resultShape =
     isEmail && wantsLatest
       ? {
-          kind: "list" as const,
-          fields: contract.result_shape?.fields ?? [],
-          order_by: contract.result_shape?.order_by ?? "internalDate",
-          order_direction: contract.result_shape?.order_direction ?? "desc",
-          limit: contract.result_shape?.limit ?? 10,
-        }
+        kind: "list" as const,
+        fields: contract.result_shape?.fields ?? [],
+        order_by: contract.result_shape?.order_by ?? "internalDate",
+        order_direction: contract.result_shape?.order_direction ?? "desc",
+        limit: contract.result_shape?.limit ?? 10,
+      }
       : contract.result_shape;
   const queryPlans = buildQueryPlansForContract(spec, contract);
   if (queryPlans.length === 0) {
@@ -4341,21 +4391,21 @@ async function runWithRetry<T>(
 function canonicalizeToolSpec(spec: ToolSystemSpec): ToolSystemSpec {
   // Defensive: Ensure arrays exist to prevent crashes during canonicalization
   if (!spec.actions || !Array.isArray(spec.actions)) {
-     console.warn("[Canonicalize] spec.actions missing, defaulting to []", { toolId: spec.id });
-     spec.actions = [];
+    console.warn("[Canonicalize] spec.actions missing, defaulting to []", { toolId: spec.id });
+    spec.actions = [];
   }
   if (!spec.workflows || !Array.isArray(spec.workflows)) {
-      spec.workflows = [];
+    spec.workflows = [];
   }
   if (!spec.triggers || !Array.isArray(spec.triggers)) {
-      spec.triggers = [];
+    spec.triggers = [];
   }
   if (!spec.views || !Array.isArray(spec.views)) {
-      spec.views = [];
+    spec.views = [];
   }
   // Handle state.reducers separately as it's nested
   if (spec.state && (!spec.state.reducers || !Array.isArray(spec.state.reducers))) {
-      spec.state.reducers = [];
+    spec.state.reducers = [];
   }
   if (!spec.description || spec.description.length === 0) {
     spec.description = spec.purpose ?? "Tool description";
