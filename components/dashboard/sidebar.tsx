@@ -24,9 +24,11 @@ import {
 export function Sidebar({
   className,
   role,
+  style,
 }: {
   className?: string;
   role: OrgRole;
+  style?: React.CSSProperties;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -203,6 +205,7 @@ export function Sidebar({
 
   return (
     <aside
+      style={style}
       className={cn(
         "flex h-full w-64 flex-col border-r border-border/60 bg-background/50 backdrop-blur-sm",
         className,
@@ -318,15 +321,21 @@ export function Sidebar({
               }
 
               return (
-                <div key={project.id} className="group relative">
+                <div
+                  key={project.id}
+                  className={cn(
+                    "group relative rounded-lg transition-all duration-200",
+                    active
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    isInvalid ? "opacity-50" : ""
+                  )}
+                >
                   <Link
                     href={`/dashboard/projects/${project.id}`}
                     className={cn(
-                      "truncate rounded-lg px-3 py-2 text-sm transition-all duration-200 flex items-center gap-2 block pr-14",
-                      active
-                        ? "bg-accent text-accent-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                      isInvalid ? "opacity-50 pointer-events-none" : "",
+                      "flex w-full items-center gap-2 px-3 py-2 text-sm truncate pr-16", // pr-16 reserves space for actions so text wraps/truncates nicely
+                      isInvalid ? "pointer-events-none" : ""
                     )}
                     aria-disabled={isInvalid}
                   >
@@ -338,36 +347,45 @@ export function Sidebar({
                       </span>
                     ) : null}
                   </Link>
+
                   {/* Hover Actions */}
                   <div className={cn(
-                    "absolute right-1 top-1/2 -translate-y-1/2 hidden items-center gap-0.5 bg-transparent",
-                    "group-hover:flex",
-                    active ? "flex" : "" // Show on active item too for better UX
+                    "absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden items-center justify-end",
+                    "group-hover:flex focus-within:flex",
+                    active ? "flex" : ""
                   )}>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        startRename(project);
-                      }}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-red-500"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        confirmDelete(project.id);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    {/* Action container with glass effect */}
+                    <div className={cn(
+                      "flex items-center gap-0.5 rounded-md border border-border/5 bg-background/50 p-0.5 shadow-sm backdrop-blur-md",
+                      active ? "bg-accent-foreground/5" : "bg-background/80"
+                    )}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          startRename(project);
+                        }}
+                        title="Rename chat"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          confirmDelete(project.id);
+                        }}
+                        title="Delete chat"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
               );
