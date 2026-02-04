@@ -84,6 +84,22 @@ export async function testIntegrationConnection({
           if (!res.ok) throw new Error(`Notion API returned ${res.status}`);
           break;
         }
+        case "linear": {
+          const res = await fetch("https://api.linear.app/graphql", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              query: `query { viewer { id } }`,
+            }),
+          });
+          if (!res.ok) throw new Error(`Linear API returned ${res.status}`);
+          const data = await res.json();
+          if (data.errors) throw new Error(`Linear API query failed: ${JSON.stringify(data.errors)}`);
+          break;
+        }
         default:
           throw new Error(`No test implemented for integration: ${integrationId}`);
       }

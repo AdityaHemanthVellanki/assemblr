@@ -2,13 +2,14 @@ create table if not exists public.integration_schemas (
   id uuid default gen_random_uuid() primary key,
   org_id uuid not null references public.organizations(id) on delete cascade,
   integration_id text not null,
-  resource text not null,
+  resource text not null,      -- Legacy/Redundant but required by current DB
+  resource_type text not null, -- The type of resource: issues, projects, cycles, teams, etc.
   schema jsonb not null, -- Stores DiscoveredSchema structure
   last_discovered_at timestamptz default now(),
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   
-  unique(org_id, integration_id, resource)
+  unique(org_id, integration_id, resource_type)
 );
 
 alter table public.integration_schemas enable row level security;

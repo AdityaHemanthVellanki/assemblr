@@ -212,8 +212,14 @@ export function Sidebar({
         className="flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80"
         onClick={() => router.push('/app/chat')}
       >
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600">
-          <span className="text-xs font-bold text-white">A</span>
+        <div className="relative h-10 w-10">
+          <Image
+            src="/images/logo-icon.png"
+            alt={APP_NAME}
+            fill
+            className="object-contain"
+            priority
+          />
         </div>
         <span className="text-base font-semibold text-foreground">{APP_NAME}</span>
       </div>

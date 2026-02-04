@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useCases, useCaseCategories } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
 import { Button } from "@/components/ui/button";
@@ -70,11 +71,16 @@ export default function PublicUseCasesPage() {
             {/* Navigation Header */}
             <header className="fixed top-0 left-0 right-0 z-50 border-b border-border/30 bg-background/80 backdrop-blur-xl">
                 <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-                    <Link href="/" className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600">
-                            <span className="text-sm font-bold text-white">A</span>
+                    <Link href="/" className="flex items-center gap-2 group">
+                        <div className="relative h-8 w-8 transition-transform group-hover:scale-105">
+                            <Image
+                                src="/images/logo-icon.png"
+                                alt="Assemblr Logo"
+                                fill
+                                className="object-contain"
+                            />
                         </div>
-                        <span className="text-lg font-semibold">Assemblr</span>
+                        <span className="text-lg font-semibold tracking-tight">Assemblr</span>
                     </Link>
                     <div className="flex items-center gap-6">
                         <Link
@@ -112,8 +118,8 @@ export default function PublicUseCasesPage() {
                                 key={category}
                                 onClick={() => setActiveCategory(category)}
                                 className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors ${activeCategory === category
-                                        ? "bg-foreground text-background"
-                                        : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                    ? "bg-foreground text-background"
+                                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                                     }`}
                             >
                                 {category}
