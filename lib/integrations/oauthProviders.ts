@@ -60,8 +60,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     tokenUrl: "https://oauth2.googleapis.com/token",
     scopes: [
       "openid",
-      "email",
-      "profile",
+      // Use full URLs for email/profile since Google returns these in the token response
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/drive",
       "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/spreadsheets",

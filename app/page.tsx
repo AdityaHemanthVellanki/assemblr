@@ -10,6 +10,7 @@ import { createBrowserClient } from "@supabase/ssr";
 import { Button } from "@/components/ui/button";
 import { useCases } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
+import { ProductSimulation } from "@/components/landing/product-simulation";
 
 // --- Utilities ---
 
@@ -160,9 +161,11 @@ export default function Home() {
               <EnterSystemButton>Start Building</EnterSystemButton>
             </m.div>
 
-            {/* Hero Visual abstract placeholder - subtle glow */}
             <div className="absolute top-[60%] left-1/2 -translate-x-1/2 w-[90%] max-w-4xl h-32 bg-gradient-to-t from-blue-500/10 to-transparent blur-3xl opacity-50 pointer-events-none" />
           </section>
+
+          {/* Product Simulation Demo */}
+          <ProductSimulation />
 
           {/* Use Cases Section */}
           <section className="relative mx-auto max-w-7xl px-6 py-20 sm:py-24 border-t border-border/40 bg-gradient-to-b from-background/50 to-background">

@@ -13,11 +13,22 @@ export async function loadIntegrationConnections(input: {
   orgId: string;
 }) {
   const supabase = input.supabase as IntegrationConnectionsQuery;
-  const { data, error } = await supabase
+
+  // First, log all connections for this org to debug status issues
+  const { data: allConnections } = await (supabase as any)
+    .from("integration_connections")
+    .select("integration_id, status")
+    .eq("org_id", input.orgId);
+  console.log(`[loadIntegrationConnections] All connections for org ${input.orgId}:`,
+    allConnections?.map((c: any) => `${c.integration_id}:${c.status}`).join(', ') || 'NONE');
+
+  // Query connections that are usable for tool execution
+  // 'schema_failed' connections still have valid tokens and can be used
+  const { data, error } = await (supabase as any)
     .from("integration_connections")
     .select("integration_id")
     .eq("org_id", input.orgId)
-    .eq("status", "active");
+    .in("status", ["active", "schema_failed"]);
 
   if (error) {
     console.error("Failed to load integration connections", error);

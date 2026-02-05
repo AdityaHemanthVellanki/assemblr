@@ -207,7 +207,7 @@ export function Sidebar({
     <aside
       style={style}
       className={cn(
-        "flex h-full w-64 flex-col border-r border-border/60 bg-background/50 backdrop-blur-sm",
+        "flex h-full flex-col border-r border-border/60 bg-background/50 backdrop-blur-sm",
         className,
       )}
     >
@@ -288,8 +288,8 @@ export function Sidebar({
 
       </div>
 
-      <ScrollArea className="flex-1 px-3">
-        <div className="flex flex-col gap-2 py-2">
+      <ScrollArea className="flex-1 w-full px-3">
+        <div className="flex w-full flex-col gap-2 py-2">
           {projectsLoading && projects.length === 0 ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
           ) : projectsError ? (
@@ -324,7 +324,7 @@ export function Sidebar({
                 <div
                   key={project.id}
                   className={cn(
-                    "group relative rounded-lg transition-all duration-200",
+                    "group relative rounded-lg transition-all duration-200 w-full overflow-hidden",
                     active
                       ? "bg-accent text-accent-foreground font-medium"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",

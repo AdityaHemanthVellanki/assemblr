@@ -12,12 +12,12 @@ export class GoogleRuntime implements IntegrationRuntime {
   }
 
   checkPermissions(capabilityId: string, userPermissions: Permission[]) {
-      const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
-      const access = WRITE_CAPABILITIES.has(capabilityId) ? "write" : "read";
-      const allowed = checkPermission(perms, this.id, capabilityId, access);
-      if (!allowed) {
-          throw new PermissionDeniedError(this.id, capabilityId);
-      }
+    const perms = userPermissions && userPermissions.length > 0 ? userPermissions : DEV_PERMISSIONS;
+    const access = WRITE_CAPABILITIES.has(capabilityId) ? "write" : "read";
+    const allowed = checkPermission(perms, this.id, capabilityId, access);
+    if (!allowed) {
+      throw new PermissionDeniedError(this.id, capabilityId);
+    }
   }
 
   async resolveContext(token: string): Promise<Record<string, any>> {
@@ -38,88 +38,88 @@ export class GoogleRuntime implements IntegrationRuntime {
         const { token } = context;
         const maxResults = params.maxResults ?? params.limit ?? 10;
         const q = params.q || "";
-        
+
         // Gmail API requires query params
         const queryParams = new URLSearchParams();
         queryParams.append("maxResults", String(maxResults));
-        
+
         // Fix: Default to INBOX to avoid clutter if no query provided
         // Also ensure "latest" semantics are respected by API defaults (reverse chron)
         if (q) {
-             queryParams.append("q", q);
+          queryParams.append("q", q);
         } else {
-             queryParams.append("q", "label:INBOX");
+          queryParams.append("q", "label:INBOX");
         }
 
         const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?${queryParams.toString()}`;
-        
+
         const startTime = Date.now();
         let status: "success" | "error" = "success";
-        
+
         try {
-            const res = await fetch(url, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            
-            if (!res.ok) {
-                status = "error";
-                const errorBody = await res.text();
-                throw new Error(`Gmail API error: ${res.status} ${res.statusText} - ${errorBody}`);
-            }
-            
-            const data = await res.json();
-            
-            const messages = data.messages || [];
-            if (messages.length > 0) {
-                const detailed = await Promise.all(messages.slice(0, maxResults).map(async (m: any) => {
-                    try {
-                        const dRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}`, {
-                             headers: { Authorization: `Bearer ${token}` }
-                        });
-                        if (dRes.ok) {
-                            const msg = await dRes.json();
-                            const headers = msg.payload?.headers || [];
-                            const getHeader = (name: string) => headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
-                            
-                            // Return flat structure for UI
-                            return {
-                                id: msg.id,
-                                threadId: msg.threadId,
-                                snippet: msg.snippet,
-                                from: getHeader("From"),
-                                subject: getHeader("Subject"),
-                                date: getHeader("Date"),
-                                internalDate: msg.internalDate
-                            };
-                        }
-                        return m;
-                    } catch { return m; }
-                }));
-                
-                // Fix: Enforce sort by internalDate DESC to ensure "latest" means latest
-                detailed.sort((a: any, b: any) => {
-                    const dateA = a.internalDate ? Number(a.internalDate) : 0;
-                    const dateB = b.internalDate ? Number(b.internalDate) : 0;
-                    return dateB - dateA;
-                });
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
 
-                console.log("[RENDER] Records passed to UI:", detailed.length);
-                return detailed;
-            }
-
-            return messages;
-        } catch (e) {
+          if (!res.ok) {
             status = "error";
-            throw e;
-        } finally {
-            trace.logIntegrationAccess({
-                integrationId: "google",
-                capabilityId: "google_gmail_list",
-                params,
-                status,
-                latency_ms: Date.now() - startTime,
-                metadata: { url }
+            const errorBody = await res.text();
+            throw new Error(`Gmail API error: ${res.status} ${res.statusText} - ${errorBody}`);
+          }
+
+          const data = await res.json();
+
+          const messages = data.messages || [];
+          if (messages.length > 0) {
+            const detailed = await Promise.all(messages.slice(0, maxResults).map(async (m: any) => {
+              try {
+                const dRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}`, {
+                  headers: { Authorization: `Bearer ${token}` }
+                });
+                if (dRes.ok) {
+                  const msg = await dRes.json();
+                  const headers = msg.payload?.headers || [];
+                  const getHeader = (name: string) => headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+
+                  // Return flat structure for UI
+                  return {
+                    id: msg.id,
+                    threadId: msg.threadId,
+                    snippet: msg.snippet,
+                    from: getHeader("From"),
+                    subject: getHeader("Subject"),
+                    date: getHeader("Date"),
+                    internalDate: msg.internalDate
+                  };
+                }
+                return m;
+              } catch { return m; }
+            }));
+
+            // Fix: Enforce sort by internalDate DESC to ensure "latest" means latest
+            detailed.sort((a: any, b: any) => {
+              const dateA = a.internalDate ? Number(a.internalDate) : 0;
+              const dateB = b.internalDate ? Number(b.internalDate) : 0;
+              return dateB - dateA;
             });
+
+            console.log("[RENDER] Records passed to UI:", detailed.length);
+            return detailed;
+          }
+
+          return messages;
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_gmail_list",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
         }
       }
     };
@@ -130,47 +130,70 @@ export class GoogleRuntime implements IntegrationRuntime {
       integrationId: "google",
       paramsSchema: z.object({
         pageSize: z.number().optional(),
-        q: z.string().optional(),
-        orderBy: z.string().optional(),
+        q: z.string().optional().nullable(),
+        orderBy: z.string().optional().nullable(),
+        maxResults: z.number().optional(), // alias for pageSize
       }),
       execute: async (params, context, trace) => {
         const { token } = context;
-        const pageSize = params.pageSize || 100;
-        const q = params.q || "";
-        const orderBy = params.orderBy || "";
+        console.log('[google_drive_list] Raw params received:', JSON.stringify(params));
+        const pageSize = params.pageSize || params.maxResults || 25;
+
+        // Only use q if it's a valid Drive query syntax
+        // Valid queries contain operators like: contains, =, !=, <, >, <=, >=, in, and, or, not
+        // Also valid: mimeType, name, fullText, modifiedTime, viewedByMeTime, trashed, starred, parents
+        let q: string | undefined = undefined;
+        if (typeof params.q === 'string' && params.q.trim()) {
+          const rawQ = params.q.trim();
+          // Check if it looks like a valid Drive query (contains known operators or field names)
+          const validQueryPattern = /(contains|mimeType|name\s*=|fullText|modifiedTime|viewedByMeTime|trashed|starred|parents|and\s|or\s|not\s|!=|<=|>=|<|>|=)/i;
+          if (validQueryPattern.test(rawQ)) {
+            q = rawQ;
+          } else {
+            // Natural language query like "my files" - skip it, let API return all files
+            console.log('[google_drive_list] Skipping invalid q param (natural language):', rawQ);
+          }
+        }
+
+        const orderBy = typeof params.orderBy === 'string' && params.orderBy.trim() ? params.orderBy.trim() : undefined;
+        console.log('[google_drive_list] Parsed q:', q, 'orderBy:', orderBy, 'pageSize:', pageSize);
 
         const queryParams = new URLSearchParams();
         queryParams.append("pageSize", String(pageSize));
+        // Add fields for richer response
+        queryParams.append("fields", "files(id,name,mimeType,modifiedTime,createdTime,size,owners,webViewLink)");
         if (q) queryParams.append("q", q);
         if (orderBy) queryParams.append("orderBy", orderBy);
 
         const url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`;
+        console.log('[google_drive_list] REQUESTING URL:', url);
 
         const startTime = Date.now();
         let status: "success" | "error" = "success";
 
         try {
-            const res = await fetch(url, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            if (!res.ok) {
-                status = "error";
-                throw new Error(`Google Drive API error: ${res.statusText}`);
-            }
-            const data = await res.json();
-            return data.files || [];
-        } catch (e) {
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!res.ok) {
             status = "error";
-            throw e;
+            const errorBody = await res.text();
+            throw new Error(`Google Drive API error: ${res.status} ${res.statusText} - ${errorBody}`);
+          }
+          const data = await res.json();
+          return data.files || [];
+        } catch (e) {
+          status = "error";
+          throw e;
         } finally {
-            trace.logIntegrationAccess({
-                integrationId: "google",
-                capabilityId: "google_drive_list",
-                params,
-                status,
-                latency_ms: Date.now() - startTime,
-                metadata: { url }
-            });
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_drive_list",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
         }
       }
     };
@@ -189,24 +212,24 @@ export class GoogleRuntime implements IntegrationRuntime {
         const fields = params.fields || "id,name,owners,modifiedTime,createdTime,webViewLink,permissions";
         const url = `https://www.googleapis.com/drive/v3/files/${params.fileId}?fields=${encodeURIComponent(fields)}`;
         try {
-            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-            if (!res.ok) {
-                status = "error";
-                throw new Error(`Google Drive API error: ${res.statusText}`);
-            }
-            return await res.json();
-        } catch (e) {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
             status = "error";
-            throw e;
+            throw new Error(`Google Drive API error: ${res.statusText}`);
+          }
+          return await res.json();
+        } catch (e) {
+          status = "error";
+          throw e;
         } finally {
-            trace.logIntegrationAccess({
-                integrationId: "google",
-                capabilityId: "google_drive_file_get",
-                params,
-                status,
-                latency_ms: Date.now() - startTime,
-                metadata: { url }
-            });
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_drive_file_get",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
         }
       }
     };
@@ -225,25 +248,104 @@ export class GoogleRuntime implements IntegrationRuntime {
         const pageSize = params.pageSize || 100;
         const url = `https://www.googleapis.com/drive/v3/files/${params.fileId}/permissions?pageSize=${pageSize}`;
         try {
-            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-            if (!res.ok) {
-                status = "error";
-                throw new Error(`Google Drive API error: ${res.statusText}`);
-            }
-            const data = await res.json();
-            return data.permissions || [];
-        } catch (e) {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
             status = "error";
-            throw e;
+            throw new Error(`Google Drive API error: ${res.statusText}`);
+          }
+          const data = await res.json();
+          return data.permissions || [];
+        } catch (e) {
+          status = "error";
+          throw e;
         } finally {
-            trace.logIntegrationAccess({
-                integrationId: "google",
-                capabilityId: "google_drive_permissions_list",
-                params,
-                status,
-                latency_ms: Date.now() - startTime,
-                metadata: { url }
-            });
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_drive_permissions_list",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
+        }
+      }
+    };
+
+    // Google Calendar List Events
+    this.capabilities["google_calendar_list"] = {
+      id: "google_calendar_list",
+      integrationId: "google",
+      paramsSchema: z.object({
+        calendarId: z.string().optional(),
+        timeMin: z.string().optional(),
+        timeMax: z.string().optional(),
+        maxResults: z.number().optional(),
+        orderBy: z.string().optional(),
+        singleEvents: z.boolean().optional(),
+      }),
+      execute: async (params, context, trace) => {
+        const { token } = context;
+        const startTime = Date.now();
+        let status: "success" | "error" = "success";
+
+        const calendarId = params.calendarId || "primary";
+        const maxResults = params.maxResults || 25;
+
+        const queryParams = new URLSearchParams();
+        queryParams.append("maxResults", String(maxResults));
+
+        // Default to upcoming events if no time constraints
+        if (params.timeMin) {
+          queryParams.append("timeMin", params.timeMin);
+        } else {
+          queryParams.append("timeMin", new Date().toISOString());
+        }
+        if (params.timeMax) queryParams.append("timeMax", params.timeMax);
+        if (params.orderBy) queryParams.append("orderBy", params.orderBy);
+
+        // Default to expanding recurring events for easier viewing
+        queryParams.append("singleEvents", params.singleEvents !== false ? "true" : "false");
+        queryParams.append("orderBy", "startTime");
+
+        const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${queryParams.toString()}`;
+
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
+            status = "error";
+            const errorBody = await res.text();
+            throw new Error(`Google Calendar API error: ${res.status} ${res.statusText} - ${errorBody}`);
+          }
+          const data = await res.json();
+
+          // Transform to a flatter structure for UI
+          const events = (data.items || []).map((event: any) => ({
+            id: event.id,
+            summary: event.summary || "(no title)",
+            description: event.description,
+            start: event.start?.dateTime || event.start?.date,
+            end: event.end?.dateTime || event.end?.date,
+            location: event.location,
+            htmlLink: event.htmlLink,
+            status: event.status,
+            organizer: event.organizer?.email,
+            attendees: event.attendees?.map((a: any) => a.email),
+            hangoutLink: event.hangoutLink,
+          }));
+
+          return events;
+        } catch (e) {
+          status = "error";
+          throw e;
+        } finally {
+          trace.logIntegrationAccess({
+            integrationId: "google",
+            capabilityId: "google_calendar_list",
+            params,
+            status,
+            latency_ms: Date.now() - startTime,
+            metadata: { url }
+          });
         }
       }
     };

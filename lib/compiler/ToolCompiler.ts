@@ -152,6 +152,16 @@ function buildParams(
   if (capabilityId === "linear_teams_list") {
     return {};
   }
+  if (capabilityId === "google_calendar_list") {
+    return {
+      calendarId: filters.calendarId,
+      timeMin: filters.timeMin,
+      timeMax: filters.timeMax,
+      maxResults: limit,
+      orderBy: filters.orderBy,
+      singleEvents: filters.singleEvents,
+    };
+  }
   return { ...filters, limit };
 }
 

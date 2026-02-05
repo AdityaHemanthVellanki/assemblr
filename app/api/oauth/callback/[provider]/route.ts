@@ -84,30 +84,30 @@ export async function GET(
   // 2. Retrieve Credentials from Env Vars (Hosted OAuth Only)
   const idKey = `${providerId.toUpperCase()}_CLIENT_ID`;
   const secretKey = `${providerId.toUpperCase()}_CLIENT_SECRET`;
-  
+
   // We use the validated env here, not process.env
   let clientId: string | undefined;
   let clientSecret: string | undefined;
 
   switch (providerId) {
-    case "github": 
-      clientId = env.GITHUB_CLIENT_ID; 
+    case "github":
+      clientId = env.GITHUB_CLIENT_ID;
       clientSecret = env.GITHUB_CLIENT_SECRET;
       break;
-    case "slack": 
-      clientId = env.SLACK_CLIENT_ID; 
+    case "slack":
+      clientId = env.SLACK_CLIENT_ID;
       clientSecret = env.SLACK_CLIENT_SECRET;
       break;
-    case "notion": 
-      clientId = env.NOTION_CLIENT_ID; 
+    case "notion":
+      clientId = env.NOTION_CLIENT_ID;
       clientSecret = env.NOTION_CLIENT_SECRET;
       break;
-    case "linear": 
-      clientId = env.LINEAR_CLIENT_ID; 
+    case "linear":
+      clientId = env.LINEAR_CLIENT_ID;
       clientSecret = env.LINEAR_CLIENT_SECRET;
       break;
-    case "google": 
-      clientId = env.GOOGLE_CLIENT_ID; 
+    case "google":
+      clientId = env.GOOGLE_CLIENT_ID;
       clientSecret = env.GOOGLE_CLIENT_SECRET;
       break;
   }
@@ -133,7 +133,7 @@ export async function GET(
       const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
       headers["Authorization"] = `Basic ${auth}`;
       headers["Content-Type"] = "application/json";
-      
+
       body = JSON.stringify({
         grant_type: "authorization_code",
         code: code,
@@ -142,7 +142,7 @@ export async function GET(
     } else if (providerId === "linear") {
       // Linear requires application/x-www-form-urlencoded with client credentials in body
       headers["Content-Type"] = "application/x-www-form-urlencoded";
-      
+
       const params = new URLSearchParams();
       params.append("grant_type", "authorization_code");
       params.append("code", code);
@@ -275,8 +275,8 @@ export async function GET(
 
       const gqlData = await gqlRes.json();
       if (gqlData.errors) {
-         console.error("Linear GraphQL errors", gqlData.errors);
-         return redirectWithError("Linear API Error", storedState.redirectPath);
+        console.error("Linear GraphQL errors", gqlData.errors);
+        return redirectWithError("Linear API Error", storedState.redirectPath);
       }
 
       const org = gqlData.data?.viewer?.organization;
@@ -376,6 +376,12 @@ export async function GET(
       return NextResponse.json({ error: "Failed to save connection" }, { status: 500 });
     }
 
+    console.log(`[OAuth Callback] SUCCESS: Stored credentials for ${providerId} (org: ${storedState.orgId})`);
+    console.log(`[OAuth Callback] Token has refresh_token: ${!!tokens.refresh_token}`);
+    console.log(`[OAuth Callback] Token expires_at: ${expiresAt}`);
+    console.log(`[OAuth Callback] Granted scopes: ${grantedScopes.join(', ')}`);
+
+
     await supabase.from("org_integrations").upsert(
       {
         org_id: storedState.orgId,
@@ -408,10 +414,10 @@ export async function GET(
     // The user explicitly requested "Run a live test API call" and "Persist integration state: connected: true, healthy: true | false".
     // We already have identity info which proves connectivity, but let's run the formal health check to populate integration_health table.
     try {
-        await testIntegrationConnection({ orgId: storedState.orgId, integrationId: providerId });
+      await testIntegrationConnection({ orgId: storedState.orgId, integrationId: providerId });
     } catch (healthErr) {
-        console.warn("Health check failed during callback (non-fatal for auth)", healthErr);
-        // We still consider it "active" because we got tokens, but health table will show error.
+      console.warn("Health check failed during callback (non-fatal for auth)", healthErr);
+      // We still consider it "active" because we got tokens, but health table will show error.
     }
 
     // 5. Trigger Schema Discovery
@@ -441,7 +447,7 @@ export async function GET(
         event_type: "schema_discovery_failed",
         metadata: { error: "Schema discovery failed" },
       });
-        
+
       return redirectWithError("Schema discovery failed", storedState.redirectPath);
     }
 
@@ -457,7 +463,7 @@ export async function GET(
           // Ensure resumeId is passed to the frontend
           const sep = redirectPath.includes("?") ? "&" : "?";
           if (!redirectPath.includes("resumeId=")) {
-             redirectPath = `${redirectPath}${sep}resumeId=${storedState.resumeId}`;
+            redirectPath = `${redirectPath}${sep}resumeId=${storedState.resumeId}`;
           }
         }
       } catch (err) {

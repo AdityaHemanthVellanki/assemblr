@@ -109,7 +109,9 @@ export async function GET() {
     const connectionStatus = conn?.status;
     const isPending = connectionStatus === "pending" || connectionStatus === "pending_setup" || statusFromOrg === "pending";
     const isError = connectionStatus === "error" || connectionStatus === "reauth_required" || statusFromOrg === "error" || health?.status === "error";
-    const isMissingPermissions = statusFromOrg === "missing_permissions" || missingScopes.length > 0;
+    // Use dynamically computed missingScopes, not stale DB status
+    // This ensures reconnecting with correct scopes properly updates displayed status
+    const isMissingPermissions = missingScopes.length > 0;
     const isActive = connectionStatus === "active" || statusFromOrg === "active";
     const isRevoked = statusFromOrg === "revoked";
     return {
@@ -182,7 +184,7 @@ export async function POST(req: Request) {
   }
 
   const supabase = await createSupabaseServerClient();
-  
+
   // Upsert connection
   const { error: upsertError } = await supabase.from("integration_connections").upsert({
     org_id: ctx.orgId,
@@ -219,41 +221,41 @@ export async function POST(req: Request) {
     const test = await testIntegrationConnection({ orgId: ctx.orgId, integrationId });
     if (test.status === "error") {
       // Revert status to error
-       await supabase.from("integration_connections").update({ 
-           status: "error" 
-       }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
+      await supabase.from("integration_connections").update({
+        status: "error"
+      }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
 
-       await supabase.from("org_integrations").update({
-         status: "error",
-         updated_at: new Date().toISOString(),
-       }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
+      await supabase.from("org_integrations").update({
+        status: "error",
+        updated_at: new Date().toISOString(),
+      }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
 
-       await supabase.from("integration_audit_logs").insert({
-         org_id: ctx.orgId,
-         integration_id: integrationId,
-         event_type: "connection_failed",
-         metadata: { error: test.error?.message ?? "Connection failed" },
-       });
+      await supabase.from("integration_audit_logs").insert({
+        org_id: ctx.orgId,
+        integration_id: integrationId,
+        event_type: "connection_failed",
+        metadata: { error: test.error?.message ?? "Connection failed" },
+      });
 
-       return NextResponse.json({ error: test.error?.message || "Connection failed" }, { status: 400 });
+      return NextResponse.json({ error: test.error?.message || "Connection failed" }, { status: 400 });
     } else {
-        // Success
-       await supabase.from("integration_connections").update({ 
-           status: "active" 
-       }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
+      // Success
+      await supabase.from("integration_connections").update({
+        status: "active"
+      }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
 
-       await supabase.from("org_integrations").update({
-         status: "active",
-         connected_at: new Date().toISOString(),
-         updated_at: new Date().toISOString(),
-       }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
+      await supabase.from("org_integrations").update({
+        status: "active",
+        connected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq("org_id", ctx.orgId).eq("integration_id", integrationId);
 
-       await supabase.from("integration_audit_logs").insert({
-         org_id: ctx.orgId,
-         integration_id: integrationId,
-         event_type: "connection_succeeded",
-         metadata: {},
-       });
+      await supabase.from("integration_audit_logs").insert({
+        org_id: ctx.orgId,
+        integration_id: integrationId,
+        event_type: "connection_succeeded",
+        metadata: {},
+      });
     }
   }
 

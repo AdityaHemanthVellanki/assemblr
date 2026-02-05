@@ -44,20 +44,23 @@ export async function runCheckIntegrationReadiness(
     ...(spec.integrations || []).map((i) => i.id),
     ...(spec.actions || []).map((a) => a.integrationId).filter(Boolean) as string[],
   ]));
-  
+
   if (requiredIntegrations.length === 0) {
     return { status: "completed" };
   }
 
   // We use admin client to bypass RLS for this system check
   const adminClient = createSupabaseAdminClient();
-  
+
   // Load active connections
   const connections = await loadIntegrationConnections({
     supabase: adminClient,
     orgId: orgId,
   });
-  
+
+  console.log(`[CheckIntegrationReadiness] Required integrations: ${requiredIntegrations.join(', ')}`);
+  console.log(`[CheckIntegrationReadiness] Found ${connections.length} active connections for org ${orgId}:`, connections.map(c => c.integration_id).join(', '));
+
   const connectedIds = new Set(connections.map((c) => c.integration_id));
   const missingIntegrations: string[] = [];
   const allBlockingActions: string[] = [];
@@ -65,12 +68,12 @@ export async function runCheckIntegrationReadiness(
   for (const integrationId of requiredIntegrations) {
     if (!connectedIds.has(integrationId)) {
       missingIntegrations.push(integrationId);
-      
+
       // Find actions that require this integration
       const blockingActions = spec.actions
         .filter((a) => a.integrationId === integrationId)
         .map((a) => a.name);
-      
+
       allBlockingActions.push(...blockingActions);
     }
   }

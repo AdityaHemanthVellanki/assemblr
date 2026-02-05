@@ -41,7 +41,7 @@ export async function sendChatMessage(
       // Auto-resolve org (creates one if missing)
       const buildContext = await resolveBuildContext(userId);
       orgId = buildContext.orgId;
-      
+
       console.log("[ToolCreation] Context Resolved:", { orgId, userId });
 
       const adminSupabase = createSupabaseAdminClient();
@@ -64,18 +64,18 @@ export async function sendChatMessage(
     // Load Flow: Verify access
     const { ctx, error } = await requireOrgMemberOptional();
     if (!ctx) return { error: error?.message ?? "Unauthorized" };
-    
+
     // Verify tool ownership/access
     const { data: project, error: loadError } = await supabase
-        .from("projects")
-        .select("org_id, spec")
-        .eq("id", effectiveToolId)
-        .single();
-        
+      .from("projects")
+      .select("org_id, spec")
+      .eq("id", effectiveToolId)
+      .single();
+
     if (loadError || !project) {
-        return { error: "Project not found or access denied" };
+      return { error: "Project not found or access denied" };
     }
-    
+
     orgId = project.org_id;
     if (!effectiveSpec) effectiveSpec = project.spec as any;
   }
@@ -121,33 +121,33 @@ export async function sendChatMessage(
   }
   if (existingExecution) {
     if (options?.forceRetry) {
-       console.log(`[Chat] Forcing retry for execution ${existingExecution.id}`);
-       
-       // 1. Reset Execution State
-       await updateExecution(existingExecution.id, {
-         status: "created",
-         error: null,
-         lockToken: null,
-         lockAcquiredAt: null,
-         toolVersionId: null,
-       });
-       
-       // 2. Reset Tool State (Archive Active Version)
-       // This allows the compiler to run again instead of redirecting to runtime
-       const adminSupabase = createSupabaseAdminClient();
-       
-       // Get current active version to archive it? 
-       // For now, just unlinking it from the project is enough to trigger recompilation.
-       // The compiler will create a NEW version and promote it.
-       await (adminSupabase.from("projects") as any).update({ 
-            active_version_id: null,
-            status: "DRAFT", // Reset to DRAFT to allow compiler to run
-            compiled_at: null // Clear legacy flag too
-        }).eq("id", effectiveToolId);
+      console.log(`[Chat] Forcing retry for execution ${existingExecution.id}`);
 
-       // Update local reference to fall through to "created" handling below
-       existingExecution.status = "created"; 
-       execution = existingExecution;
+      // 1. Reset Execution State
+      await updateExecution(existingExecution.id, {
+        status: "created",
+        error: null,
+        lockToken: null,
+        lockAcquiredAt: null,
+        toolVersionId: null,
+      });
+
+      // 2. Reset Tool State (Archive Active Version)
+      // This allows the compiler to run again instead of redirecting to runtime
+      const adminSupabase = createSupabaseAdminClient();
+
+      // Get current active version to archive it? 
+      // For now, just unlinking it from the project is enough to trigger recompilation.
+      // The compiler will create a NEW version and promote it.
+      await (adminSupabase.from("projects") as any).update({
+        active_version_id: null,
+        status: "DRAFT", // Reset to DRAFT to allow compiler to run
+        compiled_at: null // Clear legacy flag too
+      }).eq("id", effectiveToolId);
+
+      // Update local reference to fall through to "created" handling below
+      existingExecution.status = "created";
+      execution = existingExecution;
     } else if (existingExecution.status === "created") {
       execution = existingExecution;
     } else {
@@ -220,7 +220,7 @@ export async function sendChatMessage(
         orgId,
         firstUserMessage: message,
       });
-    } catch {}
+    } catch { }
 
     try {
       execution = await createExecution({
@@ -237,6 +237,10 @@ export async function sendChatMessage(
   }
 
   // 4. Start Tool Logic (Async)
+  // FIX: Determine mode based on execution status, not toolId presence
+  // Since we auto-create toolId early, toolId will always exist here.
+  // The authoritative source of truth is execution.status.
+  const mode = execution.status === "created" ? "create" as const : "runtime" as const;
   const input = {
     toolId: effectiveToolId,
     userMessage: message,
@@ -246,7 +250,7 @@ export async function sendChatMessage(
     userId,
     executionId: execution.id,
     connectedIntegrationIds,
-    mode: !toolId ? "create" as const : "runtime" as const,
+    mode,
   };
 
   let result;
@@ -261,17 +265,17 @@ export async function sendChatMessage(
         console.error("[CompilerPipeline] Critical Failure:", err);
         // User-friendly error reporting instead of 500
         return {
-            explanation: "Could not generate a runnable tool from this request.",
-            message: { 
-                type: "text", 
-                content: `I encountered a problem while building your tool.\n\n**Error:** ${err.message}\n\nPlease try again with a more specific request.` 
-            },
-            metadata: { 
-                status: "failed",
-                error: true,
-                originalError: err.message
-            },
-            toolId: effectiveToolId
+          explanation: "Could not generate a runnable tool from this request.",
+          message: {
+            type: "text",
+            content: `I encountered a problem while building your tool.\n\n**Error:** ${err.message}\n\nPlease try again with a more specific request.`
+          },
+          metadata: {
+            status: "failed",
+            error: true,
+            originalError: err.message
+          },
+          toolId: effectiveToolId
         };
       }
       break;
@@ -286,7 +290,7 @@ export async function sendChatMessage(
       } catch (err: any) {
         if (isIntegrationNotConnectedError(err)) {
           console.warn(`[RuntimePipeline] Integrations missing: ${err.integrationIds.join(", ")}`);
-          
+
           const missingIntegrations = err.integrationIds;
           const requiredIntegrations = missingIntegrations;
 
@@ -312,10 +316,10 @@ export async function sendChatMessage(
               executionId: execution.id,
               status: "awaiting_integration",
               integration_error: {
-                  type: "INTEGRATION_NOT_CONNECTED",
-                  integrationIds: err.integrationIds,
-                  requiredBy: err.requiredBy,
-                  blockingActions: err.blockingActions
+                type: "INTEGRATION_NOT_CONNECTED",
+                integrationIds: err.integrationIds,
+                requiredBy: err.requiredBy,
+                blockingActions: err.blockingActions
               }
             },
           };
@@ -323,17 +327,17 @@ export async function sendChatMessage(
 
         console.error("[RuntimePipeline] Critical Failure:", err);
         return {
-            explanation: "Runtime execution failed.",
-            message: { 
-                type: "text", 
-                content: `I encountered a problem while running your tool.\n\n**Error:** ${err.message}` 
-            },
-            metadata: { 
-                status: "failed",
-                error: true,
-                originalError: err.message
-            },
-            toolId: effectiveToolId
+          explanation: "Runtime execution failed.",
+          message: {
+            type: "text",
+            content: `I encountered a problem while running your tool.\n\n**Error:** ${err.message}`
+          },
+          metadata: {
+            status: "failed",
+            error: true,
+            originalError: err.message
+          },
+          toolId: effectiveToolId
         };
       }
       break;
@@ -359,16 +363,16 @@ export async function resetExecution(executionId: string) {
   if (!user) {
     return { error: "Unauthorized" };
   }
-  
+
   const execution = await getExecutionById(executionId);
   if (!execution) {
     return { error: "Execution not found" };
   }
-  
+
   if (execution.userId !== user.id) {
     return { error: "Unauthorized access to execution" };
   }
-  
+
   try {
     await updateExecution(executionId, {
       status: "created",
@@ -468,7 +472,7 @@ export async function resumeChatExecution(toolId: string, resumeId: string) {
   } catch (err: any) {
     if (isIntegrationNotConnectedError(err)) {
       console.warn(`[ResumePipeline] Integrations missing: ${err.integrationIds.join(", ")}`);
-      
+
       const missingIntegrations = err.integrationIds;
       const requiredIntegrations = missingIntegrations;
 
@@ -488,10 +492,10 @@ export async function resumeChatExecution(toolId: string, resumeId: string) {
           executionId: execution.id,
           status: "awaiting_integration",
           integration_error: {
-              type: "INTEGRATION_NOT_CONNECTED",
-              integrationIds: err.integrationIds,
-              requiredBy: err.requiredBy,
-              blockingActions: err.blockingActions
+            type: "INTEGRATION_NOT_CONNECTED",
+            integrationIds: err.integrationIds,
+            requiredBy: err.requiredBy,
+            blockingActions: err.blockingActions
           },
           prompt: resumeRow.original_prompt
         },

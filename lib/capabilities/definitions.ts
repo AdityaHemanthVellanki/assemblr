@@ -330,6 +330,13 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     constraints: { requiredFilters: ["presentationId"] },
   },
   {
+    id: "google_calendar_list",
+    integrationId: "google",
+    resource: "calendar",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["calendarId", "timeMin", "timeMax", "maxResults", "orderBy", "singleEvents"],
+  },
+  {
     id: "google_gmail_reply",
     integrationId: "google",
     resource: "gmail",

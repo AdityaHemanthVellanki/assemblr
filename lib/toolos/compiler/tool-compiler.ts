@@ -156,10 +156,10 @@ export class ToolCompiler {
     const isCompilerError = (error: any) =>
       Boolean(
         error &&
-          typeof error === "object" &&
-          error.type === "COMPILER_ERROR" &&
-          error.code &&
-          error.stage,
+        typeof error === "object" &&
+        error.type === "COMPILER_ERROR" &&
+        error.code &&
+        error.stage,
       );
     const runStage = async (
       stage: ToolCompilerStage,
@@ -227,7 +227,7 @@ export class ToolCompiler {
           return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
         } catch (error: any) {
           if (error.constructor.name === "IntegrationNotConnectedError" || error.type === "INTEGRATION_NOT_CONNECTED") {
-             throw error; // Propagate up to tool-chat.ts to handle UI modal
+            throw error; // Propagate up to tool-chat.ts to handle UI modal
           }
           throw error;
         }
@@ -247,7 +247,7 @@ export class ToolCompiler {
     if (!validation.success) {
       degraded = true;
       emitProgress({ stage: "validate-spec", status: "completed", message: "Validation failed" });
-      
+
       // CRITICAL: Validation is a hard gate. Do not return invalid specs.
       const errorDetail = validation.error.issues.map(e => `${e.path.join(".")}: ${e.message}`).join("; ");
       throw new Error(`ToolSpec validation failed: ${errorDetail}`);
@@ -306,12 +306,12 @@ function shouldSkipStage(stage: ToolCompilerStage, spec: ToolSystemSpec) {
 function mergeSpec(base: ToolSystemSpec, patch: Partial<ToolSystemSpec>): ToolSystemSpec {
   const nextState = patch.state
     ? {
-        ...base.state,
-        ...patch.state,
-        initial: { ...base.state.initial, ...(patch.state.initial ?? {}) },
-        reducers: patch.state.reducers ?? base.state.reducers,
-        graph: patch.state.graph ?? base.state.graph,
-      }
+      ...base.state,
+      ...patch.state,
+      initial: { ...base.state.initial, ...(patch.state.initial ?? {}) },
+      reducers: patch.state.reducers ?? base.state.reducers,
+      graph: patch.state.graph ?? base.state.graph,
+    }
     : base.state;
 
   return {
@@ -439,7 +439,7 @@ function ensureMinimumSpec(
   // This prevents "Schema Bleeding" where previous/hallucinated entities (like Repos) appear in Email tools.
   if (detectedIntegrations.length > 0) {
     const allowed = new Set(detectedIntegrations);
-    
+
     // Filter existing spec elements to match allowed domain
     if (spec.integrations.length > 0) {
       spec.integrations = spec.integrations.filter(i => allowed.has(i.id));
@@ -460,15 +460,15 @@ function ensureMinimumSpec(
         ? detectedIntegrations
         : connectedIntegrations.length > 0
           ? connectedIntegrations
-        : ["google"];
+          : ["google"];
 
   const integrations =
     spec.integrations.length > 0
       ? spec.integrations
       : integrationIds.map((id) => ({
-          id,
-          capabilities: getCapabilitiesForIntegration(id).map((c) => c.id),
-        }));
+        id,
+        capabilities: getCapabilitiesForIntegration(id).map((c) => c.id),
+      }));
 
   let actions = spec.actions;
   if (actions.length === 0) {
@@ -663,6 +663,30 @@ function buildFallbackActionsForIntegration(integration: IntegrationId): ActionS
         integrationId: "google",
         capabilityId: "google_gmail_list",
         inputSchema: buildDefaultInputForCapability("google_gmail_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "google.listDriveFiles",
+        name: "List Google Drive Files",
+        description: "List files from Google Drive",
+        type: "READ",
+        integrationId: "google",
+        capabilityId: "google_drive_list",
+        inputSchema: buildDefaultInputForCapability("google_drive_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "google.listCalendarEvents",
+        name: "List Calendar Events",
+        description: "List upcoming calendar events",
+        type: "READ",
+        integrationId: "google",
+        capabilityId: "google_calendar_list",
+        inputSchema: buildDefaultInputForCapability("google_calendar_list"),
         outputSchema: {},
         writesToState: false,
         confidenceLevel: "medium",

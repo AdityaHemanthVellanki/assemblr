@@ -377,15 +377,35 @@ async function _executeToolRuntime(
 
   // 3. Delegate to Runtime Execution Logic
   // We use resumeToolExecution which handles the standard execution flow
-  return resumeToolExecution({
-    executionId: input.executionId!,
-    orgId: input.orgId,
-    toolId: input.toolId,
-    userId: input.userId,
-    prompt: input.userMessage,
-    spec,
-    compiledTool
-  });
+  try {
+    return await resumeToolExecution({
+      executionId: input.executionId!,
+      orgId: input.orgId,
+      toolId: input.toolId,
+      userId: input.userId,
+      prompt: input.userMessage,
+      spec,
+      compiledTool
+    });
+  } catch (err) {
+    console.error(`[RuntimeSafetyNet] Unhandled error in runtime pipeline: ${err instanceof Error ? err.message : String(err)}`);
+
+    // SAFETY NET: Ensure tool does not get stuck in executing/fetching state
+    try {
+      await finalizeToolExecution({
+        toolId: input.toolId,
+        status: "FAILED",
+        errorMessage: err instanceof Error ? err.message : "Critical Runtime Failure",
+        view_ready: false,
+        data_ready: false,
+      });
+      console.log(`[RuntimeSafetyNet] Force-finalized tool ${input.toolId} to FAILED state.`);
+    } catch (finalizeErr) {
+      console.error("[RuntimeSafetyNet] Failed to force-finalize tool:", finalizeErr);
+    }
+
+    throw err;
+  }
 }
 
 export async function runCompilerPipeline(
@@ -1123,9 +1143,13 @@ export async function runCompilerPipeline(
 
 
 
-
-
-      let outputs: Array<{ action: any; output: any; error?: any }> = [];
+      // Initialize outputs from runDataReadiness so fetched data is preserved
+      // This prevents discarding valid data that was fetched during the readiness check
+      let outputs: Array<{ action: any; output: any; error?: any }> = readiness.outputs.map(entry => ({
+        action: entry.action,
+        output: entry.output,
+        error: undefined,
+      }));
       let goalEvidence: GoalEvidence | null = null;
       const integrationStatuses: Record<string, IntegrationStatus> = {};
 
