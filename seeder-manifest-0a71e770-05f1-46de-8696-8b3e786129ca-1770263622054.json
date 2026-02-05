@@ -1,0 +1,32 @@
+[
+  {
+    "id": "1150248468",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_different-collaboration",
+      "full_name": "AdityaHemanthVellanki/SE_different-collaboration",
+      "owner": "AdityaHemanthVellanki"
+    }
+  },
+  {
+    "id": "1150248505",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_direct-conservative",
+      "full_name": "AdityaHemanthVellanki/SE_direct-conservative",
+      "owner": "AdityaHemanthVellanki"
+    }
+  },
+  {
+    "id": "1150248540",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_esteemed-adviser",
+      "full_name": "AdityaHemanthVellanki/SE_esteemed-adviser",
+      "owner": "AdityaHemanthVellanki"
+    }
+  }
+]

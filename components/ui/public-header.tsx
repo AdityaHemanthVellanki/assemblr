@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 import { Button } from "@/components/ui/button";
 
@@ -20,10 +20,7 @@ function EnterSystemButton({
 }) {
     const router = useRouter();
     const handleEnter = React.useCallback(async () => {
-        const supabase = createBrowserClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        );
+        const supabase = createSupabaseClient();
         const { data } = await supabase.auth.getSession();
         if (data.session) {
             router.push("/app/chat");
@@ -59,8 +56,8 @@ export function PublicHeader({ currentPath }: PublicHeaderProps) {
                     <Link
                         href="/use-cases"
                         className={`text-sm font-medium transition-colors ${isUseCasesActive
-                                ? "text-foreground"
-                                : "text-muted-foreground hover:text-foreground"
+                            ? "text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
                             }`}
                     >
                         Use Cases

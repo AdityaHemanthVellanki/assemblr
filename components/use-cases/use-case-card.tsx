@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Play } from "lucide-react";
-import { createBrowserClient } from "@supabase/ssr";
+
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 import { IntegrationBadgeRow } from "./integration-badge";
 import { Button } from "@/components/ui/button";
@@ -15,15 +15,9 @@ export interface UseCaseCardProps {
     integrations: string[];
     prompt: string;
     category: string;
-    runCount?: number;
 }
 
-function formatRunCount(count: number): string {
-    if (count >= 1000) {
-        return `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k`;
-    }
-    return count.toString();
-}
+
 
 export function UseCaseCard({
     id,
@@ -31,7 +25,6 @@ export function UseCaseCard({
     description,
     integrations,
     prompt,
-    runCount = 0,
 }: UseCaseCardProps) {
     const router = useRouter();
     const [isLoading, setIsLoading] = React.useState(false);
@@ -39,10 +32,7 @@ export function UseCaseCard({
     const handleRun = React.useCallback(async () => {
         setIsLoading(true);
         try {
-            const supabase = createBrowserClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL!,
-                process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-            );
+            const supabase = createSupabaseClient();
             const { data } = await supabase.auth.getSession();
 
             const params = new URLSearchParams();
@@ -92,11 +82,7 @@ export function UseCaseCard({
             </p>
 
             {/* Footer with run count and action */}
-            <div className="mt-4 flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Play className="h-3 w-3" />
-                    <span>{formatRunCount(runCount)} runs</span>
-                </div>
+            <div className="mt-4 flex items-center justify-end">
                 <Button
                     size="sm"
                     variant="ghost"

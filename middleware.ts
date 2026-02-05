@@ -1,56 +1,33 @@
-import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({
+  const response = NextResponse.next({
     request: {
       headers: request.headers,
     },
   });
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => request.cookies.set(name, value));
-          response = NextResponse.next({
-            request: {
-              headers: request.headers,
-            },
-          });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
-  // refreshing the auth token
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   const { pathname } = request.nextUrl;
 
-  // Protect app routes
+  // Strict protection for app routes
   if (pathname.startsWith("/app") || pathname.startsWith("/dashboard") || pathname.startsWith("/projects")) {
-    if (!user) {
+    // Heuristic: Check for Supabase session cookie to avoid invoking full client in middleware.
+    // Real auth validation happens in Server Components/Actions.
+    // Cookie format: sb-<project-ref>-auth-token.
+    // We check if ANY cookie matching the pattern exists, or just check simple presence.
+
+    const hasAuthCookie = request.cookies.getAll().some(c => c.name.startsWith("sb-") && c.name.endsWith("-auth-token"));
+
+    if (!hasAuthCookie) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("next", pathname);
       return NextResponse.redirect(loginUrl);
     }
   }
 
-  // Redirect authenticated users away from login
-  if (pathname.startsWith("/login") && user) {
-    return NextResponse.redirect(new URL("/app/chat", request.url));
-  }
+  // NOTE: We do NOT redirect authenticated users away from /login in middleware anymore
+  // because that requires verifying the session (expensive/risky in edge).
+  // Layouts/Pages should handle "Already Logged In" redirection.
 
   return response;
 }

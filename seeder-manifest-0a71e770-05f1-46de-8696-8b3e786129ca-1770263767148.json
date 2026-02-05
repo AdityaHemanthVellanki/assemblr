@@ -1,0 +1,32 @@
+[
+  {
+    "id": "1150249500",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_colossal-academics",
+      "full_name": "AdityaHemanthVellanki/SE_colossal-academics",
+      "owner": "AdityaHemanthVellanki"
+    }
+  },
+  {
+    "id": "1150249547",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_tall-saw",
+      "full_name": "AdityaHemanthVellanki/SE_tall-saw",
+      "owner": "AdityaHemanthVellanki"
+    }
+  },
+  {
+    "id": "1150249585",
+    "type": "github_repo",
+    "integration": "github",
+    "metadata": {
+      "name": "SE_delirious-coliseum",
+      "full_name": "AdityaHemanthVellanki/SE_delirious-coliseum",
+      "owner": "AdityaHemanthVellanki"
+    }
+  }
+]

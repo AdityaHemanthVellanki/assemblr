@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { LazyMotion, m, domAnimation } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 import { Button } from "@/components/ui/button";
 import { useCases } from "@/lib/use-cases/registry";
@@ -15,23 +15,14 @@ import { ProductSimulation } from "@/components/landing/product-simulation";
 // --- Utilities ---
 
 // Simulated run counts
-const generateRunCount = (id: string): number => {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash % 5000) + 200;
-};
+
 
 // --- Components ---
 
 function EnterSystemButton({ children, className, size = "lg" }: { children: React.ReactNode; className?: string, size?: "default" | "sm" | "lg" | "icon" }) {
   const router = useRouter();
   const handleEnter = React.useCallback(async () => {
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    const supabase = createSupabaseClient();
     const { data } = await supabase.auth.getSession();
     if (data.session) {
       router.push("/app/chat");
@@ -210,7 +201,7 @@ export default function Home() {
                     integrations={useCase.integrations}
                     prompt={useCase.prompt}
                     category={useCase.category}
-                    runCount={generateRunCount(useCase.id)}
+
                   />
                 </m.div>
               ))}

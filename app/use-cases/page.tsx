@@ -7,16 +7,10 @@ import { useCases, useCaseCategories } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
+import { createSupabaseClient } from "@/lib/supabase/client";
 
 // Simulated run counts (in production, would come from analytics)
-const generateRunCount = (id: string): number => {
-    let hash = 0;
-    for (let i = 0; i < id.length; i++) {
-        hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash % 5000) + 200;
-};
+
 
 const categoryLabels: Record<string, string> = {
     "Featured": "Featured",
@@ -34,10 +28,7 @@ const displayCategories = ["All", ...useCaseCategories.map(c => categoryLabels[c
 function EnterSystemButton({ children, className }: { children: React.ReactNode; className?: string }) {
     const router = useRouter();
     const handleEnter = React.useCallback(async () => {
-        const supabase = createBrowserClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-        );
+        const supabase = createSupabaseClient();
         const { data } = await supabase.auth.getSession();
         if (data.session) {
             router.push("/app/chat");
@@ -152,7 +143,7 @@ export default function PublicUseCasesPage() {
                                 integrations={useCase.integrations}
                                 prompt={useCase.prompt}
                                 category={useCase.category}
-                                runCount={generateRunCount(useCase.id)}
+
                             />
                         ))}
                     </div>
