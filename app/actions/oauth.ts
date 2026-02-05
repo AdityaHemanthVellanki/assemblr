@@ -44,10 +44,16 @@ export async function saveResumeContext(data: ResumeContextData) {
     .single();
 
   if (error) {
-    console.error("Failed to save resume context", error);
-    throw new Error("Failed to save resume context");
+    console.error(`[OAuth Error] Failed to save resume context: ${error.message}`, error);
+    throw new Error(`Failed to save resume context: ${error.message}`);
   }
 
+  if (!inserted?.id) {
+    console.error("[OAuth Error] Resume context saved but no ID returned.");
+    throw new Error("Failed to retrieve resume context ID.");
+  }
+
+  console.log(`[OAuth Persistence] Resume Context Saved. ID: ${inserted.id} Path: ${parsed.returnPath}`);
   return inserted.id;
 }
 
@@ -104,20 +110,21 @@ export async function startOAuthFlow(payload: {
   pendingIntegrations?: string[];
   blockedIntegration?: string;
 }) {
-  const { 
-    providerId, 
-    projectId, 
-    chatId, 
-    toolId, 
+  const {
+    providerId,
+    projectId,
+    chatId,
+    toolId,
     executionId,
-    currentPath, 
-    prompt, 
+    currentPath,
+    prompt,
     integrationMode,
     pendingIntegrations,
     blockedIntegration
   } = payload;
 
   // 1. Create Resume Context
+  console.log(`[OAuth Start] Saving resume context for provider ${providerId} (Tool: ${toolId}, Path: ${currentPath})`);
   const resumeId = await saveResumeContext({
     projectId,
     chatId,
@@ -133,6 +140,8 @@ export async function startOAuthFlow(payload: {
     }
   });
 
+  console.log(`[OAuth Start] Resume Context Saved. ID: ${resumeId}`);
+
   // 2. Construct OAuth URL
   // We point to the start endpoint which handles the redirect logic
   // We pass resumeId so it gets embedded in the state
@@ -141,5 +150,8 @@ export async function startOAuthFlow(payload: {
   params.set("redirectPath", currentPath);
   params.set("resumeId", resumeId);
 
-  return `/api/oauth/start?${params.toString()}`;
+  const startUrl = `/api/oauth/start?${params.toString()}`;
+  console.log(`[OAuth Start] Generated Start URL: ${startUrl}`);
+
+  return startUrl;
 }

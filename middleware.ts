@@ -16,7 +16,11 @@ export async function middleware(request: NextRequest) {
     // Cookie format: sb-<project-ref>-auth-token.
     // We check if ANY cookie matching the pattern exists, or just check simple presence.
 
-    const hasAuthCookie = request.cookies.getAll().some(c => c.name.startsWith("sb-") && c.name.endsWith("-auth-token"));
+    // Cookie format: sb-<project-ref>-auth-token.0, .1 etc if chunked, or just -auth-token
+    // We check if ANY cookie matching the pattern exists.
+    const hasAuthCookie = request.cookies.getAll().some(c =>
+      c.name.startsWith("sb-") && c.name.includes("-auth-token")
+    );
 
     if (!hasAuthCookie) {
       const loginUrl = new URL("/login", request.url);

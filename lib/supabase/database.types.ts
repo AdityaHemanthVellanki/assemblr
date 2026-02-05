@@ -79,6 +79,117 @@ export type Database = {
           },
         ];
       };
+      broker_connections: {
+        Row: {
+          id: string;
+          org_id: string;
+          user_id: string;
+          integration_id: string;
+          access_token: string;
+          refresh_token: string | null;
+          expires_at: string | null;
+          token_type: string | null;
+          status: string;
+          scopes: Json;
+          metadata: Json | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          user_id: string;
+          integration_id: string;
+          access_token: string;
+          refresh_token?: string | null;
+          expires_at?: string | null;
+          token_type?: string | null;
+          status: string;
+          scopes: Json;
+          metadata?: Json | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          user_id?: string;
+          integration_id?: string;
+          access_token?: string;
+          refresh_token?: string | null;
+          expires_at?: string | null;
+          token_type?: string | null;
+          status?: string;
+          scopes?: Json;
+          metadata?: Json | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      broker_schemas: {
+        Row: {
+          id: string;
+          org_id: string;
+          integration_id: string;
+          resource_type: string;
+          schema_definition: Json;
+          discovered_at: string;
+          version: number;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          integration_id: string;
+          resource_type: string;
+          schema_definition: Json;
+          discovered_at?: string;
+          version?: number;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          integration_id?: string;
+          resource_type?: string;
+          schema_definition?: Json;
+          discovered_at?: string;
+          version?: number;
+        };
+        Relationships: [];
+      };
+      broker_capabilities: {
+        Row: {
+          id: string;
+          integration_id: string;
+          capability_id: string;
+          display_name: string;
+          description: string | null;
+          required_scopes: string[];
+          input_schema: Json;
+          output_schema: Json;
+        };
+        Insert: {
+          id?: string;
+          integration_id: string;
+          capability_id: string;
+          display_name: string;
+          description?: string | null;
+          required_scopes: string[];
+          input_schema: Json;
+          output_schema: Json;
+        };
+        Update: {
+          id?: string;
+          integration_id?: string;
+          capability_id?: string;
+          display_name?: string;
+          description?: string | null;
+          required_scopes?: string[];
+          input_schema?: Json;
+          output_schema?: Json;
+        };
+        Relationships: [];
+      };
       chat_messages: {
         Row: {
           id: string;

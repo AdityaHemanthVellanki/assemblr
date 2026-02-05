@@ -6,6 +6,8 @@ import { getServerEnv } from "@/lib/env";
 import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { errorResponse, handleApiError, jsonResponse } from "@/lib/api/response";
+import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
+import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 
 export const dynamic = "force-dynamic";
 
@@ -140,15 +142,38 @@ export async function POST(
       selectedIntegrationIds,
     });
 
-    // 5. Update Project Spec
+    // 5. Update Project Spec (Versioning)
     if (mode === "create" && (result.metadata as any)?.persist === true) {
-      const { error: updateError } = await supabase
-        .from("projects")
-        .update({ spec: result.spec as any })
-        .eq("id", toolId);
- 
-      if (updateError) {
-        return errorResponse("Failed to save tool updates", 500);
+      if (!result.spec) {
+        console.error("[Versioning] ToolSpec missing in result, cannot version.");
+      } else {
+        try {
+          // Generate Artifact
+          const compiledTool = buildCompiledToolArtifact(result.spec as any);
+
+          // Create Version (Snapshot)
+          const version = await createToolVersion({
+            orgId: ctx.orgId,
+            toolId,
+            userId: ctx.userId ?? null,
+            spec: result.spec as any,
+            compiledTool,
+            baseSpec: currentSpec as any, // For diffing
+            supabase,
+          });
+
+          // Promote Version (Updates projects.active_version_id and projects.spec)
+          await promoteToolVersion({
+            toolId,
+            versionId: version.id,
+            supabase,
+          });
+
+          console.log(`[Versioning] Successfully promoted version ${version.id} for tool ${toolId}`);
+        } catch (verErr) {
+          console.error("[Versioning] Failed to version tool update:", verErr);
+          return errorResponse("Failed to version tool updates", 500);
+        }
       }
     }
 
@@ -171,7 +196,7 @@ export async function POST(
     }
     const message = err instanceof Error ? err.message : String(err);
     if (message === "AI returned non-JSON response" || message === "AI returned invalid JSON") {
-         return errorResponse("AI response violated JSON contract", 500);
+      return errorResponse("AI response violated JSON contract", 500);
     }
     return handleApiError(err);
   }

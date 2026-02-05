@@ -16,6 +16,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Assemblr",
   description: "AI-powered internal tools and dashboards",
+  icons: {
+    icon: "/images/logo-icon.png",
+  },
 };
 
 export default function RootLayout({

@@ -294,7 +294,7 @@ export async function processToolChat(
     }
     return runtimeGate;
   }
-  if (input.mode === "create") {
+  if (input.mode === "create" || input.mode === "modify") {
     return runCompilerPipeline(input);
   }
   return _executeToolRuntime(input);
@@ -466,9 +466,9 @@ export async function runCompilerPipeline(
     }
   }
 
-  // Compiler pipeline requires create mode
-  if (input.mode !== "create") {
-    throw new Error("Compiler pipeline only supports create mode");
+  // Compiler pipeline supports create and modify
+  if (input.mode !== "create" && input.mode !== "modify") {
+    throw new Error("Compiler pipeline only supports create/modify mode");
   }
   if (!input.userMessage) {
     throw new Error("Compiler invoked without prompt in create mode");
@@ -527,11 +527,14 @@ export async function runCompilerPipeline(
       .eq("id", ensuredToolId)
       .single();
 
-    // FIX: Only redirect to runtime if we have a valid ACTIVE VERSION.
-    // Legacy "compiled_at" check is insufficient and caused the "ToolSpec metadata missing" bug.
-    const canExecuteExisting = await canExecuteTool({ toolId: ensuredToolId });
-    if (canExecuteExisting.ok) {
-      return runToolRuntimePipeline(input);
+    // FIX 4: Tool State Guardrails
+    // Only redirect to runtime if we are NOT in modify mode.
+    // If modifying, we WANT to re-compile even if runnable.
+    if (input.mode !== "modify") {
+      const canExecuteExisting = await canExecuteTool({ toolId: ensuredToolId });
+      if (canExecuteExisting.ok) {
+        return runToolRuntimePipeline(input);
+      }
     }
 
     // FIX 4: Tool State Guardrails
@@ -597,6 +600,19 @@ export async function runCompilerPipeline(
       effectiveToolId = newTool.id;
     } else {
       effectiveToolId = existingTool.id;
+    }
+
+    // FIX: Seed Memory for Modification
+    // If modifying, ensure the "partial_spec" in memory matches the DB spec
+    // so the compiler evolves the existing tool instead of starting from scratch/stale memory.
+    if (input.mode === "modify" && input.currentSpec) {
+      const toolScope: MemoryScope = { type: "tool_org", toolId: effectiveToolId, orgId: orgId };
+      await saveMemory({
+        scope: toolScope,
+        namespace: "tool_builder",
+        key: "partial_spec",
+        value: input.currentSpec as any,
+      });
     }
 
     // 1. Run Pipeline

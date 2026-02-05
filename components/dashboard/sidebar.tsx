@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles } from "lucide-react";
+import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { cn } from "@/lib/ui/cn";
 import { APP_NAME } from "@/lib/branding";
@@ -25,10 +25,14 @@ export function Sidebar({
   className,
   role,
   style,
+  isCollapsed,
+  onToggleCollapse,
 }: {
   className?: string;
   role: OrgRole;
   style?: React.CSSProperties;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -212,10 +216,13 @@ export function Sidebar({
       )}
     >
       <div
-        className="flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80"
+        className={cn(
+          "flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80",
+          isCollapsed && "justify-center px-0"
+        )}
         onClick={() => router.push('/app/chat')}
       >
-        <div className="relative h-10 w-10">
+        <div className="relative h-8 w-8 shrink-0">
           <Image
             src="/images/logo-icon.png"
             alt={APP_NAME}
@@ -224,46 +231,60 @@ export function Sidebar({
             priority
           />
         </div>
-        <span className="text-base font-semibold text-foreground">{APP_NAME}</span>
+        {!isCollapsed && <span className="text-base font-semibold text-foreground truncate">{APP_NAME}</span>}
       </div>
 
-      <div className="flex flex-col gap-6 px-3 py-2">
-        <div className="relative">
-          <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search chats..."
-            className="pl-8 h-9 bg-muted/30 border-border/40 focus:bg-muted/50"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
+      <div className={cn("flex flex-col gap-6 px-3 py-2", isCollapsed && "px-2")}>
+        {!isCollapsed && (
+          <div className="relative">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search chats..."
+              className="pl-8 h-9 bg-muted/30 border-border/40 focus:bg-muted/50"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        )}
 
         <div className="flex flex-col gap-1">
           <button
             type="button"
             onClick={handleNewChat}
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 hover:bg-accent hover:text-accent-foreground text-muted-foreground"
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 hover:bg-accent hover:text-accent-foreground text-muted-foreground",
+              isCollapsed && "justify-center px-0 h-10 w-10 mx-auto"
+            )}
+            title="New Chat"
           >
-            <Plus className="h-4 w-4" />
-            New Chat
+            <Plus className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span>New Chat</span>}
           </button>
+
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = item.href === useCasesHref ? useCasesActive : integrationsActive;
+
+            const commonClasses = cn(
+              "rounded-lg transition-all duration-200 flex items-center gap-2",
+              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "px-3 py-2 text-sm",
+            );
+
             if (item.disabled) {
               return (
                 <div
                   key={item.id}
                   className={cn(
-                    "rounded-md px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground opacity-60 cursor-not-allowed",
+                    commonClasses,
+                    "text-muted-foreground opacity-60 cursor-not-allowed",
                     active ? "bg-accent/50" : "",
                   )}
                   role="link"
                   aria-disabled="true"
                   title={item.tooltip}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span className="truncate">{item.label}</span>
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!isCollapsed && <span className="truncate">{item.label}</span>}
                 </div>
               );
             }
@@ -273,14 +294,15 @@ export function Sidebar({
                 key={item.id}
                 href={item.href}
                 className={cn(
-                  "rounded-lg px-3 py-2 text-sm transition-all duration-200 flex items-center gap-2",
+                  commonClasses,
                   active
                     ? "bg-accent text-accent-foreground font-medium"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
+                title={isCollapsed ? item.label : undefined}
               >
-                <Icon className="h-4 w-4" />
-                <span className="truncate">{item.label}</span>
+                <Icon className="h-4 w-4 shrink-0" />
+                {!isCollapsed && <span className="truncate">{item.label}</span>}
               </Link>
             );
           })}
@@ -289,110 +311,126 @@ export function Sidebar({
       </div>
 
       <ScrollArea className="flex-1 w-full px-3">
-        <div className="flex w-full flex-col gap-2 py-2">
-          {projectsLoading && projects.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
-          ) : projectsError ? (
-            <div className="px-3 py-2 text-xs text-red-600">{projectsError}</div>
-          ) : visibleProjects.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground">No chats yet.</div>
-          ) : (
-            visibleProjects.map((project) => {
-              const active = pathname?.includes(`/dashboard/projects/${project.id}`);
-              const isInvalid = !project.isValidSpec;
-              const isEditing = editingId === project.id;
+        {/* Hide projects list when collapsed to keep UI clean */}
+        {!isCollapsed && (
+          <div className="flex w-full flex-col gap-2 py-2">
+            {projectsLoading && projects.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
+            ) : projectsError ? (
+              <div className="px-3 py-2 text-xs text-red-600">{projectsError}</div>
+            ) : visibleProjects.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">No chats yet.</div>
+            ) : (
+              visibleProjects.map((project) => {
+                const active = pathname?.includes(`/dashboard/projects/${project.id}`);
+                const isInvalid = !project.isValidSpec;
+                const isEditing = editingId === project.id;
 
-              if (isEditing) {
+                if (isEditing) {
+                  return (
+                    <div key={project.id} className="px-1 py-1">
+                      <Input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onBlur={() => submitRename(project.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") submitRename(project.id);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        autoFocus
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  );
+                }
+
                 return (
-                  <div key={project.id} className="px-1 py-1">
-                    <Input
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      onBlur={() => submitRename(project.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") submitRename(project.id);
-                        if (e.key === "Escape") setEditingId(null);
-                      }}
-                      autoFocus
-                      className="h-8 text-sm"
-                    />
-                  </div>
-                );
-              }
-
-              return (
-                <div
-                  key={project.id}
-                  className={cn(
-                    "group relative rounded-lg transition-all duration-200 w-full overflow-hidden",
-                    active
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                    isInvalid ? "opacity-50" : ""
-                  )}
-                >
-                  <Link
-                    href={`/dashboard/projects/${project.id}`}
+                  <div
+                    key={project.id}
                     className={cn(
-                      "flex w-full items-center gap-2 px-3 py-2 text-sm truncate pr-16", // pr-16 reserves space for actions so text wraps/truncates nicely
-                      isInvalid ? "pointer-events-none" : ""
+                      "group relative rounded-lg transition-all duration-200 w-full overflow-hidden",
+                      active
+                        ? "bg-accent text-accent-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                      isInvalid ? "opacity-50" : ""
                     )}
-                    aria-disabled={isInvalid}
                   >
-                    <span className="truncate">{project.name}</span>
-                    {isInvalid ? (
-                      <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-500">
-                        <AlertTriangle className="h-3 w-3" />
-                        Failed
-                      </span>
-                    ) : null}
-                  </Link>
+                    <Link
+                      href={`/dashboard/projects/${project.id}`}
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-2 text-sm truncate pr-16", // pr-16 reserves space for actions so text wraps/truncates nicely
+                        isInvalid ? "pointer-events-none" : ""
+                      )}
+                      aria-disabled={isInvalid}
+                    >
+                      <span className="truncate">{project.name}</span>
+                      {isInvalid ? (
+                        <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-500">
+                          <AlertTriangle className="h-3 w-3" />
+                          Failed
+                        </span>
+                      ) : null}
+                    </Link>
 
-                  {/* Hover Actions */}
-                  <div className={cn(
-                    "absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden items-center justify-end",
-                    "group-hover:flex focus-within:flex",
-                    active ? "flex" : ""
-                  )}>
-                    {/* Action container with glass effect */}
+                    {/* Hover Actions */}
                     <div className={cn(
-                      "flex items-center gap-0.5 rounded-md border border-border/5 bg-background/50 p-0.5 shadow-sm backdrop-blur-md",
-                      active ? "bg-accent-foreground/5" : "bg-background/80"
+                      "absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden items-center justify-end",
+                      "group-hover:flex focus-within:flex",
+                      active ? "flex" : ""
                     )}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          startRename(project);
-                        }}
-                        title="Rename chat"
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          confirmDelete(project.id);
-                        }}
-                        title="Delete chat"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                      {/* Action container with glass effect */}
+                      <div className={cn(
+                        "flex items-center gap-0.5 rounded-md border border-border/5 bg-background/50 p-0.5 shadow-sm backdrop-blur-md",
+                        active ? "bg-accent-foreground/5" : "bg-background/80"
+                      )}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            startRename(project);
+                          }}
+                          title="Rename chat"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            confirmDelete(project.id);
+                          }}
+                          title="Delete chat"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })
-          )}
-        </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </ScrollArea>
+
+      {/* Collapse Toggle */}
+      <div className={cn("p-4 border-t border-border/40", isCollapsed && "flex justify-center p-2")}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onToggleCollapse}
+          className={cn("text-muted-foreground hover:text-foreground", isCollapsed ? "h-8 w-8 p-0" : "w-full justify-start gap-2")}
+        >
+          {isCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          {!isCollapsed && <span>Collapse Sidebar</span>}
+        </Button>
+      </div>
 
       <Dialog open={!!deletingId} onOpenChange={(open) => !open && setDeletingId(null)}>
         <DialogContent>
@@ -413,6 +451,6 @@ export function Sidebar({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </aside>
+    </aside >
   );
 }

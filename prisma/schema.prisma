@@ -24,6 +24,10 @@ model Organization {
   dataSources DataSource[]
   memberships Membership[]
   invites Invite[]
+  
+  brokerConnections BrokerConnection[]
+  brokerSchemas BrokerSchema[]
+  brokerActionLogs BrokerActionLog[]
 }
 
 model User {
@@ -39,6 +43,7 @@ model User {
 
   accounts Account[]
   sessions Session[]
+  brokerConnections BrokerConnection[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -159,4 +164,96 @@ model Invite {
 
   @@index([orgId])
   @@index([email])
+}
+
+model OAuthResumeContext {
+  id                  String   @id @default(uuid())
+  userId              String
+  orgId               String
+  projectId           String?  @map("project_id")
+  chatId              String?  @map("chat_id")
+  toolId              String?  @map("tool_id")
+  executionId         String?  @map("execution_id")
+  originalPrompt      String?  @map("original_prompt")
+  pendingIntegrations String[] @map("pending_integrations")
+  blockedIntegration  String?  @map("blocked_integration")
+  orchestrationState  Json?    @map("orchestration_state")
+  returnPath          String   @map("return_path")
+  expiresAt           DateTime @default(dbgenerated("now() + interval '1 hour'")) @map("expires_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@map("oauth_resume_contexts")
+}
+
+model BrokerConnection {
+  id                String   @id @default(cuid())
+  orgId             String   @map("org_id")
+  userId            String   @map("user_id")
+  integrationId     String   @map("integration_id")
+  // Nango removed. Native Token Storage (Encrypted)
+  accessToken       String   @map("access_token") // Encrypted
+  refreshToken      String?  @map("refresh_token") // Encrypted
+  expiresAt         DateTime? @map("expires_at")
+  tokenType         String?  @map("token_type")
+  
+  status            String   
+  scopes            Json
+  metadata          Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actionLogs        BrokerActionLog[]
+
+  @@unique([orgId, integrationId, userId])
+  @@map("broker_connections")
+}
+
+model BrokerSchema {
+  id               String   @id @default(cuid())
+  orgId            String   @map("org_id")
+  integrationId    String   @map("integration_id")
+  resourceType     String   @map("resource_type")
+  schemaDefinition Json     @map("schema_definition")
+  discoveredAt     DateTime @default(now()) @map("discovered_at")
+  version          Int      @default(1)
+
+  organization     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, integrationId])
+  @@map("broker_schemas")
+}
+
+model BrokerCapability {
+  id             String   @id @default(cuid())
+  integrationId  String   @map("integration_id")
+  capabilityId   String   @map("capability_id")
+  displayName    String   @map("display_name")
+  description    String?
+  requiredScopes String[] @map("required_scopes")
+  inputSchema    Json     @map("input_schema")
+  outputSchema   Json     @map("output_schema")
+
+  @@unique([integrationId, capabilityId])
+  @@map("broker_capabilities")
+}
+
+model BrokerActionLog {
+  id            String   @id @default(cuid())
+  orgId         String   @map("org_id")
+  userId        String   @map("user_id")
+  connectionId  String   @map("connection_id")
+  actionId      String   @map("action_id")
+  inputParams   Json?    @map("input_params")
+  outputSummary Json?    @map("output_summary")
+  status        String
+  durationMs    Int      @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  organization  Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection    BrokerConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("broker_action_logs")
 }

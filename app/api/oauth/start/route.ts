@@ -5,131 +5,93 @@ import crypto from "crypto";
 import { requireOrgMember } from "@/lib/permissions";
 import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
+import { getBaseUrl } from "@/lib/url";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+
+// ... imports
+import { getBroker } from "@/lib/broker";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const env = getServerEnv();
-  
-  // Guardrail: Ensure APP_BASE_URL is valid for the environment
-  if (process.env.NODE_ENV === "production" && env.APP_BASE_URL.includes("localhost")) {
-    console.error(`[CRITICAL] APP_BASE_URL is set to localhost in production: ${env.APP_BASE_URL}`);
-    const url = new URL(req.url);
-    const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
-    const targetUrl = new URL(redirectPath, env.APP_BASE_URL); // This might still be localhost, but we have to try
-    targetUrl.searchParams.set("error", "Server misconfiguration: Invalid APP_BASE_URL");
-    return NextResponse.redirect(targetUrl);
-  }
-
-  console.log(`[OAuth Start] Using APP_BASE_URL: ${env.APP_BASE_URL}`);
+  const baseUrl = await getBaseUrl(req);
+  console.log(`[OAuth Start] Resolved Base URL: ${baseUrl}`);
 
   const url = new URL(req.url);
   const providerId = url.searchParams.get("provider");
-  const redirectPath = url.searchParams.get("redirectPath") ?? "/dashboard";
   const resumeId = url.searchParams.get("resumeId");
+
+  if (!resumeId) {
+    console.error(`[OAuth Start] CRITICAL: Missing resumeId. Request URL: ${req.url}`);
+    const errorUrl = new URL("/error", baseUrl);
+    errorUrl.searchParams.set("title", "Integration Error");
+    errorUrl.searchParams.set("message", "Missing context for integration. Please try again from the chat.");
+    return NextResponse.redirect(errorUrl);
+  }
 
   // Helper to redirect with error
   const redirectWithError = (msg: string) => {
-    const targetUrl = new URL(redirectPath, env.APP_BASE_URL);
+    const targetUrl = new URL("/dashboard", baseUrl);
     targetUrl.searchParams.set("error", msg);
     return NextResponse.redirect(targetUrl);
   };
 
-  if (!providerId || !OAUTH_PROVIDERS[providerId]) {
+  if (!providerId) {
     return redirectWithError("Invalid provider");
   }
-
-  const provider = OAUTH_PROVIDERS[providerId];
 
   // 1. Auth check
   let ctx;
   try {
     ({ ctx } = await requireOrgMember());
   } catch {
-    // If unauthorized, redirect to login
-    return NextResponse.redirect(new URL("/login", url.origin));
+    return NextResponse.redirect(new URL("/login", baseUrl));
   }
 
-  // 2. Get Client ID from Env Vars (Hosted OAuth Only)
-  // Normalize provider ID to env var format (e.g. google -> GOOGLE_CLIENT_ID)
-  const envKey = `${providerId.toUpperCase()}_CLIENT_ID`;
-  // We use the validated env here, not process.env
-  // But env is typed with specific keys. We need to cast or access dynamically safely.
-  // Since we validated them in lib/env/server.ts, we can trust they exist if the app started.
-  // However, to satisfy TS and be explicit:
-  let clientId: string | undefined;
-  let clientSecret: string | undefined;
+  try {
+    const broker = getBroker();
 
-  switch (providerId) {
-    case "github": 
-      clientId = env.GITHUB_CLIENT_ID; 
-      clientSecret = env.GITHUB_CLIENT_SECRET;
-      break;
-    case "slack": 
-      clientId = env.SLACK_CLIENT_ID; 
-      clientSecret = env.SLACK_CLIENT_SECRET;
-      break;
-    case "notion": 
-      clientId = env.NOTION_CLIENT_ID; 
-      clientSecret = env.NOTION_CLIENT_SECRET;
-      break;
-    case "linear": 
-      clientId = env.LINEAR_CLIENT_ID; 
-      clientSecret = env.LINEAR_CLIENT_SECRET;
-      break;
-    case "google": 
-      clientId = env.GOOGLE_CLIENT_ID; 
-      clientSecret = env.GOOGLE_CLIENT_SECRET;
-      break;
-  }
+    // 2. Initiate Connection via Broker
+    // This generates the Auth URL and State
+    const { authUrl, state, codeVerifier } = await broker.initiateConnection(
+      ctx.orgId,
+      ctx.userId,
+      providerId,
+      "/", // returnPath is ignored by DIY broker initiation logic (context has it)
+      resumeId
+    );
 
-  if (!clientId || !clientSecret) {
-    console.error(`Missing hosted credentials for ${providerId}`);
-    return redirectWithError(`Server configuration error: Missing Client ID or Secret for ${provider.name}. This integration is not configured.`);
-  }
+    const cookieStore = await cookies();
+    const isSecure = process.env.NODE_ENV === "production";
 
-  // 3. Generate State
-  const state = crypto.randomBytes(32).toString("hex");
-  const statePayload = JSON.stringify({
-    state,
-    orgId: ctx.orgId,
-    providerId,
-    redirectPath,
-    resumeId,
-  });
+    // 3. Store State in Cookie (CSRF Protection)
+    // We store the exact state string that was sent to the provider.
+    // In callback, we will verify cookie value == param value.
+    cookieStore.set("oauth_state", state, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      maxAge: 60 * 10, // 10 minutes
+      path: "/",
+    });
 
-  // 4. Store State in Cookie (HTTP Only, Secure)
-  const cookieStore = await cookies();
-  cookieStore.set("oauth_state", statePayload, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 60 * 10, // 10 minutes
-    path: "/",
-  });
-
-  // 5. Build Auth URL
-  const params = new URLSearchParams();
-  params.append("response_type", "code");
-  params.append("client_id", clientId);
-
-  // Redirect URI strategy
-  // Use the same callback endpoint
-  const redirectBase = env.APP_BASE_URL;
-  const redirectUri = `${redirectBase}/api/oauth/callback/${providerId}`;
-
-  params.append("redirect_uri", redirectUri);
-  params.append("state", state);
-
-  if (provider.scopes.length > 0) {
-    params.append("scope", provider.scopes.join(provider.scopeSeparator ?? " "));
-  }
-
-  if (provider.extraAuthParams) {
-    for (const [k, v] of Object.entries(provider.extraAuthParams)) {
-      params.append(k, v);
+    // 4. Store PKCE verifier if present
+    if (codeVerifier) {
+      cookieStore.set("oauth_pkce", codeVerifier, {
+        httpOnly: true,
+        secure: isSecure,
+        sameSite: "lax",
+        maxAge: 60 * 10,
+        path: "/",
+      });
     }
-  }
 
-  return NextResponse.redirect(`${provider.authUrl}?${params.toString()}`);
+    console.log(`[OAuth Start] Redirecting to ${providerId}. State: ${state.substring(0, 10)}...`);
+    return NextResponse.redirect(authUrl);
+
+  } catch (error: any) {
+    console.error("[OAuth Start] Initialization Error:", error);
+    return redirectWithError(error.message || "Failed to start integration flow");
+  }
 }

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { useCases } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
 import { ProductSimulation } from "@/components/landing/product-simulation";
+import { Footer } from "@/components/landing/footer";
 
 // --- Utilities ---
 
@@ -249,11 +250,9 @@ export default function Home() {
                 </div>
               </m.div>
             </div>
-
-            {/* Footer decor */}
-            <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border/50 to-transparent" />
           </section>
 
+          <Footer />
         </main>
       </div>
     </LazyMotion>

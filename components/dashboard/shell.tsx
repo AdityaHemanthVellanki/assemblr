@@ -13,28 +13,40 @@ export function DashboardShell({
   role: OrgRole;
 }) {
   const [sidebarWidth, setSidebarWidth] = React.useState(256);
+  const [isCollapsed, setIsCollapsed] = React.useState(false);
   const [isResizing, setIsResizing] = React.useState(false);
   const [isClient, setIsClient] = React.useState(false);
 
-  // Load width from local storage on mount
+  // Load state from local storage on mount
   React.useEffect(() => {
     setIsClient(true);
     const savedWidth = localStorage.getItem("assemblr-sidebar-width");
+    const savedCollapsed = localStorage.getItem("assemblr-sidebar-collapsed");
+
     if (savedWidth) {
       setSidebarWidth(parseInt(savedWidth, 10));
     }
+    if (savedCollapsed === "true") {
+      setIsCollapsed(true);
+    }
   }, []);
 
-  // Save width to local storage when changed
+  // Save state to local storage when changed
   React.useEffect(() => {
     if (isClient) {
       localStorage.setItem("assemblr-sidebar-width", sidebarWidth.toString());
+      localStorage.setItem("assemblr-sidebar-collapsed", isCollapsed.toString());
     }
-  }, [sidebarWidth, isClient]);
+  }, [sidebarWidth, isCollapsed, isClient]);
+
+  const toggleCollapsed = React.useCallback(() => {
+    setIsCollapsed((prev) => !prev);
+  }, []);
 
   const startResizing = React.useCallback(() => {
+    if (isCollapsed) return; // Cannot resize when collapsed
     setIsResizing(true);
-  }, []);
+  }, [isCollapsed]);
 
   const stopResizing = React.useCallback(() => {
     setIsResizing(false);
@@ -43,11 +55,7 @@ export function DashboardShell({
   const resize = React.useCallback(
     (mouseMoveEvent: MouseEvent) => {
       if (isResizing) {
-        // Calculate new width based on mouse position
-        // We assume the sidebar is on the left
         const newWidth = mouseMoveEvent.clientX;
-
-        // Constraints
         const MIN_WIDTH = 240;
         const MAX_WIDTH = 480;
 
@@ -63,7 +71,6 @@ export function DashboardShell({
     if (isResizing) {
       window.addEventListener("mousemove", resize);
       window.addEventListener("mouseup", stopResizing);
-      // Prevent text selection while dragging
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
     }
@@ -80,20 +87,23 @@ export function DashboardShell({
     <div className="flex h-dvh bg-background text-foreground">
       <Sidebar
         role={role}
-        style={{ width: sidebarWidth }}
+        style={{ width: isCollapsed ? 64 : sidebarWidth }}
+        isCollapsed={isCollapsed}
+        onToggleCollapse={toggleCollapsed}
       />
 
-      {/* Search/Drag handle */}
-      <div
-        className="relative group flex w-1 cursor-col-resize flex-col items-center justify-center bg-transparent transition-all hover:w-1.5 hover:bg-primary/10 active:bg-primary/20"
-        onMouseDown={startResizing}
-        onDoubleClick={() => setSidebarWidth(256)} // Reset on double click
-      >
-        {/* Visual indicator on hover only */}
-        <div className="h-8 w-0.5 rounded-full bg-border opacity-0 transition-all group-hover:opacity-100 group-active:h-full group-active:opacity-50" />
-      </div>
+      {/* Search/Drag handle - hidden/disabled when collapsed */}
+      {!isCollapsed && (
+        <div
+          className="relative group flex w-1 cursor-col-resize flex-col items-center justify-center bg-transparent transition-all hover:w-1.5 hover:bg-primary/10 active:bg-primary/20"
+          onMouseDown={startResizing}
+          onDoubleClick={() => setSidebarWidth(256)}
+        >
+          <div className="h-8 w-0.5 rounded-full bg-border opacity-0 transition-all group-hover:opacity-100 group-active:h-full group-active:opacity-50" />
+        </div>
+      )}
 
-      <div className="flex min-w-0 flex-1 flex-col relative">
+      <div className="flex min-w-0 flex-1 flex-col relative bg-background">
         <main className="flex-1 overflow-hidden relative">{children}</main>
       </div>
     </div>

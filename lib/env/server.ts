@@ -72,7 +72,7 @@ const serverEnvSchema = z
     // As per strict production-readiness directive, these are now REQUIRED.
     // The system will crash if any are missing.
     // --------------------------------------------------------------------------
-    
+
     // GitHub
     GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required"),
     GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required"),
@@ -97,7 +97,7 @@ const serverEnvSchema = z
     EMAIL_SERVER: optionalString(),
 
     DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
-    
+
     CRON_SECRET: optionalString(),
   })
   .superRefine((env, ctx) => {
@@ -129,6 +129,7 @@ export function getServerEnv() {
   const runtimeEnv = runtimeResult.ok ? runtimeResult.runtimeEnv : raw.RUNTIME_ENV;
   const parseResult = serverEnvSchema.safeParse({
     ...raw,
+    SUPABASE_PUBLISHABLE_KEY: raw.SUPABASE_PUBLISHABLE_KEY || raw.NEXT_PUBLIC_SUPABASE_ANON_KEY || raw.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     RUNTIME_ENV: runtimeEnv,
   });
   if (!parseResult.success) {
