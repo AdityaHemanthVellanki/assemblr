@@ -1,6 +1,6 @@
-export type IntegrationId = "google" | "github" | "slack" | "notion" | "linear";
+export type IntegrationId = string;
 
-export type EntityType = "Email" | "Repo" | "Issue" | "Message" | "Page";
+export type EntityType = string;
 
 export interface CapabilityInvocation {
   id: string;

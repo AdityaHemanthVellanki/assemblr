@@ -1,7 +1,6 @@
 // import "server-only";
 
 import { DashboardSpec } from "@/lib/spec/dashboardSpec";
-import { getDiscoveredSchemas } from "@/lib/schema/store";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 import { getCapability } from "@/lib/capabilities/registry";
@@ -10,7 +9,7 @@ import { ExecutionPlan } from "@/lib/execution/types";
 export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: boolean; error?: string } {
   // 1. Static Registry Check
   if (!plan.capabilityId) {
-     return { valid: false, error: "Plan missing capabilityId" };
+    return { valid: false, error: "Plan missing capabilityId" };
   }
   const capability = getCapability(plan.capabilityId);
   if (!capability) {
@@ -24,7 +23,7 @@ export function validatePlanAgainstCapabilities(plan: ExecutionPlan): { valid: b
   // NOTE: resource is no longer validated against plan.resource because plan.resource is derived from capability
   // However, if the plan DOES specify a resource (e.g. from legacy code), we can check consistency.
   if (plan.resource && capability.resource !== plan.resource) {
-      console.warn(`[Validation Warning] Plan resource ${plan.resource} does not match capability resource ${capability.resource}. Using capability resource.`);
+    console.warn(`[Validation Warning] Plan resource ${plan.resource} does not match capability resource ${capability.resource}. Using capability resource.`);
   }
 
   // Validate Params
@@ -52,7 +51,10 @@ export async function validateSpecAgainstSchema(
   orgId: string,
   spec: DashboardSpec
 ): Promise<{ valid: boolean; errors: string[] }> {
-  const schemas = await getDiscoveredSchemas(orgId);
+  // In the Composio world, we don't rely on pre-discovered SQL-like schemas.
+  // We rely on "Execution-First" - if the user adds it, we assume it's valid for now.
+  // We only check if the integration is connected.
+
   const errors: string[] = [];
   const supabase = await createSupabaseServerClient();
   const { data: connRows } = await (supabase.from("integration_connections") as any)
@@ -62,61 +64,22 @@ export async function validateSpecAgainstSchema(
     ? connRows.map((r: any) => r.integration_id).filter((x: any) => typeof x === "string")
     : [];
 
-  // Index schemas for faster lookup: integrationId -> resource -> Set<field>
-  const schemaMap: Record<string, Record<string, Set<string>>> = {};
-
-  for (const s of schemas) {
-    if (!schemaMap[s.integrationId]) {
-      schemaMap[s.integrationId] = {};
-    }
-    schemaMap[s.integrationId][s.resource] = new Set(s.fields.map((f) => f.name));
-  }
-
   // Validate Metrics
   for (const metric of spec.metrics) {
-    if (!metric.integrationId || !metric.table) continue;
+    if (!metric.integrationId) continue;
 
-    const resources = schemaMap[metric.integrationId];
-    if (!resources) {
-      if (connectedIds.includes(metric.integrationId)) {
-        // Integration is connected but has no schema yet.
-        // This is valid in execution-first mode. We allow it.
-        // We do NOT push an error.
-      } else {
-        errors.push(`Metric "${metric.label}" references unknown integration "${metric.integrationId}"`);
-      }
-      continue;
-    }
-
-    const fields = resources[metric.table];
-    if (!fields) {
-      errors.push(`Metric "${metric.label}" references unknown table "${metric.table}" in "${metric.integrationId}"`);
-      continue;
-    }
-
-    if (metric.field && !fields.has(metric.field)) {
-      errors.push(`Metric "${metric.label}" references unknown field "${metric.field}" in "${metric.table}"`);
+    if (!connectedIds.includes(metric.integrationId)) {
+      errors.push(`Metric "${metric.label}" references unconnected integration "${metric.integrationId}"`);
     }
   }
 
   // Validate Views
   for (const view of spec.views) {
-    if (view.type === "table") {
-      if (!view.integrationId || !view.table) continue;
+    if (view.type === "table" || (view as any).type === "query") {
+      if (!view.integrationId) continue;
 
-      const resources = schemaMap[view.integrationId];
-      if (!resources) {
-        if (connectedIds.includes(view.integrationId)) {
-          // Integration is connected but has no schema yet.
-          // This is valid in execution-first mode. We allow it.
-        } else {
-          errors.push(`View "${view.id}" references unknown integration "${view.integrationId}"`);
-        }
-        continue;
-      }
-
-      if (!resources[view.table]) {
-        errors.push(`View "${view.id}" references unknown table "${view.table}" in "${view.integrationId}"`);
+      if (!connectedIds.includes(view.integrationId)) {
+        errors.push(`View "${view.id}" references unconnected integration "${view.integrationId}"`);
       }
     }
   }

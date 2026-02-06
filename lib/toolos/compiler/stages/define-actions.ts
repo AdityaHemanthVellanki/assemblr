@@ -1,6 +1,5 @@
 import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
-import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { ActionSpec, IntegrationId, IntegrationIdSchema } from "@/lib/toolos/spec";
 import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/compiler/tool-compiler";
 
@@ -9,7 +8,7 @@ export async function runDefineActions(
 ): Promise<ToolCompilerStageResult> {
   const integrations = ctx.spec.integrations.map((i) => i.id);
   const capabilityCatalog = integrations
-    .map((id) => `${id}: ${getCapabilitiesForIntegration(id).map((c) => c.id).join(", ")}`)
+    .map((id) => `${id}: ${ctx.capabilities.filter(c => c.integrationId === id).map((c) => c.id).join(", ")}`)
     .join("\n");
   const response = await getAzureOpenAIClient().chat.completions.create({
     model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
@@ -36,40 +35,41 @@ Only use capabilities from:\n${capabilityCatalog}`,
     const json = JSON.parse(content);
     const actions: ActionSpec[] = Array.isArray(json.actions)
       ? json.actions.flatMap((action: any) => {
-          if (!action || typeof action !== "object") return [];
-          if (typeof action.integrationId !== "string" || typeof action.capabilityId !== "string") return [];
-          const integrationId = IntegrationIdSchema.safeParse(action.integrationId);
-          if (!integrationId.success) return [];
-          const cap = getCapability(action.capabilityId);
-          if (!cap || cap.integrationId !== integrationId.data) return [];
-          const name = typeof action.name === "string" && action.name.trim().length > 0 ? action.name.trim() : "Action";
-          const description =
-            typeof action.description === "string" && action.description.trim().length > 0
-              ? action.description.trim()
-              : name;
-          const id =
-            typeof action.id === "string" && action.id.trim().length > 0
-              ? action.id.trim()
-              : `${integrationId.data}.${action.capabilityId}`;
-          const inputSchema =
-            action.inputSchema && typeof action.inputSchema === "object" ? action.inputSchema : {};
-          const outputSchema =
-            action.outputSchema && typeof action.outputSchema === "object" ? action.outputSchema : {};
-          const allowedOperations = cap.allowedOperations ?? [];
-          const isRead = allowedOperations.includes("read");
-          const safeAction: ActionSpec = {
-            id,
-            name,
-            description,
-            type: isRead ? "READ" : "WRITE",
-            integrationId: integrationId.data,
-            capabilityId: action.capabilityId,
-            inputSchema,
-            outputSchema,
-            writesToState: !isRead,
-          };
-          return [safeAction];
-        })
+        if (!action || typeof action !== "object") return [];
+        if (typeof action.integrationId !== "string" || typeof action.capabilityId !== "string") return [];
+        const integrationId = IntegrationIdSchema.safeParse(action.integrationId);
+        if (!integrationId.success) return [];
+        if (!integrationId.success) return [];
+        const cap = ctx.capabilities.find(c => c.id === action.capabilityId);
+        if (!cap || cap.integrationId !== integrationId.data) return [];
+        const name = typeof action.name === "string" && action.name.trim().length > 0 ? action.name.trim() : "Action";
+        const description =
+          typeof action.description === "string" && action.description.trim().length > 0
+            ? action.description.trim()
+            : name;
+        const id =
+          typeof action.id === "string" && action.id.trim().length > 0
+            ? action.id.trim()
+            : `${integrationId.data}.${action.capabilityId}`;
+        const inputSchema =
+          action.inputSchema && typeof action.inputSchema === "object" ? action.inputSchema : {};
+        const outputSchema =
+          action.outputSchema && typeof action.outputSchema === "object" ? action.outputSchema : {};
+        const allowedOperations = cap.allowedOperations ?? [];
+        const isRead = allowedOperations.includes("read");
+        const safeAction: ActionSpec = {
+          id,
+          name,
+          description,
+          type: isRead ? "READ" : "WRITE",
+          integrationId: integrationId.data,
+          capabilityId: action.capabilityId,
+          inputSchema,
+          outputSchema,
+          writesToState: !isRead,
+        };
+        return [safeAction];
+      })
       : [];
     if (actions.length === 0) {
       return { specPatch: { actions: buildFallbackActions(integrations) } };

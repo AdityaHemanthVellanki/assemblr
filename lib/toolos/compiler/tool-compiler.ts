@@ -3,7 +3,8 @@
 import { createHash } from "crypto";
 import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, TOOL_SPEC_VERSION, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
-import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
+import { capabilityRegistry } from "@/lib/capabilities/synthesis/registry";
+import { Capability } from "@/lib/capabilities/types";
 import { runUnderstandPurpose } from "@/lib/toolos/compiler/stages/understand-purpose";
 import { runExtractEntities } from "@/lib/toolos/compiler/stages/extract-entities";
 import { runResolveIntegrations } from "@/lib/toolos/compiler/stages/resolve-integrations";
@@ -45,6 +46,7 @@ export type ToolCompilerStageContext = {
   orgId: string;
   toolId: string;
   userId?: string | null;
+  capabilities: Capability[];
 };
 
 export type ToolCompilerStageBudgets = {
@@ -134,16 +136,23 @@ export class ToolCompiler {
       loadMemory({ scope: sessionScope, namespace: BUILDER_NAMESPACE, key: "partial_spec" }),
       loadMemory({ scope: toolScope, namespace: BUILDER_NAMESPACE, key: "partial_spec" }),
     ]);
+
+    // Prefetch capabilities for connected integrations
+    const connectedIds = input.connectedIntegrationIds ?? [];
+    const connectedIntegrations = connectedIds.map(id => ({ integrationId: id, entityId: input.orgId }));
+    const capabilities = await capabilityRegistry.getAllCapabilities(connectedIntegrations);
+
     const baseSpec = buildBaseSpec(input.prompt, input.toolId);
     let spec = mergeSpec(baseSpec, sessionSpec ?? toolSpec ?? {});
 
     const stageContextBase = {
       prompt: input.prompt,
-      connectedIntegrationIds: input.connectedIntegrationIds ?? [],
+      connectedIntegrationIds: connectedIds,
       onUsage: input.onUsage,
       orgId: input.orgId,
       toolId: input.toolId,
       userId: input.userId,
+      capabilities,
     };
 
     const stageResults: Array<{
@@ -242,7 +251,7 @@ export class ToolCompiler {
       await stage();
     }
 
-    spec = ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? []);
+    spec = ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? [], capabilities);
     const validation = ToolSystemSpecSchema.safeParse(spec);
     if (!validation.success) {
       degraded = true;
@@ -427,6 +436,7 @@ function ensureMinimumSpec(
   spec: ToolSystemSpec,
   prompt: string,
   connectedIntegrationIds: string[],
+  capabilities: Capability[]
 ): ToolSystemSpec {
   const detectedIntegrations = detectIntegrations(prompt);
   const connectedIntegrations = connectedIntegrationIds
@@ -467,18 +477,35 @@ function ensureMinimumSpec(
       ? spec.integrations
       : integrationIds.map((id) => ({
         id,
-        capabilities: getCapabilitiesForIntegration(id).map((c) => c.id),
+        capabilities: capabilities.filter(c => c.integrationId === id).map(c => c.id)
       }));
 
   let actions = spec.actions;
   if (actions.length === 0) {
-    actions = integrationIds.flatMap((integration) => buildFallbackActionsForIntegration(integration));
+    actions = integrationIds.flatMap((integration) => {
+      const integrationCaps = capabilities.filter(c => c.integrationId === integration);
+      if (integrationCaps.length > 0) {
+        return integrationCaps.map(cap => ({
+          id: cap.id,
+          name: cap.name,
+          description: cap.description || cap.name,
+          type: (cap.type === "list" || cap.type === "get" || cap.type === "search") ? "READ" : "WRITE",
+          integrationId: integration,
+          capabilityId: cap.id,
+          inputSchema: cap.parameters ?? {},
+          outputSchema: {},
+          writesToState: !(cap.type === "list" || cap.type === "get" || cap.type === "search"),
+          confidenceLevel: "medium",
+        }));
+      }
+      return buildFallbackActionsForIntegration(integration);
+    });
   }
 
   let reducers = spec.state.reducers;
   if (reducers.length === 0) {
     reducers = actions.map((action) => {
-      const cap = getCapability(action.capabilityId);
+      const cap = capabilities.find(c => c.id === action.capabilityId);
       const resource = cap?.resource ?? "data";
       return {
         id: `reduce.${action.id}`,
@@ -1029,20 +1056,6 @@ function buildFallbackViewForEntity(
 }
 
 function buildDefaultInputForCapability(capabilityId: string) {
-  const cap = getCapability(capabilityId);
-  if (!cap) return {};
-  const input: Record<string, any> = {};
-  if (capabilityId === "google_gmail_list") {
-    input.maxResults = 10;
-  } else if (cap.supportedFields.includes("maxResults")) {
-    input.maxResults = 5;
-  }
-  if (cap.supportedFields.includes("pageSize")) input.pageSize = 5;
-  if (cap.supportedFields.includes("first")) input.first = 5;
-  if (cap.supportedFields.includes("limit")) input.limit = 5;
-  if (cap.supportedFields.includes("channel")) input.channel = "general";
-  if (cap.supportedFields.includes("repo")) input.repo = "all";
-  if (cap.supportedFields.includes("owner")) input.owner = "self";
-  if (cap.supportedFields.includes("database_id")) input.database_id = "default";
-  return input;
+  // Legacy support removal
+  return {};
 }

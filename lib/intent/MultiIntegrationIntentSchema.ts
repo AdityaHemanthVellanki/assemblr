@@ -6,7 +6,7 @@ export type MultiIntegrationToolIntent = {
 
 export type ToolSectionIntent = {
   id: string;
-  integration: "google" | "github" | "slack" | "notion" | "linear";
+  integration: string;
   capabilities: CapabilityInvocationIntent[];
   stateNamespace: string;
   uiLayout: "table" | "list" | "kanban";

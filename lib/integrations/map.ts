@@ -1,31 +1,24 @@
-
-import { IntegrationExecutor } from "@/lib/execution/types";
 import { IntegrationRuntime } from "@/lib/core/runtime";
-
-import { GitHubExecutor } from "@/lib/integrations/executors/github";
-import { LinearExecutor } from "@/lib/integrations/executors/linear";
-import { SlackExecutor } from "@/lib/integrations/executors/slack";
-import { NotionExecutor } from "@/lib/integrations/executors/notion";
-import { GoogleExecutor } from "@/lib/integrations/executors/google";
-
-import { GitHubRuntime } from "@/lib/integrations/runtimes/github";
-import { GoogleRuntime } from "@/lib/integrations/runtimes/google";
-import { SlackRuntime } from "@/lib/integrations/runtimes/slack";
-import { NotionRuntime } from "@/lib/integrations/runtimes/notion";
-import { LinearRuntime } from "@/lib/integrations/runtimes/linear";
-
-export const EXECUTORS: Record<string, IntegrationExecutor> = {
-  github: new GitHubExecutor(),
-  linear: new LinearExecutor(),
-  slack: new SlackExecutor(),
-  notion: new NotionExecutor(),
-  google: new GoogleExecutor(),
-};
+import { ComposioRuntime } from "@/lib/integrations/runtimes/composio";
 
 export const RUNTIMES: Record<string, IntegrationRuntime> = {
-  github: new GitHubRuntime(),
-  google: new GoogleRuntime(),
-  slack: new SlackRuntime(),
-  notion: new NotionRuntime(),
-  linear: new LinearRuntime(),
+  github: new ComposioRuntime(),
+  google: new ComposioRuntime(),
+  slack: new ComposioRuntime(),
+  notion: new ComposioRuntime(),
+  linear: new ComposioRuntime(),
+  hubspot: new ComposioRuntime(),
+  jira: new ComposioRuntime(),
+  asana: new ComposioRuntime(),
+  trello: new ComposioRuntime(),
+  salesforce: new ComposioRuntime(),
+  zendesk: new ComposioRuntime(),
+  stripe: new ComposioRuntime(),
+  airtable: new ComposioRuntime(),
+  discord: new ComposioRuntime(),
+  intercom: new ComposioRuntime(),
+  mixpanel: new ComposioRuntime(),
+  pipedrive: new ComposioRuntime(),
+  zoom: new ComposioRuntime(),
+  shopify: new ComposioRuntime(),
 };

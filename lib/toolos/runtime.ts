@@ -1,6 +1,4 @@
-import { createHash } from "crypto";
 import { RUNTIMES } from "@/lib/integrations/map";
-import { getValidAccessToken, IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
 import { ExecutionTracer } from "@/lib/observability/tracer";
 import { DEV_PERMISSIONS } from "@/lib/core/permissions";
 import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
@@ -74,13 +72,13 @@ export async function executeToolAction(params: {
     const snapshot = recordRun ? await loadToolState(toolId, orgId) : null;
     const run = recordRun
       ? await createExecutionRun({
-          orgId,
-          toolId,
-          triggerId: triggerId ?? "manual",
-          actionId: action.id,
-          input,
-          stateSnapshot: snapshot ?? {},
-        })
+        orgId,
+        toolId,
+        triggerId: triggerId ?? "manual",
+        actionId: action.id,
+        input,
+        stateSnapshot: snapshot ?? {},
+      })
       : null;
     const runLogs: Array<Record<string, any>> = [];
     if (run) {
@@ -102,34 +100,34 @@ export async function executeToolAction(params: {
     let output: any;
     try {
       const startedAt = Date.now();
-      console.log(`[Runtime] Fetching token for ${action.integrationId}...`);
-      const token = await getValidAccessToken(orgId, action.integrationId);
+
+      // In our refactored system, all runtimes are Composio-based
+      // and use orgId as the primary identification (entityId).
+      const token = orgId;
+
       if (run) {
         const envType = process.env.RUNTIME_ENV ?? "unknown";
-        const credentialHash = createHash("sha256").update(token).digest("hex");
         runLogs.push({
           id: `${action.id}:credential_verification`,
           timestamp: new Date().toISOString(),
           status: "info",
           actionId: action.id,
           integrationId: action.integrationId,
-          credential_source: "integration_connections",
-          credential_hash: credentialHash,
+          credential_source: "composio_entity",
           orgId,
           userId: userId ?? null,
           environment: envType,
-          real_credentials: true,
           live_data: true,
         });
       }
+
       const context = await runtime.resolveContext(token);
       if (runtime.checkPermissions) {
         runtime.checkPermissions(action.capabilityId, DEV_PERMISSIONS);
       }
       const tracer = new ExecutionTracer("run");
-      
+
       console.log(`[Runtime] Executing capability ${action.capabilityId}...`);
-      // EXECUTE ONCE - NO RETRY
       output = await executor.execute(input, context, tracer);
 
       const recordCount = Array.isArray(output) ? output.length : (output ? 1 : 0);
@@ -157,38 +155,16 @@ export async function executeToolAction(params: {
           const currentState = await loadToolState(toolId, orgId);
           const newState = applyReducer(compiledTool.reducers, action.reducerId, currentState, output);
           await saveToolState(toolId, orgId, newState);
-          
-          // Emit state change event for timeline/triggers
-          // events.push({ type: "state_change", payload: { path: reducer.target, value: output } });
         }
       }
-      
+
       return { state: {}, output, events: [] };
     } catch (err) {
-      const isAuthError = err instanceof IntegrationAuthError || (err as any).name === "IntegrationAuthError";
-      if (isAuthError && action.integrationId === "slack") {
-        const payload = {
-          integration: "slack",
-          status: "reauth_required",
-          reason: (err as any).reason ?? "token_expired_no_refresh",
-          userActionRequired: true,
-        };
-        if (run) {
-          runLogs.push({
-            id: `${action.id}:auth_required`,
-            timestamp: new Date().toISOString(),
-            status: "warning",
-            error: err instanceof Error ? err.message : String(err),
-          });
-          await updateExecutionRun({ runId: run.id, status: "completed", logs: runLogs });
-        }
-        return { state: {}, output: null, events: [{ type: "integration_warning", payload }] };
-      }
       if (run) {
         runLogs.push({
-          id: `${action.id}:${isAuthError ? "auth_required" : "error"}`,
+          id: `${action.id}:error`,
           timestamp: new Date().toISOString(),
-          status: isAuthError ? "warning" : "error",
+          status: "error",
           error: err instanceof Error ? err.message : String(err),
         });
         await updateExecutionRun({ runId: run.id, status: "failed", logs: runLogs });

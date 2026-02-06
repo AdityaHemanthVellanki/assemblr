@@ -3,18 +3,16 @@ import { cookies } from "next/headers";
 import crypto from "crypto";
 
 import { requireOrgMember } from "@/lib/permissions";
-import { OAUTH_PROVIDERS } from "@/lib/integrations/oauthProviders";
 import { getServerEnv } from "@/lib/env";
 import { getBaseUrl } from "@/lib/url";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 // ... imports
-import { getBroker } from "@/lib/broker";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  const env = getServerEnv();
+  getServerEnv();
   const baseUrl = await getBaseUrl(req);
   console.log(`[OAuth Start] Resolved Base URL: ${baseUrl}`);
 
@@ -41,7 +39,7 @@ export async function GET(req: Request) {
     return redirectWithError("Invalid provider");
   }
 
-  // 1. Auth check
+  // Auth check
   let ctx;
   try {
     ({ ctx } = await requireOrgMember());
@@ -50,48 +48,16 @@ export async function GET(req: Request) {
   }
 
   try {
-    const broker = getBroker();
+    const { createConnection } = await import("@/lib/integrations/composio/connection");
 
-    // 2. Initiate Connection via Broker
-    // This generates the Auth URL and State
-    const { authUrl, state, codeVerifier } = await broker.initiateConnection(
-      ctx.orgId,
-      ctx.userId,
-      providerId,
-      "/", // returnPath is ignored by DIY broker initiation logic (context has it)
-      resumeId
-    );
+    // We pass resumeId in the redirectUri so the callback can handle it
+    const { redirectUrl } = await createConnection(ctx.orgId, providerId, resumeId);
 
-    const cookieStore = await cookies();
-    const isSecure = process.env.NODE_ENV === "production";
-
-    // 3. Store State in Cookie (CSRF Protection)
-    // We store the exact state string that was sent to the provider.
-    // In callback, we will verify cookie value == param value.
-    cookieStore.set("oauth_state", state, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 60 * 10, // 10 minutes
-      path: "/",
-    });
-
-    // 4. Store PKCE verifier if present
-    if (codeVerifier) {
-      cookieStore.set("oauth_pkce", codeVerifier, {
-        httpOnly: true,
-        secure: isSecure,
-        sameSite: "lax",
-        maxAge: 60 * 10,
-        path: "/",
-      });
-    }
-
-    console.log(`[OAuth Start] Redirecting to ${providerId}. State: ${state.substring(0, 10)}...`);
-    return NextResponse.redirect(authUrl);
+    return NextResponse.redirect(redirectUrl);
 
   } catch (error: any) {
     console.error("[OAuth Start] Initialization Error:", error);
     return redirectWithError(error.message || "Failed to start integration flow");
   }
 }
+

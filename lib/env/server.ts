@@ -99,6 +99,11 @@ const serverEnvSchema = z
     DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
 
     CRON_SECRET: optionalString(),
+
+    // --------------------------------------------------------------------------
+    // COMPOSIO CONFIGURATION
+    // --------------------------------------------------------------------------
+    COMPOSIO_API_KEY: z.string().min(1, "COMPOSIO_API_KEY is required"),
   })
   .superRefine((env, ctx) => {
     if (env.APP_BASE_URL?.startsWith("http://")) {

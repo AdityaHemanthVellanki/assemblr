@@ -27,38 +27,25 @@ export async function DELETE(
     return NextResponse.json({ error: "Invalid integration" }, { status: 400 });
   }
 
-  const supabase = await createSupabaseServerClient();
-  await supabase
-    .from("org_integrations")
-    .update({
-      status: "revoked",
-      connected_at: null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("org_id", ctx.orgId)
-    .eq("integration_id", integrationId);
+  try {
+    const { removeConnection } = await import("@/lib/integrations/composio/connection");
+    await removeConnection(ctx.orgId, integrationId);
 
-  await supabase.from("integration_audit_logs").insert({
-    org_id: ctx.orgId,
-    integration_id: integrationId,
-    event_type: "revoked",
-    metadata: {},
-  });
+    const supabase = await createSupabaseServerClient();
+    await supabase.from("integration_audit_logs").insert({
+      org_id: ctx.orgId,
+      integration_id: integrationId,
+      event_type: "revoked",
+      metadata: { provider: "composio" },
+    });
 
-  const delRes = await supabase
-    .from("integration_connections")
-    .delete()
-    .eq("org_id", ctx.orgId)
-    .eq("integration_id", integrationId);
-
-  if (delRes.error) {
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
     console.error("delete integration connection failed", {
       orgId: ctx.orgId,
       integrationId,
-      message: delRes.error.message,
+      message: e.message,
     });
     return NextResponse.json({ error: "Failed to disconnect integration" }, { status: 500 });
   }
-
-  return NextResponse.json({ ok: true });
 }

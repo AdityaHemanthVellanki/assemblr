@@ -14,5 +14,5 @@ export interface Capability {
   integrationId: string;
   paramsSchema: z.ZodSchema;
   autoResolvedParams?: string[];
-  execute(params: any, context: any, trace: ExecutionTracer): Promise<any>;
+  execute(params: any, context: any, trace?: ExecutionTracer): Promise<any>;
 }

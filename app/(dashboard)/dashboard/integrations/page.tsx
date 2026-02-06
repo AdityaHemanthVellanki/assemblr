@@ -370,8 +370,8 @@ export default function IntegrationsPage() {
               type="button"
               onClick={() => setFilter(m as FilterMode)}
               className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors capitalize ${filter === m
-                  ? "bg-foreground text-background"
-                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                ? "bg-foreground text-background"
+                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
             >
               {m.replace("_", " ")}
@@ -473,8 +473,8 @@ export default function IntegrationsPage() {
             <div className="mt-8 space-y-6">
               {activeStatus?.connected ? (
                 <div className={`rounded-md border p-3 text-sm ${activeStatus.status === "error"
-                    ? "border-destructive/20 bg-destructive/10 text-destructive"
-                    : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  ? "border-destructive/20 bg-destructive/10 text-destructive"
+                  : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                   }`}>
                   {activeStatus.status === "error" ? "⚠ Connection Error" : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
                 </div>
@@ -502,19 +502,10 @@ export default function IntegrationsPage() {
                   onSubmit={(e) => { e.preventDefault(); void submit(); }}
                   className="space-y-4"
                 >
-                  {/* OAuth BYOO Info */}
-                  {active.connectionMode === "oauth" && (
-                    <div className="text-xs text-muted-foreground bg-muted p-3 rounded space-y-2 mb-4 border border-border">
-                      <p className="font-semibold text-foreground">Bring Your Own App (BYOO)</p>
-                      <p>
-                        To connect {active.name}, you must create an OAuth App in their developer portal.
-                      </p>
-                      <div className="space-y-1">
-                        <p className="font-medium">Redirect URI:</p>
-                        <code className="block bg-background p-2 rounded border border-border select-all break-all">
-                          {origin}/api/oauth/callback/{active.id}
-                        </code>
-                      </div>
+                  {/* Use a simplified message for all integrations as they are handled by Composio */}
+                  {(active.connectionMode === "oauth" || active.auth.type === "oauth") && (
+                    <div className="text-sm text-muted-foreground p-3 border border-border rounded-md bg-muted/30">
+                      Click below to securely connect your {active.name} account via Composio.
                     </div>
                   )}
 
