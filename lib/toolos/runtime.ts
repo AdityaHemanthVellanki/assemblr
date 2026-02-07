@@ -25,7 +25,7 @@ export async function executeToolAction(params: {
   triggerId?: string | null;
   recordRun?: boolean;
   dryRun?: boolean;
-}) {
+}): Promise<ToolExecutionResult> {
   const { orgId, toolId, compiledTool, actionId, input, userId, triggerId, recordRun = true, dryRun = false } = params;
   const toolScope: MemoryScope = { type: "tool_org", toolId, orgId };
   const action = compiledTool.actions.find((item) => item.id === actionId);

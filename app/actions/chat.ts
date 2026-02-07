@@ -5,7 +5,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { processToolChat, resolveIntegrationRequirements, resumeToolExecution, runCompilerPipeline, runToolRuntimePipeline, maybeAutoRenameChat } from "@/lib/ai/tool-chat";
 import { isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
-import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { requireOrgMemberOptional } from "@/lib/permissions";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -81,8 +81,8 @@ export async function sendChatMessage(
   }
 
   // 3. Load Connections & Process Chat
-  const connections = await loadIntegrationConnections({ supabase, orgId });
-  const connectedIntegrationIds = connections.map((c) => c.integration_id);
+  const connectionsMap = await getConnectedIntegrations(orgId);
+  const connectedIntegrationIds = Object.keys(connectionsMap);
   const integrationSelection = resolveIntegrationRequirements({
     prompt: message,
     integrationMode,

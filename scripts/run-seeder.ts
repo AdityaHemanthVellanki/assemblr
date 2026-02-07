@@ -9,7 +9,12 @@ import { PROFILES } from "@/lib/seeder/profiles";
 import { GitHubSeeder } from "@/lib/seeder/integrations/github";
 import { LinearSeeder } from "@/lib/seeder/integrations/linear";
 import { SeederLog } from "@/lib/seeder/types";
-import { getValidAccessToken } from "@/lib/integrations/tokenRefresh";
+
+// Stub for token retrieval since we moved to Composio and it hides tokens.
+async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
+    console.warn(`[Seeder] Skipping token retrieval for ${integrationId} (Composio Managed). Seeding might fail if raw token is needed.`);
+    throw new Error("Raw token retrieval not supported with Composio yet.");
+}
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { LinearClient } from "@linear/sdk";
 import { WebClient } from "@slack/web-api";

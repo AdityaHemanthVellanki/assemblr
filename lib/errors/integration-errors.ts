@@ -15,3 +15,12 @@ export class IntegrationNotConnectedError extends Error {
 export function isIntegrationNotConnectedError(error: unknown): error is IntegrationNotConnectedError {
   return error instanceof IntegrationNotConnectedError || (error as any)?.name === "IntegrationNotConnectedError";
 }
+
+export class IntegrationAuthError extends Error {
+  integrationId: string;
+  constructor(integrationId: string, message: string) {
+    super(`Integration authentication failed for ${integrationId}: ${message}`);
+    this.name = "IntegrationAuthError";
+    this.integrationId = integrationId;
+  }
+}

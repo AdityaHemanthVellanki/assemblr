@@ -15,7 +15,7 @@ export type MetricExecution = {
 
 export async function getLatestExecution(metricId: string): Promise<MetricExecution | null> {
   const supabase = await createSupabaseServerClient();
-  
+
   // @ts-ignore
   const { data, error } = await (supabase.from("metric_executions") as any)
     .select()
@@ -31,7 +31,7 @@ export async function getLatestExecution(metricId: string): Promise<MetricExecut
 
 export async function createExecution(metricId: string, triggeredBy: string = "system"): Promise<MetricExecution> {
   const supabase = await createSupabaseServerClient();
-  
+
   // @ts-ignore
   const { data, error } = await (supabase.from("metric_executions") as any)
     .insert({
@@ -47,12 +47,12 @@ export async function createExecution(metricId: string, triggeredBy: string = "s
 }
 
 export async function updateExecutionStatus(
-  id: string, 
-  status: "running" | "completed" | "failed", 
+  id: string,
+  status: "running" | "completed" | "failed",
   payload?: { result?: any; error?: string }
 ): Promise<void> {
   const supabase = await createSupabaseServerClient();
-  
+
   const updates: any = { status };
   if (status === "completed") {
     updates.completed_at = new Date().toISOString();
@@ -62,7 +62,7 @@ export async function updateExecutionStatus(
     updates.completed_at = new Date().toISOString();
     updates.error = payload?.error;
   }
-  
+
   // @ts-ignore
   const { error } = await (supabase.from("metric_executions") as any)
     .update(updates)

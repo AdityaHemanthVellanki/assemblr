@@ -6,7 +6,6 @@ import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
-import { getIntegrationTokenStatus, getValidAccessToken } from "@/lib/integrations/tokenRefresh";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
@@ -19,13 +18,14 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { withToolBuildLock } from "@/lib/toolos/build-lock";
 import { resolveBuildContext } from "@/lib/toolos/build-context";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { IntegrationAuthError } from "@/lib/integrations/tokenRefresh";
+import { IntegrationAuthError } from "@/lib/errors/integration-errors";
 import { inferFieldsFromData } from "@/lib/toolos/schema/infer";
 import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords, countSnapshotRecords } from "@/lib/toolos/materialization";
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
+import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { getRuntimeValidationResult } from "@/lib/core/guard";
 
@@ -1182,12 +1182,15 @@ export async function runCompilerPipeline(
       const slackRequired = isSlackRequired(input.userMessage, spec.intent_contract);
       if (slackRequired) {
         try {
-          const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
-          if (status.status !== "valid") {
+          // Replaced getIntegrationTokenStatus with getConnectedIntegrations
+          const connections = await getConnectedIntegrations(buildContext.orgId);
+          const isConnected = !!connections["slack"];
+
+          if (!isConnected) {
             integrationStatuses.slack = {
               integration: "slack",
               status: "reauth_required",
-              reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+              reason: "missing_credentials",
               required: true,
               userActionRequired: true,
             };
@@ -1243,12 +1246,15 @@ export async function runCompilerPipeline(
             if (action.integrationId === "slack" && !slackRequired) {
               if (!integrationStatuses.slack) {
                 try {
-                  const status = await getIntegrationTokenStatus(buildContext.orgId, "slack");
-                  if (status.status !== "valid") {
+                  // Replaced getIntegrationTokenStatus with getConnectedIntegrations
+                  const connections = await getConnectedIntegrations(buildContext.orgId);
+                  const isConnected = !!connections["slack"];
+
+                  if (!isConnected) {
                     integrationStatuses.slack = {
                       integration: "slack",
                       status: "reauth_required",
-                      reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+                      reason: "missing_credentials",
                       required: false,
                       userActionRequired: true,
                     };
@@ -1759,12 +1765,15 @@ export async function resumeToolExecution(params: {
   const slackRequired = isSlackRequired(params.prompt, params.spec.intent_contract);
   if (slackRequired) {
     try {
-      const status = await getIntegrationTokenStatus(params.orgId, "slack");
-      if (status.status !== "valid") {
+      // Replaced getIntegrationTokenStatus with getConnectedIntegrations
+      const connections = await getConnectedIntegrations(params.orgId);
+      const isConnected = !!connections["slack"];
+
+      if (!isConnected) {
         integrationStatuses.slack = {
           integration: "slack",
           status: "reauth_required",
-          reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+          reason: "missing_credentials",
           required: true,
           userActionRequired: true,
         };
@@ -1809,12 +1818,15 @@ export async function resumeToolExecution(params: {
         if (action.integrationId === "slack" && !slackRequired) {
           if (!integrationStatuses.slack) {
             try {
-              const status = await getIntegrationTokenStatus(params.orgId, "slack");
-              if (status.status !== "valid") {
+              // Replaced getIntegrationTokenStatus with getConnectedIntegrations
+              const connections = await getConnectedIntegrations(params.orgId);
+              const isConnected = !!connections["slack"];
+
+              if (!isConnected) {
                 integrationStatuses.slack = {
                   integration: "slack",
                   status: "reauth_required",
-                  reason: status.status === "missing" ? "missing_credentials" : "token_expired_no_refresh",
+                  reason: "missing_credentials",
                   required: false,
                   userActionRequired: true,
                 };
@@ -3237,8 +3249,13 @@ async function applyEnterpriseDerivedResults(params: {
   if (match === "enterprise_prompt_4") {
     const messages = asObjectArray(outputsByAction.get("slack.search_docs"));
     const docIds = messages.flatMap((msg) => extractDocIds(getStringField(msg, "text")));
-    const token = await getValidAccessToken(params.orgId, "google");
+    // Manual token fetch not supported with Composio (Execution First).
+    // Stubbing behavior to return empty token or skip.
+    console.warn("Manual Google Drive fetch skipped (Composio managed).");
+    const token = ""; // Empty token
     const rows = [];
+    if (!token) return { rows: [], docResult: null }; // Skip early
+
     for (const docId of docIds) {
       const res = await fetch(`https://www.googleapis.com/drive/v3/files/${docId}?fields=id,name,modifiedTime,owners`, {
         headers: { Authorization: `Bearer ${token}` },

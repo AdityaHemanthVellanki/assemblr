@@ -51,6 +51,7 @@ type IntegrationUiConfig = {
   description: string;
   connectionMode: ConnectionMode;
   auth: IntegrationAuthSchema;
+  requiredParams?: string[];
 };
 
 type IntegrationListItem = IntegrationUiConfig & {
@@ -208,9 +209,11 @@ export default function IntegrationsPage() {
     if (!current) return;
 
     // CRITICAL FIX: Direct OAuth Redirect
-    // If it's an OAuth integration, skip the modal and redirect immediately.
-    // The "connectionMode" logic might vary, but all 5 supported tools are "hosted_oauth".
-    if (current.connectionMode === ("hosted_oauth" as any) || current.auth.type === "oauth") {
+    // CRITICAL FIX: Direct OAuth Redirect
+    // If it's an OAuth integration, skip the modal and redirect immediately
+    // UNLESS it requires parameters (like Jira/Salesforce).
+    const requiresParams = current.requiredParams && current.requiredParams.length > 0;
+    if ((current.connectionMode === "hosted_oauth" as any || current.auth.type === "oauth") && !requiresParams) {
       try {
         // Set local loading state (optimistic)
         setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
@@ -250,7 +253,23 @@ export default function IntegrationsPage() {
       logoUrl: current.logoUrl,
       description: current.description,
       connectionMode: current.connectionMode,
-      auth: current.auth,
+      auth: {
+        ...current.auth,
+        // Inject required params as fields
+        // We cast as any to bypass strict union checks if adding fields to 'none', 
+        // though realistically these integrations are 'oauth'
+        fields: [
+          ...("fields" in current.auth ? current.auth.fields || [] : []),
+          ...(current.requiredParams || []).map(p => ({
+            kind: "string",
+            id: p,
+            label: p === "instanceEndpoint" ? "Instance Endpoint" : p.charAt(0).toUpperCase() + p.slice(1),
+            placeholder: p === "subdomain" ? "your-company" : "",
+            required: true,
+          }))
+        ]
+      } as IntegrationAuthSchema,
+      requiredParams: current.requiredParams,
     };
     setActive(config);
   }, [integrations, load]);
@@ -293,12 +312,13 @@ export default function IntegrationsPage() {
       });
 
       // If OAuth, redirect to start flow
-      if (active.connectionMode === "oauth") {
+      if (active.connectionMode === "oauth" || active.connectionMode === ("hosted_oauth" as any) || active.auth.type === "oauth") {
         setIsConnecting(true);
         const oauthUrl = await startOAuthFlow({
           providerId: active.id,
           currentPath: window.location.pathname + window.location.search,
           integrationMode: "manual",
+          connectionParams: formValues, // Pass collected params here
         });
         router.push(oauthUrl);
         return; // Don't close modal or reload, we are leaving

@@ -5,7 +5,7 @@ import { getServerEnv } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { INTEGRATIONS_UI, getIntegrationUIConfig } from "@/lib/integrations/registry";
 import { encryptJson } from "@/lib/security/encryption";
-import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
+// import { testIntegrationConnection } from "@/lib/integrations/testIntegration";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +23,7 @@ export async function GET() {
   }
 
   const { listConnections } = await import("@/lib/integrations/composio/connection");
+  const { getIntegrationConfig } = await import("@/lib/integrations/composio/config");
   const connections = await listConnections(ctx.orgId);
 
   const connectedMap = new Map<string, any>();
@@ -47,6 +48,7 @@ export async function GET() {
       connectedAt: conn?.connectedAt ?? null,
       updatedAt: conn?.connectedAt ?? null, // Composio doesn't strictly provide updatedAt in this list
       scopes: [], // Composio handles scopes internally
+      requiredParams: getIntegrationConfig(i.id).requiredParams,
     };
   });
 

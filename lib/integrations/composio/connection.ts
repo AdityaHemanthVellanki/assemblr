@@ -1,29 +1,88 @@
+
 import { getComposioClient } from "./client";
 import { ComposioConnection } from "./types";
+import { getIntegrationConfig } from "./config";
 
-export const createConnection = async (entityId: string, integrationId: string, resumeId?: string): Promise<{ redirectUrl: string; connectionId: string }> => {
+export const getComposioEntityId = (orgId: string) => {
+    if (!orgId) throw new Error("Org ID is required for Entity ID");
+    return `assemblr_org_${orgId}`;
+};
+
+export const createConnection = async (orgId: string, integrationId: string, resumeId?: string, connectionParams?: Record<string, any>, scopes?: string[]): Promise<{ redirectUrl: string; connectionId: string }> => {
     const client = getComposioClient();
 
-    let redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/callback/composio`;
+    // Resolve configuration
+    const config = getIntegrationConfig(integrationId);
+    const entityId = getComposioEntityId(orgId);
+
+    // Use configured appName (e.g., "jira", "github")
+    const appName = config.appName;
+
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!baseUrl) throw new Error("NEXT_PUBLIC_APP_URL is not defined");
+
+    let redirectUri = `${baseUrl}/api/auth/callback/composio`;
+
     if (resumeId) {
         redirectUri += `?resumeId=${encodeURIComponent(resumeId)}`;
     }
 
-    // Initiate connection
-    const connectionRequest = await client.connectedAccounts.initiate({
+    console.log("[Composio] Initiating connection:", {
         entityId,
-        integrationId,
+        appName,
+        useComposioAuth: config.useComposioAuth,
         redirectUri,
+        originalIntegrationId: integrationId,
+        scopes
     });
 
-    if (!connectionRequest.redirectUrl) {
-        throw new Error("No redirect URL returned from Composio");
-    }
+    try {
+        // Construct payload ensuring we follow the v2/v3 spec for "initiate"
+        const payload: any = {
+            entityId,
+            appName,
+            redirectUri,
+        };
 
-    return {
-        redirectUrl: connectionRequest.redirectUrl,
-        connectionId: connectionRequest.connectedAccountId,
-    };
+        if (config.useComposioAuth) {
+            payload.authMode = "OAUTH2";
+            payload.authConfig = {}; // Hack to force SDK to set useComposioAuth: true
+        }
+
+        if (connectionParams) {
+            payload.connectionParams = connectionParams;
+        }
+
+        // Inject scopes if provided
+        if (scopes && scopes.length > 0) {
+            // Try injecting in connectionParams as 'scopes' string or array
+            payload.connectionParams = {
+                ...(payload.connectionParams || {}),
+                scopes: scopes.join(" ") // Many OAuth providers take space-separated string
+            };
+        }
+
+        const connectionRequest = await client.connectedAccounts.initiate(payload);
+
+        if (!connectionRequest.redirectUrl) {
+            console.error("[Composio] No redirect URL in response:", connectionRequest);
+            throw new Error("No redirect URL returned from Composio");
+        }
+
+        return {
+            redirectUrl: connectionRequest.redirectUrl,
+            connectionId: connectionRequest.connectedAccountId,
+        };
+    } catch (e: any) {
+        console.error("[Composio] Connection initiation failed:", {
+            error: e.message,
+            description: e.description, // Composio specific
+            data: e.data, // Composio specific
+            entityId,
+            appName
+        });
+        throw e;
+    }
 };
 
 export const getConnectionStatus = async (connectionId: string): Promise<ComposioConnection | null> => {
@@ -32,7 +91,8 @@ export const getConnectionStatus = async (connectionId: string): Promise<Composi
         const connection = await client.connectedAccounts.get({ connectedAccountId: connectionId });
         return {
             id: connection.id,
-            integrationId: connection.integrationId,
+            // Map appName to integrationId if available (preferred for Assemblr mapping)
+            integrationId: connection.appName ? connection.appName.toLowerCase() : connection.integrationId,
             status: connection.status as any,
             connectedAt: connection.createdAt,
             appName: connection.appName,
@@ -43,13 +103,15 @@ export const getConnectionStatus = async (connectionId: string): Promise<Composi
     }
 }
 
-export const listConnections = async (entityId: string): Promise<ComposioConnection[]> => {
+export const listConnections = async (orgId: string): Promise<ComposioConnection[]> => {
     const client = getComposioClient();
+    const entityId = getComposioEntityId(orgId);
     try {
         const response = await client.connectedAccounts.list({ entityId });
         return response.items.map(c => ({
             id: c.id,
-            integrationId: c.integrationId,
+            // Map appName to integrationId if available (preferred for Assemblr mapping)
+            integrationId: c.appName ? c.appName.toLowerCase() : c.integrationId,
             status: c.status as any,
             connectedAt: c.createdAt,
             appName: c.appName,
@@ -60,11 +122,15 @@ export const listConnections = async (entityId: string): Promise<ComposioConnect
     }
 }
 
-export const removeConnection = async (entityId: string, integrationId: string): Promise<void> => {
+export const removeConnection = async (orgId: string, integrationId: string): Promise<void> => {
     const client = getComposioClient();
+    const entityId = getComposioEntityId(orgId);
+    const config = getIntegrationConfig(integrationId);
+
     try {
-        // We first need to find the connected account ID for this integration and entity
-        const connections = await client.connectedAccounts.list({ entityId, integrationId });
+        // Use appName for filtering
+        // @ts-ignore - SDK types might be stricter but appNames accepts string
+        const connections = await client.connectedAccounts.list({ entityId, appNames: config.appName });
         for (const conn of connections.items) {
             await client.connectedAccounts.delete({ connectedAccountId: conn.id });
         }

@@ -3,7 +3,7 @@ config({ path: ".env.local" });
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";
-import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 import { processToolChat } from "@/lib/ai/tool-chat";
 import { ensureToolIdentity } from "@/lib/toolos/lifecycle";
@@ -26,8 +26,8 @@ async function runValidation() {
 
     // 2. Integration Check
     const supabase = createSupabaseAdminClient();
-    const connections = await loadIntegrationConnections({ supabase, orgId });
-    const connectedIds = connections.map(c => c.integration_id);
+    const connectionsMap = await getConnectedIntegrations(orgId);
+    const connectedIds = Object.keys(connectionsMap);
     console.log(`✅ Active Integrations: ${connectedIds.join(", ")}`);
 
     // 3. Define Scenarios (Targeting SE_ Data)

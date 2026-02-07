@@ -3,7 +3,7 @@ import { z } from "zod";
 import { processToolChat, resolveIntegrationRequirements } from "@/lib/ai/tool-chat";
 import { PermissionError, requireOrgMemberOptional, requireProjectOrgAccess } from "@/lib/permissions";
 import { getServerEnv } from "@/lib/env";
-import { loadIntegrationConnections } from "@/lib/integrations/loadIntegrationConnections";
+import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { errorResponse, handleApiError, jsonResponse } from "@/lib/api/response";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -75,7 +75,7 @@ export async function POST(
       return errorResponse("Failed to save message", 500);
     }
 
-    const [projectRes, historyRes, connections] = await Promise.all([
+    const [projectRes, historyRes, connectionsMap] = await Promise.all([
       supabase.from("projects").select("spec").eq("id", toolId).single(),
       supabase
         .from("chat_messages")
@@ -83,7 +83,7 @@ export async function POST(
         .eq("tool_id", toolId)
         .order("created_at", { ascending: false })
         .limit(20),
-      loadIntegrationConnections({ supabase, orgId: ctx.orgId }),
+      getConnectedIntegrations(ctx.orgId),
     ]);
 
     if (projectRes.error || !projectRes.data) {
@@ -104,7 +104,7 @@ export async function POST(
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    const connectedIntegrationIds = connections.map((c) => c.integration_id);
+    const connectedIntegrationIds = Object.keys(connectionsMap);
     const integrationSelection = resolveIntegrationRequirements({
       prompt: userMessage,
       integrationMode,

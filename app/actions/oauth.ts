@@ -109,6 +109,7 @@ export async function startOAuthFlow(payload: {
   integrationMode: "auto" | "manual";
   pendingIntegrations?: string[];
   blockedIntegration?: string;
+  connectionParams?: Record<string, any>;
 }) {
   const {
     providerId,
@@ -120,7 +121,8 @@ export async function startOAuthFlow(payload: {
     prompt,
     integrationMode,
     pendingIntegrations,
-    blockedIntegration
+    blockedIntegration,
+    connectionParams
   } = payload;
 
   // 1. Create Resume Context
@@ -149,6 +151,15 @@ export async function startOAuthFlow(payload: {
   params.set("provider", providerId);
   params.set("redirectPath", currentPath);
   params.set("resumeId", resumeId);
+
+  if (connectionParams) {
+    try {
+      const encoded = Buffer.from(JSON.stringify(connectionParams)).toString("base64");
+      params.set("params", encoded);
+    } catch (e) {
+      console.error("[OAuth Start] Failed to encode connection params", e);
+    }
+  }
 
   const startUrl = `/api/oauth/start?${params.toString()}`;
   console.log(`[OAuth Start] Generated Start URL: ${startUrl}`);
