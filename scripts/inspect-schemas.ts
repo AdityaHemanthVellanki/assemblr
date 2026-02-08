@@ -3,40 +3,54 @@ import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 import { getComposioClient } from "@/lib/integrations/composio/client";
 
-
-
-const APPS = ["hubspot", "linear"]; // Adding Linear back to re-check
-const TARGET_ACTIONS = ["HUBSPOT_CREATE_CONTACT", "LINEAR_GET_ALL_LINEAR_TEAMS"];
-
 async function main() {
     const client = getComposioClient();
-    console.log("🔍 Inspecting Schemas by App...");
 
-    for (const app of APPS) {
-        console.log(`\n\n--- App: ${app} ---`);
+    const ACTIONS = [
+        "GITLAB_CREATE_PROJECT",
+        "BITBUCKET_CREATE_REPOSITORY",
+        "MICROSOFT_TEAMS_CREATE_TEAM",
+        "OUTLOOK_OUTLOOK_SEND_EMAIL",
+        "CLICKUP_CREATE_LIST"
+    ];
+
+    console.log("🔍 Inspecting Schemas...");
+
+    for (const actionName of ACTIONS) {
+        console.log(`\n--- Action: ${actionName} ---`);
         try {
-            // Pass app as string, not array
-            const schema = await client.actions.list({ apps: app } as any);
-            const actions = schema.items || [];
+            // @ts-ignore
+            // There isn't a direct 'get' for action schema in the simple client sometimes.
+            // We usually get it from 'list' but filter.
+            // But let's try 'client.actions.get' if available, or hack it via list.
 
-            // Find target actions
-            for (const actionName of TARGET_ACTIONS) {
-                if (actionName.toLowerCase().includes(app)) {
-                    const match = actions.find((a: any) => a.name === actionName);
-                    if (match) {
-                        console.log(`\nAction: ${actionName}`);
-                        console.log(JSON.stringify(match.parameters, null, 2));
-                    } else {
-                        // Maybe different name?
-                        console.log(`\nAction ${actionName} NOT in list. Similar actions:`);
-                        console.log(actions.filter((a: any) => a.name.includes("TEAM") || a.name.includes("SEARCH") || a.name.includes("CREATE")).map((a: any) => a.name).join(", "));
-                    }
-                }
+            // Hack: List actions for the app and find it.
+            const appName = actionName.split("_")[0].toLowerCase(); // heuristic
+            // bitbucket, gitlab, microsoft, outlook, clickup
+
+            // Adjust appName for microsoft_teams and outlook
+            let targetApp = appName;
+            if (actionName.startsWith("MICROSOFT_TEAMS")) targetApp = "microsoft_teams";
+            if (actionName.startsWith("OUTLOOK")) targetApp = "outlook";
+            if (actionName.startsWith("CLICKUP")) targetApp = "clickup";
+
+            // @ts-ignore
+            const res = await client.actions.list({ apps: targetApp });
+            const items = res.items || (Array.isArray(res) ? res : []);
+
+            const action = items.find((a: any) => a.name === actionName);
+
+            if (action) {
+                console.log("Description:", action.description);
+                console.log("Parameters:", JSON.stringify(action.parameters, null, 2));
+            } else {
+                console.log("❌ Action not found in list.");
             }
+
         } catch (e: any) {
-            console.log("Error fetching schema:", e.message);
+            console.error(`Error:`, e.message);
         }
     }
 }
 
-main().catch(console.error);
+main();

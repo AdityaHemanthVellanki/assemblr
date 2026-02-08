@@ -9,21 +9,16 @@ import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { createSupabaseClient } from "@/lib/supabase/client";
 
-// Simulated run counts (in production, would come from analytics)
-
-
 const categoryLabels: Record<string, string> = {
-    "Featured": "Featured",
-    "Engineering": "Engineering",
-    "Design": "Design",
-    "Marketing": "Marketing",
-    "Sales": "Sales",
-    "Operations": "Ops",
-    "Leadership / Exec": "Enterprise",
-    "Personal (Consumer)": "Personal",
+    "Engineering & Product": "Engineering",
+    "Revenue, Sales & CRM": "Revenue",
+    "Customer Support & Success": "Support",
+    "Operations & Finance": "Ops",
+    "Executive & Leadership": "Executive",
+    "Internal Productivity": "Productivity",
 };
 
-const displayCategories = ["All", ...useCaseCategories.map(c => categoryLabels[c] || c)];
+const displayCategories = ["All", ...useCaseCategories];
 
 function EnterSystemButton({ children, className }: { children: React.ReactNode; className?: string }) {
     const router = useRouter();
@@ -38,7 +33,7 @@ function EnterSystemButton({ children, className }: { children: React.ReactNode;
     }, [router]);
 
     return (
-        <Button onClick={handleEnter} size="sm" className={`rounded-full ${className ?? ""}`}>
+        <Button onClick={handleEnter} size="sm" className={`rounded-full bg-primary text-primary-foreground hover:bg-primary/90 ${className ?? ""}`}>
             {children}
         </Button>
     );
@@ -51,19 +46,16 @@ export default function PublicUseCasesPage() {
         if (activeCategory === "All") {
             return useCases;
         }
-        const originalCategory = Object.entries(categoryLabels).find(
-            ([, label]) => label === activeCategory
-        )?.[0] ?? activeCategory;
-        return useCases.filter((uc) => uc.category === originalCategory);
+        return useCases.filter((uc) => uc.category === activeCategory);
     }, [activeCategory]);
 
     return (
-        <div className="dark min-h-screen bg-background text-foreground">
+        <div className="min-h-screen bg-background text-foreground">
             {/* Navigation Header */}
-            <header className="fixed top-0 left-0 right-0 z-50 border-b border-border/30 bg-background/80 backdrop-blur-xl">
-                <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-                    <Link href="/" className="flex items-center gap-2 group">
-                        <div className="relative h-8 w-8 transition-transform group-hover:scale-105">
+            <header className="fixed top-0 left-0 right-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
+                <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
+                    <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight transition-opacity hover:opacity-80">
+                        <div className="relative h-6 w-6">
                             <Image
                                 src="/images/logo-icon.png"
                                 alt="Assemblr Logo"
@@ -71,49 +63,55 @@ export default function PublicUseCasesPage() {
                                 className="object-contain"
                             />
                         </div>
-                        <span className="text-lg font-semibold tracking-tight">Assemblr</span>
+                        <span>Assemblr</span>
                     </Link>
-                    <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-4">
                         <Link
                             href="/use-cases"
-                            className="text-sm font-medium text-foreground"
+                            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
                         >
                             Use Cases
                         </Link>
-                        <EnterSystemButton className="h-9 px-4 text-sm">
-                            Go to Chat
+                        <EnterSystemButton className="h-8 px-4 text-xs font-medium">
+                            Launch App
                         </EnterSystemButton>
                     </div>
-                </nav>
+                </div>
             </header>
 
             {/* Hero Section */}
-            <div className="relative overflow-hidden border-b border-border/40 bg-gradient-to-b from-muted/20 to-background pt-20">
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.4),_transparent_70%)]" />
-                <div className="relative mx-auto max-w-7xl px-6 py-16 text-center">
-                    <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-                        Use Cases
+            <div className="relative border-b border-border/40 pt-32 pb-20">
+                <div className="absolute inset-0 bg-grid-white/[0.02] bg-[length:32px_32px]" />
+                <div className="absolute inset-0 bg-gradient-to-tr from-background via-background/90 to-background/40" />
+
+                <div className="relative mx-auto max-w-7xl px-6 text-center">
+                    <div className="inline-flex items-center rounded-full border border-border/60 bg-muted/30 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur-sm mb-6">
+                        <span>Now with {useCases.length}+ Enterprise Integrations</span>
+                    </div>
+                    <h1 className="text-4xl font-bold tracking-tight sm:text-6xl bg-clip-text text-transparent bg-gradient-to-b from-foreground to-foreground/70">
+                        Enterprise Intelligence
                     </h1>
-                    <p className="mx-auto mt-4 max-w-2xl text-base text-muted-foreground sm:text-lg">
-                        Ready-to-run intelligent tools built for real work. Click to start using them instantly.
+                    <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground">
+                        A complete suite of autonomous agents for Engineering, Sales, Support, and Operations.
+                        Ready to deploy in seconds.
                     </p>
                 </div>
             </div>
 
             {/* Category Filters */}
-            <div className="sticky top-[73px] z-40 border-b border-border/40 bg-background/95 backdrop-blur-sm">
+            <div className="sticky top-14 z-40 border-b border-border/40 bg-background/95 backdrop-blur-sm">
                 <div className="mx-auto max-w-7xl px-6">
-                    <div className="flex items-center gap-1 overflow-x-auto py-4 scrollbar-hide">
+                    <div className="flex items-center gap-2 overflow-x-auto py-3 scrollbar-hide">
                         {displayCategories.map((category) => (
                             <button
                                 key={category}
                                 onClick={() => setActiveCategory(category)}
-                                className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors ${activeCategory === category
-                                    ? "bg-foreground text-background"
-                                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeCategory === category
+                                        ? "bg-foreground text-background shadow-sm"
+                                        : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                                     }`}
                             >
-                                {category}
+                                {category === "All" ? "All Use Cases" : categoryLabels[category] || category}
                             </button>
                         ))}
                     </div>
@@ -121,30 +119,39 @@ export default function PublicUseCasesPage() {
             </div>
 
             {/* Use Cases Grid */}
-            <div className="mx-auto max-w-7xl px-6 py-10">
-                <div className="mb-6 flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">
-                        {filteredUseCases.length} tool{filteredUseCases.length !== 1 ? "s" : ""}
+            <div className="mx-auto max-w-7xl px-6 py-12">
+                <div className="mb-8 flex items-center justify-between">
+                    <h2 className="text-xl font-semibold tracking-tight">
+                        {activeCategory === "All" ? "All Capabilities" : activeCategory}
+                    </h2>
+                    <span className="text-xs text-muted-foreground border border-border rounded-md px-2 py-1">
+                        {filteredUseCases.length} available
                     </span>
                 </div>
 
                 {filteredUseCases.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-border/60 p-12 text-center">
-                        <p className="text-muted-foreground">No tools found in this category.</p>
+                    <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-border/60 p-20 text-center bg-muted/5">
+                        <div className="h-10 w-10 text-muted-foreground/40 mb-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                            </svg>
+                        </div>
+                        <p className="text-muted-foreground font-medium">No use cases found.</p>
+                        <p className="text-xs text-muted-foreground/60 mt-1">Try selecting a different category.</p>
                     </div>
                 ) : (
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {filteredUseCases.map((useCase) => (
-                            <UseCaseCard
-                                key={useCase.id}
-                                id={useCase.id}
-                                name={useCase.name}
-                                description={useCase.description}
-                                integrations={useCase.integrations}
-                                prompt={useCase.prompt}
-                                category={useCase.category}
-
-                            />
+                            <div key={useCase.id} className="group relative">
+                                <UseCaseCard
+                                    id={useCase.id}
+                                    name={useCase.name}
+                                    description={useCase.description}
+                                    integrations={useCase.integrations}
+                                    prompt={useCase.prompt}
+                                    category={useCase.category}
+                                />
+                            </div>
                         ))}
                     </div>
                 )}

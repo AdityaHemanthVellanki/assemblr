@@ -97,7 +97,7 @@ export function ToolRenderer({
   const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
   const [pollingInterval, setPollingInterval] = React.useState<number | null>(1500);
   const authBackoffRef = React.useRef<number | null>(null);
-  
+
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
   const activeView = React.useMemo(
     () => systemSpec?.views.find((v) => v.id === activeViewId),
@@ -148,7 +148,7 @@ export function ToolRenderer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ viewId }),
       });
-      
+
       setProjection(payload.view);
       if (payload.state) {
         setToolState(payload.state);
@@ -279,11 +279,19 @@ export function ToolRenderer({
         }
       }>(`/api/tools/${toolId}/result`);
 
-      if (payload.ok && payload.data) {
-        setMaterialized(true);
-        setLifecycle("ACTIVE");
-        setToolState(payload.data.records_json);
-        setAuthStatus("authenticated");
+      if (payload.ok) {
+        if (payload.data) {
+          setMaterialized(true);
+          setLifecycle("ACTIVE");
+          setToolState(payload.data.records_json);
+          setAuthStatus("authenticated");
+        } else if ((payload as any).status === "ready_no_data") {
+          // FIX: Tool is ready but has no data (e.g. monitor). Stop polling.
+          setMaterialized(true);
+          setLifecycle("ACTIVE");
+          setToolState(null);
+          setAuthStatus("authenticated");
+        }
       } else {
         throw new Error("Invalid result format");
       }
@@ -413,7 +421,7 @@ export function ToolRenderer({
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
-    
+
     // Stop fetching on hard error
     if (error) return;
 
@@ -608,11 +616,10 @@ export function ToolRenderer({
           <div className="text-xs uppercase text-muted-foreground">Tool Preview</div>
           <div className="flex items-center gap-2">
             <div className="text-lg font-semibold">{systemSpec.purpose}</div>
-            <div className={`rounded-full px-2 py-0.5 text-[10px] font-medium border ${
-              lifecycle === "ACTIVE" ? "bg-green-500/10 text-green-600 border-green-200" :
+            <div className={`rounded-full px-2 py-0.5 text-[10px] font-medium border ${lifecycle === "ACTIVE" ? "bg-green-500/10 text-green-600 border-green-200" :
               lifecycle === "FAILED" ? "bg-red-500/10 text-red-600 border-red-200" :
-              "bg-muted text-muted-foreground border-border"
-            }`}>
+                "bg-muted text-muted-foreground border-border"
+              }`}>
               {lifecycle}
             </div>
           </div>
@@ -621,11 +628,10 @@ export function ToolRenderer({
           {systemSpec.views.map((view) => (
             <button
               key={view.id}
-              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                activeViewId === view.id
-                  ? "bg-primary text-primary-foreground"
-                  : "border border-border/60 text-muted-foreground hover:text-foreground"
-              }`}
+              className={`rounded-full px-3 py-1 text-xs font-medium ${activeViewId === view.id
+                ? "bg-primary text-primary-foreground"
+                : "border border-border/60 text-muted-foreground hover:text-foreground"
+                }`}
               onClick={() => setActiveViewId(view.id)}
               type="button"
             >
@@ -661,7 +667,7 @@ export function ToolRenderer({
                   <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} timeline={timeline} />
                 </div>
               ) : (
-                 <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} timeline={timeline} />
+                <ViewSurface view={activeView} projection={projection} onSelectRow={setSelectedRow} timeline={timeline} />
               )}
               {requiresEvidence(activeView.type) && evidence && rows.length === 0 && activeView.type !== "timeline" && (
                 <div className="mt-4 rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
@@ -707,7 +713,22 @@ export function ToolRenderer({
             )}
           </div>
         ) : (
-          <div className="text-sm text-muted-foreground">No views configured yet.</div>
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
+            {materialized && lifecycle === "ACTIVE" ? (
+              <>
+                <div className="h-12 w-12 rounded-full bg-green-500/10 flex items-center justify-center text-green-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+                </div>
+                <div className="text-center">
+                  <div className="font-medium text-foreground">Monitoring Active</div>
+                  <div className="text-sm mt-1">This tool is running but has no materialized views yet.</div>
+                  <div className="text-xs mt-2 opacity-70">Triggers and automations are active.</div>
+                </div>
+              </>
+            ) : (
+              <div>No views configured yet.</div>
+            )}
+          </div>
         )}
       </div>
 
@@ -1165,8 +1186,8 @@ function ViewSurface({
 }
 
 function DetailView({ data }: { data: any }) {
-    if (!data) return <div className="text-sm text-muted-foreground">No details available.</div>;
-    return <InspectorView data={data} />;
+  if (!data) return <div className="text-sm text-muted-foreground">No details available.</div>;
+  return <InspectorView data={data} />;
 }
 
 function TableView({
@@ -1273,7 +1294,7 @@ function TimelineView({
   timeline?: TimelineEvent[];
 }) {
   if (timeline && timeline.length > 0) {
-      return <SystemTimeline events={timeline} />;
+    return <SystemTimeline events={timeline} />;
   }
 
   const rows = Array.isArray(data) ? data : data ? [data] : [];

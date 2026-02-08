@@ -12,11 +12,18 @@ export default async function DashboardLayout({
 }) {
   // 1. Check Session (Read-Only, Once)
   const supabase = await createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-  if (!user) {
+  if (userError || !user) {
+    if (userError) {
+      console.error("[DashboardLayout] getUser error:", userError.message);
+    } else {
+      console.warn("[DashboardLayout] No user found, redirecting to /login");
+    }
     redirect("/login");
   }
+
+  console.log("[DashboardLayout] Authenticated user:", user.email);
 
   // 2. Check Org Membership
   const { data: membership } = await supabase
@@ -31,7 +38,7 @@ export default async function DashboardLayout({
 
   return (
     <ProfileProvider>
-      <DashboardShell role={role}>{children}</DashboardShell>
+      <DashboardShell>{children}</DashboardShell>
     </ProfileProvider>
   );
 }

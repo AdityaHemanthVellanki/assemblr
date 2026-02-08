@@ -441,4 +441,224 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: [],
     supportedFields: ["blockId", "children"],
   },
+
+  // HubSpot
+  {
+    id: "hubspot_contacts_list",
+    integrationId: "hubspot",
+    resource: "contacts",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "after", "properties", "associations", "archived"],
+  },
+  {
+    id: "hubspot_deals_list",
+    integrationId: "hubspot",
+    resource: "deals",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "after", "properties", "associations", "archived"],
+  },
+  {
+    id: "hubspot_companies_list",
+    integrationId: "hubspot",
+    resource: "companies",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "after", "properties", "associations", "archived"],
+  },
+
+  // Stripe
+  {
+    id: "stripe_charges_list",
+    integrationId: "stripe",
+    resource: "charges",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "created", "customer"],
+  },
+  {
+    id: "stripe_customers_list",
+    integrationId: "stripe",
+    resource: "customers",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "email"],
+  },
+  {
+    id: "stripe_subscriptions_list",
+    integrationId: "stripe",
+    resource: "subscriptions",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "status", "price"],
+  },
+
+  // Intercom
+  {
+    id: "intercom_conversations_list",
+    integrationId: "intercom",
+    resource: "conversations",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["per_page", "page", "type"],
+  },
+  {
+    id: "intercom_contacts_list",
+    integrationId: "intercom",
+    resource: "contacts",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["per_page", "page", "role"],
+  },
+
+  // Airtable
+  {
+    id: "airtable_records_list",
+    integrationId: "airtable",
+    resource: "records",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["baseId", "tableId", "view", "maxRecords"],
+    constraints: { requiredFilters: ["baseId", "tableId"] },
+  },
+
+  // Asana
+  {
+    id: "asana_tasks_list",
+    integrationId: "asana",
+    resource: "tasks",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["project", "section", "completed_since"],
+  },
+
+  // ClickUp
+  {
+    id: "clickup_tasks_list",
+    integrationId: "clickup",
+    resource: "tasks",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["list_id", "archived", "page", "order_by"],
+    constraints: { requiredFilters: ["list_id"] },
+  },
+
+  // Salesforce (Dynamic)
+  {
+    id: "salesforce_query",
+    integrationId: "salesforce",
+    resource: "query",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["q"],
+    constraints: { requiredFilters: ["q"] },
+  },
+
+  // Jira (Dynamic)
+  {
+    id: "jira_issues_search",
+    integrationId: "jira",
+    resource: "issues",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["jql", "startAt", "maxResults", "fields"],
+    constraints: { requiredFilters: ["jql"] },
+  },
+
+  // Zendesk
+  {
+    id: "zendesk_tickets_list",
+    integrationId: "zendesk",
+    resource: "tickets",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["per_page", "page", "sort_by", "sort_order"],
+  },
+
+  // QuickBooks
+  {
+    id: "quickbooks_invoices_query",
+    integrationId: "quickbooks",
+    resource: "invoices",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["query"],
+    constraints: { requiredFilters: ["query"] },
+  },
+
+  // Microsoft Graph (Outlook/Teams)
+  {
+    id: "outlook_messages_list",
+    integrationId: "outlook",
+    resource: "messages",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["$top", "$skip", "$filter", "$select"],
+  },
+  {
+    id: "teams_messages_list",
+    integrationId: "microsoft_teams",
+    resource: "messages",
+    allowedOperations: ["read"],
+    supportedFields: ["teamId", "channelId"],
+    constraints: { requiredFilters: ["teamId", "channelId"] },
+  },
+
+  // GitLab / Bitbucket
+  {
+    id: "gitlab_projects_list",
+    integrationId: "gitlab",
+    resource: "projects",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["membership", "simple", "order_by"],
+  },
+  {
+    id: "bitbucket_repos_list",
+    integrationId: "bitbucket",
+    resource: "repos",
+    allowedOperations: ["read"],
+    supportedFields: ["workspace"],
+    constraints: { requiredFilters: ["workspace"] },
+  },
+
+  // Google Analytics
+  {
+    id: "google_analytics_reports_run",
+    integrationId: "google_analytics",
+    resource: "reports",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["propertyId", "dateRanges", "dimensions", "metrics"],
+    constraints: { requiredFilters: ["propertyId", "dateRanges"] },
+  },
+
+  // Discord
+  {
+    id: "discord_channels_list",
+    integrationId: "discord",
+    resource: "channels",
+    allowedOperations: ["read"],
+    supportedFields: ["guild_id"],
+    constraints: { requiredFilters: ["guild_id"] },
+  },
+  {
+    id: "discord_messages_list",
+    integrationId: "discord",
+    resource: "messages",
+    allowedOperations: ["read"],
+    supportedFields: ["channel_id", "limit"],
+    constraints: { requiredFilters: ["channel_id"] },
+  },
+
+  // Zoom
+  {
+    id: "zoom_meetings_list",
+    integrationId: "zoom",
+    resource: "meetings",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["userId", "type", "from", "to"],
+    constraints: { requiredFilters: ["userId"] },
+  },
+
+  // Trello
+  {
+    id: "trello_boards_list",
+    integrationId: "trello",
+    resource: "boards",
+    allowedOperations: ["read"],
+    supportedFields: ["memberId", "filter"],
+    constraints: { requiredFilters: ["memberId"] },
+  },
+  {
+    id: "trello_cards_list",
+    integrationId: "trello",
+    resource: "cards",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["boardId", "limit"],
+    constraints: { requiredFilters: ["boardId"] },
+  },
 ];

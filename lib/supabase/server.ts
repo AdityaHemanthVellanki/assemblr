@@ -34,14 +34,15 @@ const getServerClient = cache(async (cookieStore?: any) => {
           // But we don't know if it's ngrok.
 
           cookiesToSet.forEach(({ name, value, options }) => {
-            // Heuristic: If we are in dev but valid public URL, we might want secure.
-            // But simpler: just pass through. The auth/callback fix is the most critical one.
-            // If we must, we can do:
-            // cStore.set(name, value, { ...options, secure: options.secure || process.env.NEXT_PUBLIC_APP_URL?.startsWith("https") });
+            // Only force secure if we are actually on an https connection
+            // We can't easily check headers() here synchronously, but we can check the appUrl as a fallback
+            // or better, just trust the options unless we have a reason not to.
+            // Supabase SSR will set secure: true if it thinks it should.
+            // Let's ensure it doesn't break localhost.
+            const isLocalhost = process.env.NODE_ENV === "development" && !process.env.VERCEL;
+            const secure = options.secure || (!isLocalhost && (process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") ?? false));
 
-            // Let's use the env var as a proxy
-            const isSecure = options.secure || (process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") ?? false);
-            cStore.set(name, value, { ...options, secure: isSecure });
+            cStore.set(name, value, { ...options, secure });
           });
         } catch {
           // The `setAll` method was called from a Server Component.

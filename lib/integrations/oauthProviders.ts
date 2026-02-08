@@ -1,0 +1,20 @@
+
+export const OAUTH_PROVIDERS: Record<string, { id: string; name: string; scopes: string[]; scopeSeparator?: string; extraAuthParams?: Record<string, string>; authUrl: string }> = {
+    google: { id: "google", name: "Google", scopes: ["https://www.googleapis.com/auth/userinfo.email"], scopeSeparator: " ", extraAuthParams: { access_type: "offline", prompt: "consent" }, authUrl: "https://accounts.google.com/o/oauth2/v2/auth" },
+    github: { id: "github", name: "GitHub", scopes: ["user:email"], scopeSeparator: " ", authUrl: "https://github.com/login/oauth/authorize" },
+    slack: { id: "slack", name: "Slack", scopes: ["users:read"], scopeSeparator: " ", authUrl: "https://slack.com/oauth/v2/authorize" },
+    notion: { id: "notion", name: "Notion", scopes: [], scopeSeparator: " ", authUrl: "https://api.notion.com/v1/oauth/authorize" },
+    linear: { id: "linear", name: "Linear", scopes: ["read"], scopeSeparator: " ", authUrl: "https://linear.app/oauth/authorize" },
+    hubspot: { id: "hubspot", name: "HubSpot", scopes: ["oauth"], scopeSeparator: " ", authUrl: "https://app.hubspot.com/oauth/authorize" },
+    discord: { id: "discord", name: "Discord", scopes: ["identify"], scopeSeparator: " ", authUrl: "https://discord.com/api/oauth2/authorize" },
+    jira: { id: "jira", name: "Jira", scopes: ["read:jira-user"], scopeSeparator: " ", authUrl: "https://auth.atlassian.com/authorize" },
+    zoom: { id: "zoom", name: "Zoom", scopes: ["user:read"], scopeSeparator: " ", authUrl: "https://zoom.us/oauth/authorize" },
+    asana: { id: "asana", name: "Asana", scopes: ["default"], scopeSeparator: " ", authUrl: "https://app.asana.com/-/oauth_authorize" },
+    trello: { id: "trello", name: "Trello", scopes: [], scopeSeparator: " ", authUrl: "https://trello.com/1/authorize" },
+    zendesk: { id: "zendesk", name: "Zendesk", scopes: ["read"], scopeSeparator: " ", authUrl: "https://global.zendesk.com/oauth/authorizations/new" },
+    intercom: { id: "intercom", name: "Intercom", scopes: [], scopeSeparator: " ", authUrl: "https://app.intercom.com/oauth" },
+    stripe: { id: "stripe", name: "Stripe", scopes: ["read_write"], scopeSeparator: " ", authUrl: "https://connect.stripe.com/oauth/authorize" },
+    quickbooks: { id: "quickbooks", name: "QuickBooks", scopes: ["com.intuit.quickbooks.accounting"], scopeSeparator: " ", authUrl: "https://appcenter.intuit.com/connect/oauth2" },
+    airtable: { id: "airtable", name: "Airtable", scopes: ["data.records:read"], scopeSeparator: " ", authUrl: "https://airtable.com/oauth2/v1/authorize" },
+    salesforce: { id: "salesforce", name: "Salesforce", scopes: ["api"], scopeSeparator: " ", authUrl: "https://login.salesforce.com/services/oauth2/authorize" },
+};

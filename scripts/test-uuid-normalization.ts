@@ -19,7 +19,7 @@ const tests = [
 let failed = 0;
 
 tests.forEach(t => {
-  const result = normalizeUUID(t.input);
+  const result = normalizeUUID(t.input as string);
   if (result === t.expected) {
     console.log(`✅ ${t.name}: passed`);
   } else {

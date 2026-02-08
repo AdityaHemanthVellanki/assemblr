@@ -1,113 +1,82 @@
 "use client";
 
-import { PromptBar } from "@/components/dashboard/prompt-bar";
-import { Zap, Calendar, Mail } from "lucide-react";
-import { cn } from "@/lib/ui/cn";
-import { CHAT_HERO_SUBTITLE, CHAT_HERO_TITLE } from "@/lib/branding";
-
-const SUGGESTIONS = [
-  {
-    title: "Sprint Planning",
-    description: "Look at Linear and create a sprint plan for the next 2 weeks",
-    icon: Zap,
-    color: "text-blue-400",
-    bg: "bg-blue-500/10",
-    border: "border-blue-500/20",
-  },
-  {
-    title: "Summarize Meetings",
-    description: "Summarize my key meetings this week from Google Calendar",
-    icon: Calendar,
-    color: "text-amber-400",
-    bg: "bg-amber-500/10",
-    border: "border-amber-500/20",
-  },
-  {
-    title: "Scan Emails",
-    description: "Check my emails and send out meetings to anyone needed",
-    icon: Mail,
-    color: "text-rose-400",
-    bg: "bg-rose-500/10",
-    border: "border-rose-500/20",
-  },
-];
+import * as React from "react";
+import { Sparkles, ArrowRight, Lightbulb } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 interface ZeroStateViewProps {
-  inputValue: string;
-  onInputChange: (val: string) => void;
-  onSubmit: () => void;
-  onSuggestionClick: (val: string) => void;
+  onPromptSubmit: (prompt: string) => void;
 }
 
-export function ZeroStateView({
-  inputValue,
-  onInputChange,
-  onSubmit,
-  onSuggestionClick,
-}: ZeroStateViewProps) {
-  const highlightWord = "seconds";
-  const [titlePrefix] = CHAT_HERO_TITLE.split(` ${highlightWord}`);
+const SAMPLE_PROMPTS = [
+  "Build a CRM for tracking sales leads",
+  "Create a dashboard for GitHub issues",
+  "Make an internal tool to manage inventory",
+  "Design a customer support ticket system"
+];
+
+export function ZeroStateView({ onPromptSubmit }: ZeroStateViewProps) {
+  const [input, setInput] = React.useState("");
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (input.trim()) {
+      onPromptSubmit(input);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-4">
-      {/* Radial gradient background */}
-      <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top,_rgba(30,41,59,0.4),_transparent_70%)]" />
-
-      <div className="flex w-full max-w-3xl flex-col items-center gap-8">
-        {/* Hero text */}
-        <div className="text-center space-y-4">
-          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-            {titlePrefix}{" "}
-            <span className="bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-500 bg-clip-text text-transparent">
-              {highlightWord}
-            </span>
-          </h1>
-          <p className="text-base text-muted-foreground sm:text-lg">
-            {CHAT_HERO_SUBTITLE}
-          </p>
+    <div className="flex flex-col items-center justify-center max-w-2xl mx-auto text-center space-y-8 animate-in fade-in zoom-in duration-500 py-12">
+      <div className="relative">
+        <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-primary/20 via-purple-500/20 to-blue-500/20 blur-xl opacity-50" />
+        <div className="relative bg-background rounded-full p-4 shadow-sm border border-border/50">
+          <Sparkles className="w-8 h-8 text-primary" />
         </div>
+      </div>
 
-        {/* Prompt Bar */}
-        <div className="w-full py-6">
-          <PromptBar
-            value={inputValue}
-            onChange={onInputChange}
-            onSubmit={onSubmit}
-            variant="centered"
-            className="shadow-[0_16px_40px_rgba(8,10,25,0.35)]"
+      <div className="space-y-2">
+        <h2 className="text-2xl font-semibold tracking-tight">What do you want to build?</h2>
+        <p className="text-muted-foreground max-w-md mx-auto">
+          Describe your tool in plain English. Assemblr will inspect schemas, generate code, and handle deployment.
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="w-full max-w-lg relative group">
+        <div className="relative rounded-xl border border-border bg-background shadow-sm focus-within:ring-2 focus-within:ring-primary/20 transition-all overflow-hidden z-10">
+          <Textarea
+            value={input}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInput(e.target.value)}
+            placeholder="e.g. Create a tool to manage..."
+            className="min-h-[60px] w-full resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0 placeholder:text-muted-foreground/50 bg-muted/5"
+            onKeyDown={handleKeyDown}
           />
+          <div className="flex justify-end px-2 py-2 bg-muted/20 border-t border-border/40">
+            <Button size="sm" type="submit" disabled={!input.trim()}>
+              Start Building <ArrowRight className="w-4 h-4 ml-1" />
+            </Button>
+          </div>
         </div>
+      </form>
 
-        {/* Suggestion Cards */}
-        <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
-          {SUGGESTIONS.map((card) => (
-            <button
-              key={card.title}
-              onClick={() => onSuggestionClick(card.description)}
-              className={cn(
-                "group relative flex flex-col gap-3 rounded-2xl border bg-background/40 p-5 text-left backdrop-blur-sm transition-all duration-200",
-                "hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.25)]",
-                card.border
-              )}
-            >
-              <div
-                className={cn(
-                  "h-9 w-9 rounded-xl flex items-center justify-center transition-colors",
-                  card.bg,
-                  card.color
-                )}
-              >
-                <card.icon className="h-4 w-4" />
-              </div>
-              <div className="space-y-1.5">
-                <div className="font-semibold text-foreground/90">{card.title}</div>
-                <div className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-                  {card.description}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
+        {SAMPLE_PROMPTS.map((prompt, i) => (
+          <button
+            key={i}
+            onClick={() => onPromptSubmit(prompt)}
+            className="flex items-center gap-2 p-3 text-xs text-left text-muted-foreground bg-muted/30 hover:bg-muted/60 hover:text-foreground rounded-lg border border-transparent hover:border-border/60 transition-all group"
+          >
+            <Lightbulb className="w-3 h-3 opacity-50 group-hover:text-amber-500 transition-colors" />
+            {prompt}
+          </button>
+        ))}
       </div>
     </div>
   );

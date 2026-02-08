@@ -1,16 +1,12 @@
 "use client";
 
 import * as React from "react";
-
 import { Sidebar } from "@/components/dashboard/sidebar";
-import type { OrgRole } from "@/lib/permissions-shared";
 
 export function DashboardShell({
   children,
-  role,
 }: {
   children: React.ReactNode;
-  role: OrgRole;
 }) {
   const [sidebarWidth, setSidebarWidth] = React.useState(256);
   const [isCollapsed, setIsCollapsed] = React.useState(false);
@@ -28,6 +24,9 @@ export function DashboardShell({
     }
     if (savedCollapsed === "true") {
       setIsCollapsed(true);
+      // Ensure we don't start with invalid collapsed state visually?
+      // Actually sidebar handles its own internal collapsed state potentially?
+      // Let's check sidebar props.
     }
   }, []);
 
@@ -85,26 +84,29 @@ export function DashboardShell({
 
   return (
     <div className="flex h-dvh bg-background text-foreground">
-      <Sidebar
-        role={role}
-        style={{ width: isCollapsed ? 64 : sidebarWidth }}
-        isCollapsed={isCollapsed}
-        onToggleCollapse={toggleCollapsed}
-      />
+      {/* Sidebar Container */}
+      <div
+        style={{ width: isCollapsed ? "auto" : sidebarWidth }}
+        className="flex-shrink-0 relative flex flex-col border-r border-border bg-card/30"
+      >
+        <Sidebar
+          isCollapsed={isCollapsed}
+          onToggleCollapse={toggleCollapsed}
+          role="viewer"
+        />
 
-      {/* Search/Drag handle - hidden/disabled when collapsed */}
-      {!isCollapsed && (
-        <div
-          className="relative group flex w-1 cursor-col-resize flex-col items-center justify-center bg-transparent transition-all hover:w-1.5 hover:bg-primary/10 active:bg-primary/20"
-          onMouseDown={startResizing}
-          onDoubleClick={() => setSidebarWidth(256)}
-        >
-          <div className="h-8 w-0.5 rounded-full bg-border opacity-0 transition-all group-hover:opacity-100 group-active:h-full group-active:opacity-50" />
-        </div>
-      )}
+        {/* Resize Handle */}
+        {!isCollapsed && (
+          <div
+            className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-50 hover:bg-primary/50 transition-colors"
+            onMouseDown={startResizing}
+            onDoubleClick={() => setSidebarWidth(256)}
+          />
+        )}
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col relative bg-background">
-        <main className="flex-1 overflow-hidden relative">{children}</main>
+        <main className="flex-1 overflow-y-auto overflow-x-hidden relative">{children}</main>
       </div>
     </div>
   );

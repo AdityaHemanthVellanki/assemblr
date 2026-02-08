@@ -48,7 +48,6 @@ export function Sidebar({
   const [isDeleting, setIsDeleting] = React.useState(false);
 
   const loadProjects = React.useCallback(async () => {
-    // Only show loading on initial load or empty state, not during background refreshes
     if (projects.length === 0) setProjectsLoading(true);
     setProjectsError(null);
     try {
@@ -126,7 +125,7 @@ export function Sidebar({
 
   const submitRename = async (id: string) => {
     if (!editName.trim() || editName.trim().length > 80) {
-      setEditingId(null); // Cancel if invalid
+      setEditingId(null);
       return;
     }
 
@@ -144,9 +143,8 @@ export function Sidebar({
       });
       if (!res.ok) throw new Error("Failed to rename");
     } catch (err) {
-      // Rollback
       console.error(err);
-      void loadProjects(); // Reload to get correct state
+      void loadProjects();
     }
   };
 
@@ -163,16 +161,13 @@ export function Sidebar({
       });
       if (!res.ok) throw new Error("Failed to delete");
 
-      // Remove from state
       setProjects(prev => prev.filter(p => p.id !== deletingId));
 
-      // Redirect if we were on that page
       if (pathname?.includes(deletingId)) {
         router.push('/app/chat');
       }
     } catch (err) {
       console.error(err);
-      // Rollback state on failure
       void loadProjects();
     } finally {
       setIsDeleting(false);
@@ -184,28 +179,13 @@ export function Sidebar({
   const visibleProjects = normalizedQuery
     ? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
     : projects;
+
+  // Navigation Items
   const integrationsHref = "/dashboard/integrations";
   const useCasesHref = "/use-cases";
   const integrationsActive = pathname?.startsWith(integrationsHref);
   const useCasesActive = pathname?.startsWith(useCasesHref);
   const canManage = canManageIntegrations(role);
-  const navItems = [
-    {
-      id: "use-cases",
-      label: "Use Cases",
-      href: useCasesHref,
-      icon: Sparkles,
-      disabled: false,
-    },
-    {
-      id: "integrations",
-      label: "Integrations",
-      href: integrationsHref,
-      icon: Plug,
-      disabled: !canManage,
-      tooltip: "You don’t have permission to manage integrations.",
-    },
-  ];
 
   return (
     <aside
@@ -215,6 +195,7 @@ export function Sidebar({
         className,
       )}
     >
+      {/* Brand Header */}
       <div
         className={cn(
           "flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80",
@@ -234,86 +215,73 @@ export function Sidebar({
         {!isCollapsed && <span className="text-base font-semibold text-foreground truncate">{APP_NAME}</span>}
       </div>
 
-      <div className={cn("flex flex-col gap-6 px-3 py-2", isCollapsed && "px-2")}>
-        {!isCollapsed && (
-          <div className="relative">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search chats..."
-              className="pl-8 h-9 bg-muted/30 border-border/40 focus:bg-muted/50"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-        )}
+      <div className={cn("flex flex-col gap-2 px-3 py-2", isCollapsed && "px-2")}>
 
-        <div className="flex flex-col gap-1">
-          <button
-            type="button"
-            onClick={handleNewChat}
+        {/* New Chat Button */}
+        <button
+          type="button"
+          onClick={handleNewChat}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 bg-primary/10 text-primary hover:bg-primary/20",
+            isCollapsed && "justify-center px-0 h-10 w-10 mx-auto"
+          )}
+          title="New Chat"
+        >
+          <Plus className="h-4 w-4 shrink-0" />
+          {!isCollapsed && <span>New Chat</span>}
+        </button>
+
+        {/* Persistent Navigation */}
+        <div className="flex flex-col gap-0.5 mt-2 pb-2 border-b border-border/40">
+          <Link
+            href={useCasesHref}
             className={cn(
-              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 hover:bg-accent hover:text-accent-foreground text-muted-foreground",
-              isCollapsed && "justify-center px-0 h-10 w-10 mx-auto"
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
+              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
+              useCasesActive ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             )}
-            title="New Chat"
+            title="Use Cases"
           >
-            <Plus className="h-4 w-4 shrink-0" />
-            {!isCollapsed && <span>New Chat</span>}
-          </button>
+            <Sparkles className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span>Use Cases</span>}
+          </Link>
 
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = item.href === useCasesHref ? useCasesActive : integrationsActive;
-
-            const commonClasses = cn(
-              "rounded-lg transition-all duration-200 flex items-center gap-2",
-              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "px-3 py-2 text-sm",
-            );
-
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.id}
-                  className={cn(
-                    commonClasses,
-                    "text-muted-foreground opacity-60 cursor-not-allowed",
-                    active ? "bg-accent/50" : "",
-                  )}
-                  role="link"
-                  aria-disabled="true"
-                  title={item.tooltip}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {!isCollapsed && <span className="truncate">{item.label}</span>}
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={item.id}
-                href={item.href}
-                className={cn(
-                  commonClasses,
-                  active
-                    ? "bg-accent text-accent-foreground font-medium"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                )}
-                title={isCollapsed ? item.label : undefined}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {!isCollapsed && <span className="truncate">{item.label}</span>}
-              </Link>
-            );
-          })}
+          <Link
+            href={integrationsHref}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
+              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
+              integrationsActive ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            )}
+            title="Integrations"
+          >
+            <Plug className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span>Integrations</span>}
+          </Link>
         </div>
 
       </div>
 
+      {/* Chat History List */}
       <ScrollArea className="flex-1 w-full px-3">
-        {/* Hide projects list when collapsed to keep UI clean */}
         {!isCollapsed && (
-          <div className="flex w-full flex-col gap-2 py-2">
+          <div className="flex w-full flex-col gap-1 py-2">
+
+            {/* Search - Only show if not collapsed */}
+            <div className="relative mb-2 px-1">
+              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search chats..."
+                className="pl-8 h-8 text-xs bg-muted/30 border-border/40 focus:bg-muted/50"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+
+            <div className="px-2 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest mb-1">
+              Recent
+            </div>
+
             {projectsLoading && projects.length === 0 ? (
               <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
             ) : projectsError ? (
@@ -358,54 +326,47 @@ export function Sidebar({
                     <Link
                       href={`/dashboard/projects/${project.id}`}
                       className={cn(
-                        "flex w-full items-center gap-2 px-3 py-2 text-sm truncate pr-16", // pr-16 reserves space for actions so text wraps/truncates nicely
+                        "flex w-full items-center gap-2 px-3 py-2 text-sm truncate pr-8",
                         isInvalid ? "pointer-events-none" : ""
                       )}
                       aria-disabled={isInvalid}
                     >
                       <span className="truncate">{project.name}</span>
-                      {isInvalid ? (
-                        <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-500">
-                          <AlertTriangle className="h-3 w-3" />
-                          Failed
-                        </span>
-                      ) : null}
                     </Link>
 
                     {/* Hover Actions */}
                     <div className={cn(
-                      "absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden items-center justify-end",
+                      "absolute right-1 top-1/2 -translate-y-1/2 z-10 hidden items-center justify-end",
                       "group-hover:flex focus-within:flex",
                       active ? "flex" : ""
                     )}>
-                      {/* Action container with glass effect */}
                       <div className={cn(
-                        "flex items-center gap-0.5 rounded-md border border-border/5 bg-background/50 p-0.5 shadow-sm backdrop-blur-md",
-                        active ? "bg-accent-foreground/5" : "bg-background/80"
+                        "flex items-center rounded-md bg-background/80 shadow-sm backdrop-blur-md p-0.5",
+                        active ? "bg-accent" : ""
                       )}>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          className="h-6 w-6 text-muted-foreground hover:text-foreground"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             startRename(project);
                           }}
-                          title="Rename chat"
+                          title="Rename"
                         >
                           <Pencil className="h-3 w-3" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                          className="h-6 w-6 text-muted-foreground hover:text-red-500"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             confirmDelete(project.id);
                           }}
-                          title="Delete chat"
+                          title="Delete"
                         >
                           <Trash2 className="h-3 w-3" />
                         </Button>

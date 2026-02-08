@@ -11,9 +11,9 @@ export default async function SharedToolPage({
   params: Promise<{ token: string }>;
 }) {
   getServerEnv();
-  
+
   // We do NOT block access for unauthenticated users (Public Share)
-  
+
   const { token } = await params;
   const supabase = createSupabaseAdminClient();
   const { data: share } = await (supabase.from("tool_shares") as any)
@@ -95,9 +95,9 @@ export default async function SharedToolPage({
         status: projectRes.data.status,
         error_message: projectRes.data.error_message,
         spec,
-        spec_error: specError,
         view_spec: viewSpec,
         data_snapshot: dataSnapshot,
+        org_id: projectRes.data.org_id,
       }}
       initialMessages={messages}
       role="viewer"

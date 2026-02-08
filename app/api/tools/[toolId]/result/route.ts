@@ -35,12 +35,28 @@ export async function GET(
     const result = await getLatestToolResult(toolId, tool.org_id);
 
     if (!result) {
+      // Check if the tool is actually READY but just has no data (e.g. monitoring/alert tool)
+      const { data: project } = await supabase
+        .from("projects")
+        .select("status")
+        .eq("id", toolId)
+        .single();
+
+      if (project?.status === "READY") {
+        return jsonResponse({
+          ok: true,
+          data: null,
+          status: "ready_no_data"
+        });
+      }
+
       return errorResponse("No materialized result found", 404);
     }
 
     return jsonResponse({
       ok: true,
-      data: result
+      data: result,
+      status: "materialized"
     });
 
   } catch (error) {

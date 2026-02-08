@@ -60,11 +60,14 @@ function normalizeScope(scope: MemoryScope): MemoryScope {
     }
     return { type: "user", userId };
   }
-  const orgId = normalizeUUID(scope.orgId);
-  if (!orgId) {
-    throw new Error("Invalid org scope");
+  if (scope.type === "org") {
+    const orgId = normalizeUUID(scope.orgId);
+    if (!orgId) {
+      throw new Error("Invalid org scope");
+    }
+    return { type: "org", orgId };
   }
-  return { type: "org", orgId };
+  throw new Error(`Unknown scope type: ${(scope as any).type}`);
 }
 
 let adapterPromise: Promise<MemoryAdapter> | null = null;
@@ -74,7 +77,7 @@ let bootstrapPromise: Promise<void> | null = null;
 // LAZY initialization - never run at top level
 async function ensureMemoryStoreInitialized() {
   if (bootstrapPromise) return bootstrapPromise;
-  
+
   // Check env vars gracefully - do not throw
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
     console.warn("Supabase env missing for memory persistence - disabling persistence");
@@ -94,12 +97,12 @@ async function ensureMemoryStoreInitialized() {
 
 async function createDefaultAdapter(): Promise<MemoryAdapter> {
   await ensureMemoryStoreInitialized();
-  
+
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
     console.warn("Using ephemeral memory adapter (Supabase env missing)");
     return createEphemeralMemoryAdapter();
   }
-  
+
   return createSupabaseMemoryAdapter();
 }
 
@@ -118,13 +121,13 @@ export function setMemoryAdapterFactory(factory: (() => Promise<MemoryAdapter>) 
 export async function loadMemory(params: MemoryReadParams) {
   const { scope, namespace, key } = params;
   const adapter = await getAdapter();
-  
+
   return await adapter.get({ scope: normalizeScope(scope), namespace, key });
 }
 
 export async function saveMemory(params: MemoryWriteParams) {
   const adapter = await getAdapter();
-  
+
   try {
     const normalizedScope = normalizeScope(params.scope);
     await adapter.set({ ...params, scope: normalizedScope });

@@ -31,14 +31,14 @@ export async function GET(request: Request) {
     const cookieStore = await cookies();
     const supabase = createServerClient<Database>(
       env.SUPABASE_URL,
-      env.SUPABASE_PUBLISHABLE_KEY, // Use Publishable Key for auth exchange to respect RLS/Auth flow
+      env.SUPABASE_PUBLISHABLE_KEY,
       {
         cookies: {
           getAll() {
             return cookieStore.getAll();
           },
           setAll(cookiesToSet) {
-            const isSecure = process.env.NODE_ENV === "production" || origin.startsWith("https:");
+            const isSecure = requestUrl.protocol === "https:";
             for (const c of cookiesToSet) {
               cookieStore.set(c.name, c.value, {
                 ...c.options,
@@ -50,24 +50,31 @@ export async function GET(request: Request) {
       }
     );
 
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
 
-    if (!error) {
-      // Update last_login_at
+    if (!exchangeError) {
+      console.log("[AuthCallback] Session exchange successful");
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
+        console.log("[AuthCallback] User authenticated:", user.email);
         await supabase
           .from("profiles")
           .update({ last_login_at: new Date().toISOString() })
           .eq("id", user.id);
       }
 
-      // Ensure next path starts with /
       const safeNext = next.startsWith("/") ? next : `/${next}`;
-      return NextResponse.redirect(`${origin}${safeNext}`);
+      const finalUrl = `${requestUrl.origin}${safeNext}`;
+      console.log("[AuthCallback] Redirecting to:", finalUrl);
+      return NextResponse.redirect(finalUrl);
+    } else {
+      console.error("[AuthCallback] Code exchange failed:", exchangeError);
+      console.error("[AuthCallback] Code:", code ? "PRESENT" : "MISSING");
+      console.error("[AuthCallback] Origin:", requestUrl.origin);
     }
+  } else {
+    console.error("[AuthCallback] No code provided in query params");
   }
 
-  // return the user to an error page with instructions
   return NextResponse.redirect(`${origin}/login?error=auth_code_error`);
 }

@@ -103,42 +103,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     },
   },
   {
-    id: "jira",
-    name: "Jira",
-    category: "Engineering",
-    logoUrl: "https://cdn.simpleicons.org/jira/white",
-    description: "Sync issues and project progress.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["read:jira-work", "write:jira-work"],
-    },
-  },
-  {
-    id: "salesforce",
-    name: "Salesforce",
-    category: "CRM",
-    logoUrl: "https://cdn.simpleicons.org/salesforce",
-    description: "Connect to your Salesforce CRM.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["full"],
-    },
-  },
-  {
-    id: "zendesk",
-    name: "Zendesk",
-    category: "Support",
-    logoUrl: "https://cdn.simpleicons.org/zendesk",
-    description: "Manage support tickets and customers.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["read", "write"],
-    },
-  },
-  {
     id: "stripe",
     name: "Stripe",
     category: "Payments",
@@ -199,30 +163,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     },
   },
   {
-    id: "mixpanel",
-    name: "Mixpanel",
-    category: "Analytics",
-    logoUrl: "https://cdn.simpleicons.org/mixpanel",
-    description: "Track user interactions and data.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: [],
-    },
-  },
-  {
-    id: "pipedrive",
-    name: "Pipedrive",
-    category: "CRM",
-    logoUrl: "https://cdn.simpleicons.org/pipedrive",
-    description: "Manage your sales pipeline.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["full"],
-    },
-  },
-  {
     id: "zoom",
     name: "Zoom",
     category: "Productivity",
@@ -232,18 +172,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     auth: {
       type: "oauth",
       scopes: ["meeting:read", "meeting:write"],
-    },
-  },
-  {
-    id: "shopify",
-    name: "Shopify",
-    category: "Productivity",
-    logoUrl: "https://cdn.simpleicons.org/shopify",
-    description: "Manage your e-commerce store.",
-    connectionMode: "hosted_oauth",
-    auth: {
-      type: "oauth",
-      scopes: ["read_products", "write_products"],
     },
   },
   {
@@ -283,15 +211,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     auth: { type: "oauth", scopes: [] },
   },
   {
-    id: "monday",
-    name: "Monday",
-    category: "Productivity",
-    logoUrl: "https://cdn.simpleicons.org/mondaydotcom",
-    description: "Work OS.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: [] },
-  },
-  {
     id: "microsoft_teams",
     name: "Microsoft Teams",
     category: "Communication",
@@ -310,24 +229,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     auth: { type: "oauth", scopes: ["Mail.Read", "Mail.Send", "Calendars.Read"] },
   },
   {
-    id: "zoho",
-    name: "Zoho CRM",
-    category: "CRM",
-    logoUrl: "https://cdn.simpleicons.org/zohocorp",
-    description: "Manage your sales.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: ["ZohoCRM.modules.ALL"] },
-  },
-  {
-    id: "freshdesk",
-    name: "Freshdesk",
-    category: "Support",
-    logoUrl: "https://cdn.simpleicons.org/fresh", // Fallback icon
-    description: "Customer support software.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: [] },
-  },
-  {
     id: "google_analytics",
     name: "Google Analytics",
     category: "Analytics",
@@ -337,15 +238,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     auth: { type: "oauth", scopes: ["https://www.googleapis.com/auth/analytics.readonly"] },
   },
   {
-    id: "amplitude",
-    name: "Amplitude",
-    category: "Analytics",
-    logoUrl: "https://cdn.simpleicons.org/amplitude",
-    description: "Product analytics.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: [] },
-  },
-  {
     id: "quickbooks",
     name: "QuickBooks",
     category: "Analytics",
@@ -353,24 +245,6 @@ export const INTEGRATIONS_UI: readonly IntegrationUIConfig[] = [
     description: "Accounting software.",
     connectionMode: "hosted_oauth",
     auth: { type: "oauth", scopes: ["com.intuit.quickbooks.accounting"] },
-  },
-  {
-    id: "mailchimp",
-    name: "Mailchimp",
-    category: "Marketing",
-    logoUrl: "https://cdn.simpleicons.org/mailchimp",
-    description: "Marketing automation.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: [] },
-  },
-  {
-    id: "metaads",
-    name: "Facebook Ads",
-    category: "Marketing",
-    logoUrl: "https://cdn.simpleicons.org/facebook",
-    description: "Ad management.",
-    connectionMode: "hosted_oauth",
-    auth: { type: "oauth", scopes: ["ads_management"] },
   },
 ] as const;
 

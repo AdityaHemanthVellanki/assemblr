@@ -9,6 +9,8 @@ import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { ToolLifecycleStateSchema, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 export default async function ProjectPage({
   params,
 }: {
@@ -19,9 +21,8 @@ export default async function ProjectPage({
 
   // 1. Auth & Access
   const { ctx, role } = await requireOrgMember();
-  
+
   if (!canViewDashboards(role)) {
-    // Should handle this better (e.g. 403 page), but for now...
     throw new Error("Unauthorized");
   }
 
@@ -32,7 +33,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, spec, active_version_id, org_id, status, error_message, view_spec, view_ready, data_snapshot, data_ready"
+      "id, name, description, spec, active_version_id, org_id, status, error_message, view_spec, view_ready, data_snapshot, data_ready"
     )
     .eq("id", toolId)
     .single();
@@ -57,13 +58,6 @@ export default async function ProjectPage({
       toolId,
       orgId: ctx.orgId,
       message: projectRes.error.message,
-    });
-  }
-  if (renderStateRes?.error) {
-    console.error("Render state load failed", {
-      toolId,
-      orgId: ctx.orgId,
-      message: renderStateRes.error.message,
     });
   }
   if (!projectRes.data) notFound();
@@ -101,7 +95,6 @@ export default async function ProjectPage({
       }
     } catch (e) {
       console.error("Failed to parse project spec", e);
-      // Don't crash, just show empty/error state
     }
   }
 
@@ -111,17 +104,11 @@ export default async function ProjectPage({
     namespace: "tool_builder",
     key: "lifecycle_state",
   });
-  const buildLogs = await loadMemory({
-    scope,
-    namespace: "tool_builder",
-    key: "build_logs",
-  });
+
   const normalizedLifecycle = ToolLifecycleStateSchema.safeParse(lifecycleState).success
     ? ToolLifecycleStateSchema.parse(lifecycleState)
     : null;
-  const normalizedBuildLogs = Array.isArray(buildLogs)
-    ? (buildLogs as ToolBuildLog[])
-    : null;
+
   if (spec && normalizedLifecycle) {
     spec = { ...spec, lifecycle_state: normalizedLifecycle };
   }
@@ -129,9 +116,7 @@ export default async function ProjectPage({
   const messages = messagesRes.data.map((m) => ({
     role: m.role as "user" | "assistant",
     content: m.content,
-    metadata: (m.metadata ?? undefined) as
-      | { missing_integration_id?: string; action?: "connect_integration" }
-      | undefined,
+    metadata: (m.metadata ?? undefined) as any,
   }));
 
   const rawViewSpec = renderStateRes?.data?.view_spec ?? projectRes.data.view_spec ?? null;
@@ -139,32 +124,24 @@ export default async function ProjectPage({
     ? coerceViewSpecPayload(Array.isArray(rawViewSpec) ? { views: rawViewSpec } : rawViewSpec)
     : null;
   const dataSnapshot = renderStateRes?.data?.snapshot ?? projectRes.data.data_snapshot ?? null;
-  const viewReady =
-    typeof renderStateRes?.data?.view_ready === "boolean"
-      ? renderStateRes?.data?.view_ready
-      : projectRes.data.view_ready ?? Boolean(viewSpecPayload);
-  const dataReady =
-    typeof renderStateRes?.data?.data_ready === "boolean"
-      ? renderStateRes?.data?.data_ready
-      : projectRes.data.data_ready ?? Boolean(dataSnapshot);
 
   return (
     <ProjectWorkspace
       project={{
         id: projectRes.data.id,
+        name: projectRes.data.name,
+        description: projectRes.data.description || "",
         spec,
         spec_error: specError,
-        lifecycle_state: normalizedLifecycle,
-        build_logs: normalizedBuildLogs,
         status: projectRes.data.status,
         error_message: projectRes.data.error_message,
         view_spec: viewSpecPayload,
-        view_ready: viewReady,
         data_snapshot: dataSnapshot,
-        data_ready: dataReady,
+        org_id: projectRes.data.org_id
       }}
       initialMessages={messages}
       role={role}
+      readOnly={role === "viewer"}
     />
   );
 }

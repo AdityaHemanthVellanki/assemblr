@@ -46,7 +46,13 @@ export const createConnection = async (orgId: string, integrationId: string, res
 
         if (config.useComposioAuth) {
             payload.authMode = "OAUTH2";
-            payload.authConfig = {}; // Hack to force SDK to set useComposioAuth: true
+            payload.authConfig = {};
+
+            // Critical Branding Overrides
+            // @ts-ignore - SDK types might be outdated but API accepts these for UI branding
+            payload.displayName = "Assemblr";
+            // @ts-ignore 
+            payload.appLogo = `${baseUrl}/images/logo-full.png`;
         }
 
         if (connectionParams) {

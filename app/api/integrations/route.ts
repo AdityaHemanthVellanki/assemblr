@@ -26,9 +26,25 @@ export async function GET() {
   const { getIntegrationConfig } = await import("@/lib/integrations/composio/config");
   const connections = await listConnections(ctx.orgId);
 
+  console.log(`[API] Listing for Org: ${ctx.orgId}. Found ${connections.length} connections.`);
+
   const connectedMap = new Map<string, any>();
+  const STATUS_PRIORITY: Record<string, number> = {
+    "ACTIVE": 10,
+    "CONNECTED": 9,
+    "INITIATED": 5,
+    "EXPIRED": 1,
+    "FAILED": 0
+  };
+
   for (const conn of connections) {
-    connectedMap.set(conn.integrationId, conn);
+    const existing = connectedMap.get(conn.integrationId);
+    const existingScore = existing ? (STATUS_PRIORITY[existing.status] || 0) : -1;
+    const newScore = STATUS_PRIORITY[conn.status] || 0;
+
+    if (newScore > existingScore) {
+      connectedMap.set(conn.integrationId, conn);
+    }
   }
 
   const integrations = INTEGRATIONS_UI.map((i) => {
@@ -88,12 +104,15 @@ export async function POST(req: Request) {
   try {
     if (ui.auth.type !== "oauth" && credentials) {
       // Handle API Key or other non-OAuth credentials via Composio
+      // @ts-ignore - SDK types might be outdated but API accepts these for UI branding
       const connectionRequest = await client.connectedAccounts.initiate({
         entityId: ctx.orgId,
         integrationId,
         connectionParams: credentials, // Pass credentials to Composio
         authMode: ui.auth.type === "api_key" ? "API_KEY" : "BASIC", // Simplified mapping
-      });
+        displayName: "Assemblr",
+        appLogo: `${process.env.NEXT_PUBLIC_APP_URL}/images/logo-full.png`,
+      } as any);
 
       if (connectionRequest.connectionStatus === "FAILED") {
         return NextResponse.json({ error: "Connection failed" }, { status: 400 });

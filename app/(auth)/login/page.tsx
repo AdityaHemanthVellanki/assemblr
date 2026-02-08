@@ -11,6 +11,7 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const searchParams = useSearchParams();
+  const router = useRouter();
 
   const handleLogin = async () => {
     setLoading(true);
@@ -23,9 +24,14 @@ function LoginForm() {
 
       const next =
         searchParams.get("returnTo") || searchParams.get("next") || "/app/chat";
-      // Use window.location.origin to ensure redirects stay on the same domain (localhost vs ngrok)
-      const redirectTo = new URL(`${window.location.origin}/auth/callback`);
+
+      // Critical: Ensure we use the current window location (ngrok vs localhost)
+      // The redirect URI must perfectly match what is in Google Cloud Console
+      const origin = window.location.origin;
+      const redirectTo = new URL(`${origin}/auth/callback`);
       redirectTo.searchParams.set("next", next);
+
+      console.log("[Login] Redirecting to:", redirectTo.toString());
 
       const supabase = createSupabaseClient();
       const { error } = await supabase.auth.signInWithOAuth({

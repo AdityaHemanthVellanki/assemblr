@@ -22,3 +22,5 @@ export const RUNTIMES: Record<string, IntegrationRuntime> = {
   zoom: new ComposioRuntime(),
   shopify: new ComposioRuntime(),
 };
+
+export const EXECUTORS: Record<string, any> = {};

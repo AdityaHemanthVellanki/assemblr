@@ -39,7 +39,7 @@ export const INTEGRATION_AUTH_CONFIG: Record<string, ComposioIntegrationConfig> 
     // Standard OAuth Group
     github: { appName: "github", useComposioAuth: true },
     notion: { appName: "notion", useComposioAuth: true },
-    google: { appName: "google", useComposioAuth: true },
+    google: { appName: "googlesheets", useComposioAuth: true }, // Using googlesheets as base for all G-Suite scopes
 
     // Productivity
     asana: { appName: "asana", useComposioAuth: true },
@@ -57,14 +57,14 @@ export const INTEGRATION_AUTH_CONFIG: Record<string, ComposioIntegrationConfig> 
     stripe: { appName: "stripe", useComposioAuth: true },
 
     // Analytics
-    // mixpanel: { appName: "mixpanel", useComposioAuth: false }, // DISABLED
+    // mixpanel: { appName: "mixpanel", useComposioAuth: true }, // DISABLED
     google_analytics: { appName: "google_analytics", useComposioAuth: true },
-    // amplitude: { appName: "amplitude", useComposioAuth: false }, // DISABLED
+    // amplitude: { appName: "amplitude", useComposioAuth: true }, // DISABLED
     quickbooks: { appName: "quickbooks", useComposioAuth: true },
 
     // Marketing
     // mailchimp: { ... }, // DISABLED (Requires DC)
-    // metaads: { appName: "metaads", useComposioAuth: false }, // DISABLED
+    // metaads: { appName: "metaads", useComposioAuth: true }, // DISABLED
 
     // Dev
     gitlab: { appName: "gitlab", useComposioAuth: true },

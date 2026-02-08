@@ -211,9 +211,11 @@ export default function IntegrationsPage() {
     // CRITICAL FIX: Direct OAuth Redirect
     // CRITICAL FIX: Direct OAuth Redirect
     // If it's an OAuth integration, skip the modal and redirect immediately
-    // UNLESS it requires parameters (like Jira/Salesforce).
+    // UNLESS it requires parameters (like Jira/Salesforce) OR it is already connected.
     const requiresParams = current.requiredParams && current.requiredParams.length > 0;
-    if ((current.connectionMode === "hosted_oauth" as any || current.auth.type === "oauth") && !requiresParams) {
+    const isConnected = current.connected;
+
+    if ((current.connectionMode === "hosted_oauth" as any || current.auth.type === "oauth") && !requiresParams && !isConnected) {
       try {
         // Set local loading state (optimistic)
         setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
@@ -475,19 +477,27 @@ export default function IntegrationsPage() {
           aria-modal="true"
         >
           <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
-            <div className="space-y-1">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Image
-                  src={active.logoUrl}
-                  alt=""
-                  width={20}
-                  height={20}
-                  className="h-5 w-5 object-contain"
-                  unoptimized
-                />
-                {active.name}
-              </h2>
-              <p className="text-sm text-muted-foreground">{active.description}</p>
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                  <Image
+                    src={active.logoUrl}
+                    alt=""
+                    width={20}
+                    height={20}
+                    className="h-5 w-5 object-contain"
+                    unoptimized
+                  />
+                  {active.name}
+                </h2>
+                <p className="text-sm text-muted-foreground">{active.description}</p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={closeModal} className="rounded-full">
+                <span className="sr-only">Close</span>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </Button>
             </div>
 
             <div className="mt-8 space-y-6">
@@ -572,35 +582,64 @@ export default function IntegrationsPage() {
 
 
               {/* Disconnect / Close Logic */}
-              <div className="border-t border-border pt-6 flex items-center justify-between">
-                <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting}>
-                  Close
-                </Button>
-
-                {activeStatus?.connected && (
-                  <div className="flex items-center gap-2">
-                    {disconnectMode ? (
-                      <>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          onClick={() => void disconnect()}
-                          disabled={submitting}
-                        >
-                          Confirm Disconnect
+              <div className="border-t border-border pt-6">
+                {activeStatus?.connected ? (
+                  <div className="space-y-4">
+                    {!disconnectMode ? (
+                      <div className="flex flex-col gap-4">
+                        <div className="rounded-xl border border-border bg-muted/30 p-4">
+                          <h3 className="text-sm font-semibold mb-1">Danger Zone</h3>
+                          <p className="text-xs text-muted-foreground mb-4">
+                            Disconnecting this integration will immediately stop all automated workflows and tools that depend on it. This action cannot be undone.
+                          </p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="w-full text-destructive hover:bg-destructive/10 border-destructive/20"
+                            onClick={() => setDisconnectMode(true)}
+                            disabled={submitting}
+                          >
+                            Disconnect {active.name}
+                          </Button>
+                        </div>
+                        <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting} className="w-full">
+                          Done
                         </Button>
-                      </>
+                      </div>
                     ) : (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="text-destructive hover:bg-destructive/10"
-                        onClick={() => setDisconnectMode(true)}
-                        disabled={submitting}
-                      >
-                        Disconnect
-                      </Button>
+                      <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 animate-in fade-in zoom-in duration-200">
+                        <h3 className="text-sm font-semibold text-destructive mb-2">Are you absolutely sure?</h3>
+                        <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+                          This will permanently revoke access to your {active.name} account. You will need to re-authenticate to use it again.
+                        </p>
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            onClick={() => void disconnect()}
+                            disabled={submitting}
+                            className="w-full"
+                          >
+                            {submitting ? "Disconnecting..." : "Yes, Disconnect"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() => setDisconnectMode(false)}
+                            disabled={submitting}
+                            className="w-full text-xs"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
                     )}
+                  </div>
+                ) : (
+                  <div className="flex justify-end gap-3">
+                    <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting}>
+                      Cancel
+                    </Button>
                   </div>
                 )}
               </div>

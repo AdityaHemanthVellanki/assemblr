@@ -19,6 +19,10 @@ const nextConfig: NextConfig = {
         hostname: "guxfymeivtdtjxdgcipq.supabase.co",
         pathname: "/storage/v1/object/**",
       },
+      {
+        protocol: "https",
+        hostname: "cdn.simpleicons.org",
+      },
     ],
   },
   env: {

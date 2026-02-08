@@ -5,7 +5,7 @@ import { getComposioClient } from "@/lib/integrations/composio/client";
 
 async function main() {
     const client = getComposioClient();
-    const accounts = await client.connectedAccounts.list({ userUuid: "assemblr-e2e-test" });
+    const accounts = await client.connectedAccounts.list({ user_uuid: "assemblr-e2e-test" });
 
     console.log("Checking connections for user: assemblr-e2e-test");
     const connectedApps = accounts.items.map((a: any) => a.appUniqueId);

@@ -1,6 +1,8 @@
 import { ProjectWorkspace } from "@/components/dashboard/project-workspace";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 export default async function ChatPage({
   searchParams,
 }: {
@@ -20,9 +22,9 @@ export default async function ChatPage({
       : null;
   const requiredIntegrations = integrationsParam
     ? integrationsParam
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean)
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
     : null;
 
   return (

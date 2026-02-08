@@ -1,6 +1,6 @@
 import { z } from "zod";
 export const TOOL_SPEC_VERSION = 1;
-export const IntegrationIdSchema = z.enum(["google", "github", "slack", "notion", "linear"]);
+export const IntegrationIdSchema = z.enum(["google", "github", "slack", "notion", "linear", "hubspot", "stripe", "intercom", "salesforce", "zendesk", "airtable", "asana", "clickup", "jira", "gitlab", "bitbucket", "microsoft_teams", "outlook", "quickbooks", "google_analytics", "zoom", "discord", "trello"]);
 export type IntegrationId = z.infer<typeof IntegrationIdSchema>;
 
 export const CanonicalEntitySchema = z.enum(["Issue", "Email", "Message", "Page", "Repo", "Ticket"]);

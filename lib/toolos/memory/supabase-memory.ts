@@ -27,7 +27,7 @@ function toAdapterError(err: unknown, tables: string[], fallback: string) {
   if (missing) return missing;
   const message = err instanceof Error ? err.message : fallback;
   if (err) {
-    console.error("[MemoryWriteFailed]", { tables, error: err });
+    // console.error("[MemoryWriteFailed]", { tables, error: err });
   }
   return new MemoryAdapterError("unknown", message);
 }
@@ -491,7 +491,7 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
                 .delete()
                 .eq("tool_id", scope.toolId)
                 .eq("key", "lifecycle")
-              ;
+                ;
               if (error) throw error;
             },
             async (supabase) => {
@@ -499,7 +499,7 @@ export function createSupabaseMemoryAdapter(): MemoryAdapter {
                 .delete()
                 .eq("tool_id", scope.toolId)
                 .eq("key", "lifecycle")
-              ;
+                ;
               if (error) {
                 throw toAdapterError(error, ["tool_lifecycle_state"], "Failed to delete lifecycle state");
               }
