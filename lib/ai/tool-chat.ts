@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "crypto";
 import { getServerEnv } from "@/lib/env";
 import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
-import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus, coerceViewSpecPayload } from "@/lib/toolos/spec";
+import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, IntegrationIdSchema, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
 import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
@@ -85,11 +85,15 @@ type BuildStep = {
   logs: string[];
 };
 
-const capabilityCatalog = ["google", "slack", "github", "linear", "notion"]
-  .map((provider) => {
-    const ids = getCapabilitiesForIntegration(provider).map((c) => c.id);
-    return `${provider}: ${ids.join(", ")}`;
-  })
+const ALL_INTEGRATIONS = IntegrationIdSchema.options;
+const INTEGRATION_UNION_TYPE = ALL_INTEGRATIONS.map((id) => `"${id}"`).join(" | ");
+
+const capabilityCatalog = ALL_INTEGRATIONS.map((provider) => {
+  const ids = getCapabilitiesForIntegration(provider).map((c) => c.id);
+  if (ids.length === 0) return null;
+  return `${provider}: ${ids.join(", ")}`;
+})
+  .filter(Boolean)
   .join("\n");
 
 const INTENT_SYSTEM_PROMPT = `
@@ -98,19 +102,19 @@ You are a ToolSpec compiler. You must output a single JSON object that matches t
   "id": string,
   "name": string,
   "purpose": string,
-  "entities": [{ "name": string, "fields": [{ "name": string, "type": string, "required": boolean? }], "sourceIntegration": "google" | "slack" | "github" | "linear" | "notion", "identifiers": string[], "supportedActions": string[], "relations"?: [{ "name": string, "target": string, "type": "one_to_one" | "one_to_many" | "many_to_many" }], "behaviors": string[]? }],
+  "entities": [{ "name": string, "fields": [{ "name": string, "type": string, "required": boolean? }], "sourceIntegration": ${INTEGRATION_UNION_TYPE}, "identifiers": string[], "supportedActions": string[], "relations"?: [{ "name": string, "target": string, "type": "one_to_one" | "one_to_many" | "many_to_many" }], "behaviors": string[]? }],
   "actionGraph": { "nodes": [{ "id": string, "actionId": string, "stepLabel"?: string }], "edges": [{ "from": string, "to": string, "condition"?: string, "type": "default" | "success" | "failure" }] },
   "state": {
     "initial": object,
     "reducers": [{ "id": string, "type": "set" | "merge" | "append" | "remove", "target": string }],
     "graph": { "nodes": [{ "id": string, "kind": "state" | "action" | "workflow" }], "edges": [{ "from": string, "to": string, "actionId"?: string, "workflowId"?: string }] }
   },
-  "actions": [{ "id": string, "name": string, "description": string, "integrationId": "google" | "slack" | "github" | "linear" | "notion", "capabilityId": string, "inputSchema": object, "outputSchema": object, "reducerId"?: string, "emits"?: string[], "requiresApproval"?: boolean, "permissions"?: string[] }],
+  "actions": [{ "id": string, "name": string, "description": string, "integrationId": ${INTEGRATION_UNION_TYPE}, "capabilityId": string, "inputSchema": object, "outputSchema": object, "reducerId"?: string, "emits"?: string[], "requiresApproval"?: boolean, "permissions"?: string[] }],
   "workflows": [{ "id": string, "name": string, "description": string, "nodes": [{ "id": string, "type": "action" | "condition" | "transform" | "wait", "actionId"?: string, "condition"?: string, "transform"?: string, "waitMs"?: number }], "edges": [{ "from": string, "to": string }], "retryPolicy": { "maxRetries": number, "backoffMs": number }, "timeoutMs": number }],
   "triggers": [{ "id": string, "name": string, "type": "cron" | "webhook" | "integration_event" | "state_condition", "condition": object, "actionId"?: string, "workflowId"?: string, "enabled": boolean }],
   "views": [{ "id": string, "name": string, "type": "table" | "kanban" | "timeline" | "chat" | "form" | "inspector" | "command", "source": { "entity": string, "statePath": string }, "fields": string[], "actions": string[] }],
   "permissions": { "roles": [{ "id": string, "name": string, "inherits"?: string[] }], "grants": [{ "roleId": string, "scope": "entity" | "action" | "workflow" | "view", "targetId": string, "access": "read" | "write" | "execute" | "approve" }] },
-  "integrations": [{ "id": "google" | "slack" | "github" | "linear" | "notion", "capabilities": string[] }],
+  "integrations": [{ "id": ${INTEGRATION_UNION_TYPE}, "capabilities": string[] }],
   "memory": { "tool": { "namespace": string, "retentionDays": number, "schema": object }, "user": { "namespace": string, "retentionDays": number, "schema": object } },
   "automations": { "enabled": boolean, "capabilities": { "canRunWithoutUI": boolean, "supportedTriggers": string[], "maxFrequency": number, "safetyConstraints": string[] }, "lastRunAt"?: string, "nextRunAt"?: string },
   "observability": { "executionTimeline": boolean, "recentRuns": boolean, "errorStates": boolean, "integrationHealth": boolean, "manualRetryControls": boolean }
@@ -789,6 +793,7 @@ export async function runCompilerPipeline(
             markStep(steps, stepId, "error", event.message);
           },
         });
+
       if (enterpriseSpec) {
         markStep(steps, "intent", "success", "Enterprise prompt detected");
         markStep(steps, "entities", "success", "Enterprise entities defined");
@@ -798,6 +803,60 @@ export async function runCompilerPipeline(
         markStep(steps, "compile", "success", "Enterprise spec compiled");
         await transition("RUNTIME_READY", "Runtime compiled");
       }
+
+      // FIX: Atomic Version Persistence
+      // We must create and promote the version immediately to prevent "active_version_missing"
+      let newVersionId: string | null = null;
+      if (compilerResult.status === "completed") {
+        const compiledTool = buildCompiledToolArtifact(compilerResult.spec);
+
+        try {
+          const version = await createToolVersion({
+            orgId: buildContext.orgId,
+            toolId: input.toolId,
+            userId: userId,
+            spec: compilerResult.spec,
+            compiledTool: compiledTool,
+            baseSpec: null, // TODO: support base spec for diffs?
+            supabase: supabase
+          });
+
+          await promoteToolVersion({
+            toolId: input.toolId,
+            versionId: version.id,
+            supabase: supabase
+          });
+
+          newVersionId = version.id;
+          console.log(`[Compiler] Atomically created/promoted version ${version.id} for tool ${input.toolId}`);
+        } catch (e) {
+          console.error("[Compiler] Failed to persist version:", e);
+          // Fallback? If we fail here, the tool exists but has no active version.
+          // The UI will likely fail. We should probably throw or report degradation.
+          degraded = true;
+        }
+      }
+
+      return {
+        spec: compilerResult.spec,
+        // explanation: "Tool created successfully", // Don't override explanation yet
+        explanation: compilerResult.clarifications.length > 0
+          ? "I need a few clarifications before I can finish."
+          : "I've built the tool based on your requirements.",
+        message: {
+          type: "text",
+          content: compilerResult.clarifications.length > 0
+            ? compilerResult.clarifications.join("\n")
+            : "Tool created successfully.",
+        },
+        metadata: {
+          steps,
+          buildId,
+          persist: true,
+          active_version_id: newVersionId, // PASS BACK TO API
+          clarifications: compilerResult.clarifications,
+        },
+      };
 
       const canExecute = await canExecuteTool({ toolId: effectiveToolIdValue });
       if (canExecute.ok) {

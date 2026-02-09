@@ -59,12 +59,19 @@ export const createConnection = async (orgId: string, integrationId: string, res
             payload.connectionParams = connectionParams;
         }
 
-        // Inject scopes if provided
-        if (scopes && scopes.length > 0) {
+        // Inject scopes if provided (merged from config and runtime)
+        const finalScopes = [
+            ...(config.scopes || []),
+            ...(scopes || [])
+        ];
+        // Deduplicate
+        const uniqueScopes = Array.from(new Set(finalScopes));
+
+        if (uniqueScopes.length > 0) {
             // Try injecting in connectionParams as 'scopes' string or array
             payload.connectionParams = {
                 ...(payload.connectionParams || {}),
-                scopes: scopes.join(" ") // Many OAuth providers take space-separated string
+                scopes: uniqueScopes.join(" ") // Many OAuth providers take space-separated string
             };
         }
 

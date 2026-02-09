@@ -64,15 +64,17 @@ type IntegrationListItem = IntegrationUiConfig & {
 type FilterMode = "all" | "connected" | "not_connected";
 
 function statusDotClass(status: string) {
-  if (status === "active") return "bg-emerald-500";
-  if (status === "error") return "bg-red-500";
+  if (status === "active" || status === "connected") return "bg-emerald-500";
+  if (status === "expired") return "bg-amber-500";
+  if (status === "error" || status === "failed") return "bg-red-500";
   return "bg-muted-foreground/50";
 }
 
 function statusLabel(status: string, connected: boolean) {
-  if (!connected) return "Not connected";
-  if (status === "active") return "Healthy";
-  if (status === "error") return "Error";
+  if (!connected || status === "not_connected") return "Not connected";
+  if (status === "active" || status === "connected") return "Healthy";
+  if (status === "expired") return "Expired";
+  if (status === "error" || status === "failed") return "Error";
   return "Connected";
 }
 
@@ -458,7 +460,7 @@ export default function IntegrationsPage() {
                     className="rounded-full"
                     onClick={() => void openConnect(i.id)}
                   >
-                    {i.connected ? "Manage" : "Connect"}
+                    {i.status === "expired" ? "Reconnect" : i.connected ? "Manage" : "Connect"}
                   </Button>
                 </div>
               </div>
@@ -506,7 +508,11 @@ export default function IntegrationsPage() {
                   ? "border-destructive/20 bg-destructive/10 text-destructive"
                   : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                   }`}>
-                  {activeStatus.status === "error" ? "⚠ Connection Error" : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
+                  {activeStatus.status === "error" || activeStatus.status === "failed"
+                    ? "⚠ Connection Error"
+                    : activeStatus.status === "expired"
+                      ? "⚠ Connection Expired"
+                      : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
                 </div>
               ) : null}
 

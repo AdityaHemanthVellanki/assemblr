@@ -3,6 +3,7 @@ export interface ComposioIntegrationConfig {
     appName: string;
     useComposioAuth: boolean;
     requiredParams?: string[];
+    scopes?: string[];
     notes?: string;
 }
 
@@ -13,27 +14,33 @@ export const INTEGRATION_AUTH_CONFIG: Record<string, ComposioIntegrationConfig> 
     // These require useComposioAuth: true to let Composio handle the complex OAuth dance (refresh, scopes, instance selection)
 
     // Jira requires subdomain -> DISABLED (Zero-Friction Audit)
-    // jira: {
-    //     appName: "jira",
-    //     useComposioAuth: true,
-    //     requiredParams: ["your-domain"],
-    //     notes: "Requires site selection (your-domain)"
-    // },
+    // Jira
+    jira: {
+        appName: "jira",
+        useComposioAuth: true,
+        requiredParams: ["your-domain"],
+        notes: "Requires site selection (your-domain)"
+    },
 
-    // Salesforce requires instance endpoint -> DISABLED (Zero-Friction Audit)
-    // salesforce: {
-    //     appName: "salesforce",
-    //     useComposioAuth: true,
-    //     requiredParams: ["subdomain", "instanceEndpoint"],
-    //     notes: "Requires subdomain and instanceEndpoint"
-    // },
+    // Salesforce
+    salesforce: {
+        appName: "salesforce",
+        useComposioAuth: true,
+        requiredParams: ["subdomain", "instanceEndpoint"],
+        notes: "Requires subdomain and instanceEndpoint"
+    },
 
     hubspot: { appName: "hubspot", useComposioAuth: true }, // Verified Zero-Config
-    // zendesk: { appName: "zendesk", useComposioAuth: true, requiredParams: ["subdomain"] }, // DISABLED
+    zendesk: { appName: "zendesk", useComposioAuth: true, requiredParams: ["subdomain"] },
     // pipedrive: { appName: "pipedrive", useComposioAuth: true, requiredParams: ["COMPANYDOMAIN"] }, // DISABLED
     intercom: { appName: "intercom", useComposioAuth: true },
     linear: { appName: "linear", useComposioAuth: true },
-    slack: { appName: "slack", useComposioAuth: true },
+    slack: {
+        appName: "slack",
+        useComposioAuth: true,
+        // Minimal scopes to avoid invalid_scope error and force bot token
+        scopes: ["chat:write", "channels:read", "users:read", "bot"]
+    },
     slackbot: { appName: "slackbot", useComposioAuth: true },
 
     // Standard OAuth Group

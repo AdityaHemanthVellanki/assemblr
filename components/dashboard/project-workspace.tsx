@@ -56,6 +56,7 @@ export function ProjectWorkspace({
 
   // UI State
   const [isShareOpen, setIsShareOpen] = React.useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
 
   // Handlers
   const handleSpecUpdate = React.useCallback((spec: ToolSpec) => {
@@ -69,26 +70,47 @@ export function ProjectWorkspace({
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
       {/* LEFT SIDE: Chat Interface (Controller) */}
-      <aside className="w-[400px] flex flex-col border-r border-border bg-background z-20 shadow-xl shadow-black/5">
-        <ProjectHeader
-          title={currentSpec?.name || "New Tool"}
-          status={projectStatus}
-          onShare={() => setIsShareOpen(true)}
-        />
-        <ChatPanel
-          toolId={toolId}
-          initialMessages={initialMessages}
-          initialPrompt={initialPrompt}
-          initialRequiredIntegrations={initialRequiredIntegrations}
-          onSpecUpdate={handleSpecUpdate}
-          onToolIdChange={setToolId}
-          readOnly={readOnly}
-        />
+      <aside
+        className={`flex flex-col border-r border-border bg-background z-20 shadow-xl shadow-black/5 transition-all duration-300 ease-in-out ${isSidebarOpen ? "w-[400px] translate-x-0" : "w-0 -translate-x-full opacity-0"}`}
+      >
+        <div className="w-[400px] flex flex-col h-full">
+          <ProjectHeader
+            title={currentSpec?.name || "New Tool"}
+            status={projectStatus}
+            onShare={() => setIsShareOpen(true)}
+          />
+          <ChatPanel
+            toolId={toolId}
+            initialMessages={initialMessages}
+            initialPrompt={initialPrompt}
+            initialRequiredIntegrations={initialRequiredIntegrations}
+            onSpecUpdate={handleSpecUpdate}
+            onToolIdChange={setToolId}
+            readOnly={readOnly}
+          />
+        </div>
       </aside>
 
       {/* RIGHT SIDE: Tool Renderer (Canvas/Output) */}
       <main className="flex-1 flex flex-col relative min-w-0 overflow-hidden bg-muted/10">
-        <div className="absolute inset-0 p-4">
+        {/* Toggle Sidebar Button */}
+        <div className="absolute top-4 left-4 z-30">
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 bg-background shadow-sm border-border/60 hover:bg-muted"
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            title={isSidebarOpen ? "Collapse Chat" : "Open Chat"}
+          >
+            {isSidebarOpen ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+            )}
+          </Button>
+        </div>
+
+        <div className={`absolute inset-0 p-4 transition-all duration-300 ${isSidebarOpen ? "" : "pl-16"}`}>
           <div className="h-full w-full rounded-xl border border-border/40 bg-background shadow-sm overflow-hidden relative">
             <ToolRenderer
               toolId={toolId || ""}

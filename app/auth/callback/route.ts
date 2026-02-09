@@ -7,9 +7,13 @@ import { getBaseUrl } from "@/lib/url";
 import type { Database } from "@/lib/supabase/database.types";
 
 export async function GET(request: Request) {
+  console.log("[AuthCallback] Hit with URL:", request.url);
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
   const next = requestUrl.searchParams.get("next") ?? "/app/chat";
+
+  console.log("[AuthCallback] Code present:", !!code);
+
 
   // Use getBaseUrl to resolve the correct origin (handling proxies/ngrok)
   const origin = await getBaseUrl(request);
@@ -64,7 +68,7 @@ export async function GET(request: Request) {
       }
 
       const safeNext = next.startsWith("/") ? next : `/${next}`;
-      const finalUrl = `${requestUrl.origin}${safeNext}`;
+      const finalUrl = `${origin}${safeNext}`;
       console.log("[AuthCallback] Redirecting to:", finalUrl);
       return NextResponse.redirect(finalUrl);
     } else {

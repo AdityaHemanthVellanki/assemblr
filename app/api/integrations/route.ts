@@ -59,8 +59,8 @@ export async function GET() {
       description: i.description,
       connectionMode: i.connectionMode,
       auth: i.auth,
-      connected: isConnected,
-      status: isConnected ? "active" : "not_connected",
+      connected: !!conn,
+      status: conn ? conn.status.toLowerCase() : "not_connected",
       connectedAt: conn?.connectedAt ?? null,
       updatedAt: conn?.connectedAt ?? null, // Composio doesn't strictly provide updatedAt in this list
       scopes: [], // Composio handles scopes internally
