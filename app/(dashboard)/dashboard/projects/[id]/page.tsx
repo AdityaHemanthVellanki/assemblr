@@ -30,6 +30,28 @@ export default async function ProjectPage({
 
   const supabase = await createSupabaseServerClient();
 
+  // --- DEMO-ONLY MOCK MOCK INTERCEPT ---
+  if (toolId === "demo-executive-command-center") {
+    return (
+      <ProjectWorkspace
+        project={{
+          id: "demo-executive-command-center",
+          name: "Executive Command Center",
+          description: "Unified real-time visibility across Engineering, Revenue, and Customer Health",
+          spec: { name: "Executive Command Center" } as any,
+          status: "LIVE",
+          org_id: ctx.orgId
+        }}
+        initialMessages={[{
+          role: "assistant",
+          content: "I've generated your Executive Command Center. It's live and connected to your integrations."
+        }]}
+        role={role}
+      />
+    );
+  }
+  // -------------------------------------
+
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(

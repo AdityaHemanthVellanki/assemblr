@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 import { SystemTimeline } from "@/components/dashboard/system-timeline";
 import { safeFetch, ApiError } from "@/lib/api/client";
+import { RealDashboard } from "@/components/dashboard/real-dashboard";
 
 type DataEvidence = {
   integration: string;
@@ -1181,6 +1182,77 @@ function ViewSurface({
   }
   if (view.type === "detail") {
     return <DetailView data={data} />;
+  }
+  if (view.type === "dashboard") {
+    const components = view.fields.map(f => {
+      // Attempt to parse field definition if it's not just a string (though schema says string[])
+      // Registry had objects. Schema says strings.
+      // Spec schema says fields: z.array(z.string()).
+      // BUT Registry.ts had objects!
+      // If registry.ts had objects, they wouldn't pass Zod validation if I used it strictly.
+      // However, assuming I might get objects if I bypass Zod or if I update Zod.
+      // Actually, I should check if `view.fields` are strings or objects in runtime.
+      // If they are strings, they are keys. I need metadata to know it's a KPI or Chart.
+      // Maybe I should assume `view` has extra properties or `fields` is `any[]` in practice?
+      // The `ViewSpec` type says `string[]`.
+      // If I want rich dashboards, I need rich field definitions.
+      // I will assume `view` might have a `dashboardSpec` extension or I map based on data shape?
+      // Let's stick to a simple mapping for now:
+      // If data[key] is a number/string -> KPI
+      // If data[key] is array -> Chart (if I can guess x/y) or Table.
+
+      // WAIT. Registry.ts had `fields` as objects. `spec.ts` defines `ViewSpecSchema` as `z.array(z.string())`.
+      // This means `registry.ts` was violating the schema or I was looking at a loose type.
+      // `registry.ts` said `// NOTE: This file intentionally uses loose typing`.
+
+      // To support rich dashboards, I should probably update `ViewSpecSchema` to allow objects in fields OR add `components` to `ViewSpec`.
+
+      // For now, I will treat them as keys and try to infer type from data, OR
+      // I'll update `ViewSpecSchema` to allow `z.any()` for fields temporarily?
+      // Or better: `z.array(z.union([z.string(), z.object({ key: z.string(), ... })]))`.
+
+      return {
+        id: typeof f === 'string' ? f : (f as any).key,
+        type: typeof f === 'string' ? 'kpi' : (f as any).type || 'kpi',
+        label: typeof f === 'string' ? f : (f as any).label || f,
+        dataKey: typeof f === 'string' ? f : (f as any).key,
+        value: data?.[typeof f === 'string' ? f : (f as any).key], // Pre-resolving value if it's a KPI
+      };
+    });
+
+    // BETTER APPROACH:
+    // If the `view` object passed here actually has the full rich spec (because it came from the backend which likely stores it as JSON),
+    // we can use it.
+    // I'll coerce the props.
+
+    const dashboardSpec = {
+      title: view.name,
+      components: (view.fields || []).map((f: any) => {
+        const key = typeof f === 'string' ? f : f.key;
+        const type = typeof f === 'string' ? 'kpi' : f.type || 'kpi';
+        const label = typeof f === 'string' ? key : f.label || key;
+
+        // Simple inference if type is missing/default
+        let inferredType = type;
+        const val = data?.[key];
+        if (Array.isArray(val) && inferredType === 'kpi') {
+          inferredType = 'Table'; // Default array to table
+        }
+
+        return {
+          id: key,
+          type: inferredType,
+          label: label,
+          dataKey: key,
+          value: typeof val === 'object' ? val?.value : val, // Handle complex KPI objects { value, trend }
+          trend: typeof val === 'object' ? val?.trend : undefined,
+          status: typeof val === 'object' ? val?.status : undefined,
+          span: (inferredType === 'LineChart' || inferredType === 'BarChart' || inferredType === 'Table') ? 2 : 1
+        };
+      })
+    };
+
+    return <RealDashboard spec={dashboardSpec} data={data} />;
   }
   return <div className="text-sm text-muted-foreground">View not supported yet.</div>;
 }

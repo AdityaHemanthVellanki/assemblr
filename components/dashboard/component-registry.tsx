@@ -39,7 +39,7 @@ export type ComponentRenderer = {
 // 1. Component Implementation
 const ButtonComponent = ({ component, onEvent }: ComponentProps) => {
   return (
-    <Button 
+    <Button
       onClick={() => onEvent("onClick")}
       disabled={component.properties?.disabled}
       className={component.properties?.className}
@@ -144,8 +144,8 @@ const SelectComponent = ({ component, state, onEvent }: ComponentProps) => {
   return (
     <div className="space-y-2">
       {component.label && <label className="text-sm font-medium">{component.label}</label>}
-      <Select 
-        value={value} 
+      <Select
+        value={value}
         onValueChange={(val: string) => onEvent("onChange", { value: val, bindKey })}
       >
         <SelectTrigger>
@@ -225,10 +225,10 @@ const ContainerComponent = ({ component, renderChildren }: ComponentProps) => {
 const StatusComponent = ({ component, state }: ComponentProps) => {
   const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
   const value = bindKey ? state[bindKey] : (component.properties?.value || "Unknown");
-  
+
   let variant: "default" | "secondary" | "destructive" | "outline" = "default";
   const statusStr = String(value).toLowerCase();
-  
+
   if (statusStr === "success" || statusStr === "completed" || statusStr === "active") variant = "default"; // green-ish in some themes, or we rely on class
   else if (statusStr === "error" || statusStr === "failed") variant = "destructive";
   else if (statusStr === "pending" || statusStr === "running") variant = "secondary";
@@ -237,12 +237,11 @@ const StatusComponent = ({ component, state }: ComponentProps) => {
   return (
     <div className="flex items-center gap-2">
       {component.label && <span className="text-sm font-medium">{component.label}:</span>}
-      <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
-          variant === 'default' ? 'border-transparent bg-primary text-primary-foreground hover:bg-primary/80' :
-          variant === 'secondary' ? 'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80' :
+      <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${variant === 'default' ? 'border-transparent bg-primary text-primary-foreground hover:bg-primary/80' :
+        variant === 'secondary' ? 'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80' :
           variant === 'destructive' ? 'border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80' :
-          'text-foreground'
-      }`}>
+            'text-foreground'
+        }`}>
         {String(value)}
       </span>
     </div>
@@ -272,26 +271,26 @@ const LineChartComponent = ({ component, state }: ComponentProps) => {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis 
-                dataKey={xKey} 
-                stroke="#888888" 
-                fontSize={12} 
-                tickLine={false} 
+              <XAxis
+                dataKey={xKey}
+                stroke="#888888"
+                fontSize={12}
+                tickLine={false}
                 axisLine={false}
               />
-              <YAxis 
-                stroke="#888888" 
-                fontSize={12} 
-                tickLine={false} 
-                axisLine={false} 
+              <YAxis
+                stroke="#888888"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
               />
               <Tooltip />
-              <Line 
-                type="monotone" 
-                dataKey={yKey} 
-                stroke="currentColor" 
-                strokeWidth={2} 
-                className="stroke-primary" 
+              <Line
+                type="monotone"
+                dataKey={yKey}
+                stroke="currentColor"
+                strokeWidth={2}
+                className="stroke-primary"
                 dot={false}
               />
             </LineChart>
@@ -318,25 +317,25 @@ const BarChartComponent = ({ component, state }: ComponentProps) => {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis 
-                dataKey={xKey} 
-                stroke="#888888" 
-                fontSize={12} 
-                tickLine={false} 
+              <XAxis
+                dataKey={xKey}
+                stroke="#888888"
+                fontSize={12}
+                tickLine={false}
                 axisLine={false}
               />
-              <YAxis 
-                stroke="#888888" 
-                fontSize={12} 
-                tickLine={false} 
-                axisLine={false} 
+              <YAxis
+                stroke="#888888"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
               />
               <Tooltip />
-              <Bar 
-                dataKey={yKey} 
-                fill="currentColor" 
-                radius={[4, 4, 0, 0]} 
-                className="fill-primary" 
+              <Bar
+                dataKey={yKey}
+                fill="currentColor"
+                radius={[4, 4, 0, 0]}
+                className="fill-primary"
               />
             </BarChart>
           </ResponsiveContainer>
@@ -351,25 +350,100 @@ const BarChartComponent = ({ component, state }: ComponentProps) => {
 // Visualization Component (Generic Wrapper)
 const VisualizationComponent = (props: ComponentProps) => {
   const { component } = props;
-  const kind = component.properties?.kind || "heatmap"; 
-  
+  const kind = component.properties?.kind || "heatmap";
+
   if (kind === "heatmap") {
-      return <HeatmapComponent {...props} />;
+    return <HeatmapComponent {...props} />;
   }
-  
+
   // Future extensions: scatter, calendar, etc.
-  
+
   return (
-      <div className="p-4 border border-destructive/50 text-destructive bg-destructive/5 rounded-md">
-          Unsupported visualization kind: {kind}
+    <div className="p-4 border border-destructive/50 text-destructive bg-destructive/5 rounded-md">
+      Unsupported visualization kind: {kind}
+    </div>
+  );
+};
+
+// KPI Tile Component (for Executive Dashboard)
+const KpiTileComponent = ({ component, state }: ComponentProps) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const data = bindKey ? state[bindKey] : {
+    value: component.properties?.value || component.value || "—",
+    trend: component.properties?.trend || component.trend || "",
+    status: component.properties?.status || component.status || "neutral",
+  };
+
+  const statusColors: Record<string, string> = {
+    healthy: "bg-emerald-500/10 border-emerald-500/30 text-emerald-600",
+    warning: "bg-amber-500/10 border-amber-500/30 text-amber-600",
+    critical: "bg-red-500/10 border-red-500/30 text-red-600",
+    "on-track": "bg-blue-500/10 border-blue-500/30 text-blue-600",
+    neutral: "bg-muted border-border text-muted-foreground",
+  };
+
+  const trendColor = data.trend?.startsWith("+") ? "text-emerald-600" : data.trend?.startsWith("-") ? "text-red-500" : "text-muted-foreground";
+  const statusClass = statusColors[data.status] || statusColors.neutral;
+
+  return (
+    <Card className={`relative overflow-hidden border-2 ${statusClass} transition-all duration-300 hover:scale-[1.02] hover:shadow-lg`}>
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{component.label}</p>
+            <p className="mt-1 text-3xl font-bold tracking-tight">{data.value}</p>
+          </div>
+          {data.trend && (
+            <span className={`text-sm font-semibold ${trendColor}`}>{data.trend}</span>
+          )}
+        </div>
+        <div className={`absolute -bottom-2 -right-2 h-16 w-16 rounded-full opacity-20 ${data.status === "healthy" ? "bg-emerald-500" : data.status === "warning" ? "bg-amber-500" : data.status === "critical" ? "bg-red-500" : "bg-blue-500"}`} />
+      </CardContent>
+    </Card>
+  );
+};
+
+// Alert Banner Component (for Risk Correlation)
+const AlertBannerComponent = ({ component, state }: ComponentProps) => {
+  const bindKey = component.dataSource?.type === "state" ? component.dataSource.value : undefined;
+  const alerts = bindKey ? state[bindKey] : (component.properties?.data || []);
+  const severity = component.severity || component.properties?.severity || "info";
+
+  const severityStyles: Record<string, string> = {
+    critical: "bg-gradient-to-r from-red-600 to-red-500 text-white border-red-700",
+    high: "bg-gradient-to-r from-amber-500 to-orange-500 text-white border-amber-600",
+    medium: "bg-gradient-to-r from-yellow-400 to-amber-400 text-black border-yellow-500",
+    info: "bg-gradient-to-r from-blue-500 to-indigo-500 text-white border-blue-600",
+  };
+
+  if (!Array.isArray(alerts) || alerts.length === 0) return null;
+
+  const alert = alerts[0];
+  return (
+    <div className={`rounded-xl border-2 px-6 py-4 ${severityStyles[severity]} animate-pulse shadow-lg`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">🚨</span>
+          <div>
+            <p className="font-bold text-lg">{component.label || "Alert"}</p>
+            <p className="text-sm opacity-90">{alert.message}</p>
+          </div>
+        </div>
+        {alert.accounts && (
+          <div className="text-right">
+            <p className="text-xs uppercase opacity-80">Affected Accounts</p>
+            <p className="font-semibold">{alert.accounts.join(", ")}</p>
+          </div>
+        )}
       </div>
+    </div>
   );
 };
 
 // Helper to wrap simple components
 const simple = (render: React.FC<ComponentProps>, supportedEvents: string[] = []): ComponentRenderer => ({
-    render,
-    supportedEvents
+  render,
+  supportedEvents
 });
 
 export const COMPONENT_REGISTRY: Record<string, ComponentRenderer> = {
@@ -377,30 +451,30 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRenderer> = {
   Button: simple(ButtonComponent, ["onClick"]),
   Text: simple(TextComponent),
   Container: simple(ContainerComponent),
-  
+
   // Inputs
   TextInput: simple(TextInputComponent, ["onChange"]),
   Select: simple(SelectComponent, ["onChange"]),
   Dropdown: simple(SelectComponent, ["onChange"]), // Alias
-  
+
   // Outputs
   Table: simple(TableComponent),
   LineChart: simple(LineChartComponent),
   BarChart: simple(BarChartComponent),
   Status: simple(StatusComponent),
   Heatmap: {
-      render: HeatmapComponent,
-      validateProps: validateHeatmapProps,
-      supportedEvents: []
+    render: HeatmapComponent,
+    validateProps: validateHeatmapProps,
+    supportedEvents: []
   },
   Visualization: {
-      render: VisualizationComponent,
-      supportedEvents: []
+    render: VisualizationComponent,
+    supportedEvents: []
   },
-  
+
   // Layout / Other
   Form: simple(ContainerComponent), // Alias for now
-  
+
   // Legacy / Lowercase Aliases
   button: simple(ButtonComponent, ["onClick"]),
   text: simple(TextComponent),
@@ -416,43 +490,52 @@ export const COMPONENT_REGISTRY: Record<string, ComponentRenderer> = {
   linechart: simple(LineChartComponent),
   barchart: simple(BarChartComponent),
   heatmap: {
-      render: HeatmapComponent,
-      validateProps: validateHeatmapProps,
-      supportedEvents: []
+    render: HeatmapComponent,
+    validateProps: validateHeatmapProps,
+    supportedEvents: []
   },
   visualization: {
-      render: VisualizationComponent,
-      supportedEvents: []
+    render: VisualizationComponent,
+    supportedEvents: []
   },
-  
+
   // Dashboard Fallbacks
-  metric: simple(TextComponent), 
-  chart: simple(LineChartComponent), 
+  metric: simple(TextComponent),
+  chart: simple(LineChartComponent),
 
   Checkbox: simple(CheckboxComponent, ["onChange"]),
   DatePicker: simple(DatePickerComponent, ["onChange"]),
   Grid: simple(ContainerComponent),
   Tabs: simple(TabsComponent),
   Markdown: simple(TextComponent),
+
+  // Demo Dashboard Components
+  Kpi: simple(KpiTileComponent),
+  kpi: simple(KpiTileComponent),
+  KpiTile: simple(KpiTileComponent),
+  kpitile: simple(KpiTileComponent),
+  AlertBanner: simple(AlertBannerComponent),
+  alertbanner: simple(AlertBannerComponent),
 };
+
 
 export function getComponent(type: string): ComponentRenderer {
   // Try exact match first, then lowercase
   const Comp = COMPONENT_REGISTRY[type] || COMPONENT_REGISTRY[type.toLowerCase()];
-  
+
   if (!Comp) {
     // If we have a chart type that isn't registered, fallback to line chart if it looks like a chart
     if (type.toLowerCase().includes("chart")) {
-        return simple(LineChartComponent);
+      return simple(LineChartComponent);
     }
-    
+
     // Hard fail as requested
     // Note: The pre-render check in runtime should catch this first, 
     // but if we get here during render, we must fail.
     const errorMsg = JSON.stringify({
-        error: "unsupported_component",
-        componentType: type,
-        allowedTypes: Object.keys(COMPONENT_REGISTRY)
+      error: "unsupported_component",
+      componentType: type,
+      allowedTypes: Object.keys(COMPONENT_REGISTRY)
     });
     throw new Error(errorMsg);
   }

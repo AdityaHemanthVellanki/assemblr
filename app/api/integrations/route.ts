@@ -24,47 +24,44 @@ export async function GET() {
 
   const { listConnections } = await import("@/lib/integrations/composio/connection");
   const { getIntegrationConfig } = await import("@/lib/integrations/composio/config");
-  const connections = await listConnections(ctx.orgId);
 
-  console.log(`[API] Listing for Org: ${ctx.orgId}. Found ${connections.length} connections.`);
+  // 1. Fetch live connections from Composio
+  const liveConnections = await listConnections(ctx.orgId);
 
-  const connectedMap = new Map<string, any>();
-  const STATUS_PRIORITY: Record<string, number> = {
-    "ACTIVE": 10,
-    "CONNECTED": 9,
-    "INITIATED": 5,
-    "EXPIRED": 1,
-    "FAILED": 0
-  };
+  // 2. Fetch metadata from local DB
+  const supabase = await createSupabaseServerClient();
+  const { data: dbConnections } = await (supabase
+    .from("integration_connections")
+    .select("composio_connection_id, label, user_id, updated_at")
+    .eq("org_id", ctx.orgId) as any);
 
-  for (const conn of connections) {
-    const existing = connectedMap.get(conn.integrationId);
-    const existingScore = existing ? (STATUS_PRIORITY[existing.status] || 0) : -1;
-    const newScore = STATUS_PRIORITY[conn.status] || 0;
+  const dbMap = new Map((dbConnections as any[])?.map((c: any) => [c.composio_connection_id, c]) || []);
 
-    if (newScore > existingScore) {
-      connectedMap.set(conn.integrationId, conn);
-    }
-  }
+  console.log(`[API] Listing for Org: ${ctx.orgId}. Found ${liveConnections.length} live connections.`);
 
-  const integrations = INTEGRATIONS_UI.map((i) => {
-    const conn = connectedMap.get(i.id);
-    const isConnected = conn && (conn.status === "ACTIVE" || conn.status === "CONNECTED");
+  // 3. Map connections to integrations
+  const integrations = INTEGRATIONS_UI.map(config => {
+    // Find all live connections for this integration
+    const conns = liveConnections.filter(c => c.integrationId === config.id);
+
+    // Pick the most recent one as the authoritative connection
+    const primaryConn = conns.sort((a, b) =>
+      new Date(b.connectedAt).getTime() - new Date(a.connectedAt).getTime()
+    )[0];
+
+    const meta = primaryConn ? dbMap.get(primaryConn.id) as any : null;
+    const identity = primaryConn ? (primaryConn.label || meta?.label || primaryConn.metadata?.userName || primaryConn.metadata?.userEmail || `Account ${primaryConn.id.slice(-4)}`) : null;
 
     return {
-      id: i.id,
-      name: i.name,
-      category: i.category,
-      logoUrl: i.logoUrl,
-      description: i.description,
-      connectionMode: i.connectionMode,
-      auth: i.auth,
-      connected: !!conn,
-      status: conn ? conn.status.toLowerCase() : "not_connected",
-      connectedAt: conn?.connectedAt ?? null,
-      updatedAt: conn?.connectedAt ?? null, // Composio doesn't strictly provide updatedAt in this list
-      scopes: [], // Composio handles scopes internally
-      requiredParams: getIntegrationConfig(i.id).requiredParams,
+      ...config,
+      connected: !!primaryConn,
+      connectedAt: primaryConn?.connectedAt || null,
+      status: primaryConn?.status.toLowerCase() || "not_connected",
+      connectionId: primaryConn?.id || null,
+      label: identity,
+      userId: meta?.user_id || null,
+      updatedAt: meta?.updated_at || primaryConn?.connectedAt || null,
+      requiredParams: getIntegrationConfig(config.id).requiredParams,
     };
   });
 

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-const INTEGRATION_ICONS: Record<string, { icon: React.ReactNode; bg: string; label: string }> = {
+export const INTEGRATION_ICONS: Record<string, { icon: React.ReactNode; bg: string; label: string }> = {
     google: {
         label: "Google",
         bg: "bg-white",
@@ -221,24 +221,29 @@ const INTEGRATION_ICONS: Record<string, { icon: React.ReactNode; bg: string; lab
 interface IntegrationBadgeProps {
     integrationId: string;
     showLabel?: boolean;
-    size?: "sm" | "md";
+    size?: "sm" | "md" | "xs";
+    shrink?: boolean;
 }
 
-export function IntegrationBadge({ integrationId, showLabel = false, size = "sm" }: IntegrationBadgeProps) {
+export function IntegrationBadge({ integrationId, showLabel = false, size = "sm", shrink = false }: IntegrationBadgeProps) {
     const config = INTEGRATION_ICONS[integrationId];
     if (!config) return null;
 
-    const sizeClasses = size === "sm" ? "h-6 w-6" : "h-8 w-8";
+    let sizeClasses = "h-6 w-6";
+    if (size === "md") sizeClasses = "h-8 w-8";
+    if (size === "xs" || shrink) sizeClasses = "h-4 w-4";
 
     return (
         <div className="flex items-center gap-1.5">
             <div
-                className={`${sizeClasses} flex items-center justify-center rounded-md ${config.bg} shadow-sm`}
+                className={`${sizeClasses} flex items-center justify-center rounded-md ${config.bg} shadow-sm transition-transform hover:scale-110`}
                 title={config.label}
             >
-                {config.icon}
+                <div className={shrink ? "scale-75" : ""}>
+                    {config.icon}
+                </div>
             </div>
-            {showLabel && (
+            {showLabel && !shrink && (
                 <span className="text-xs text-muted-foreground">{config.label}</span>
             )}
         </div>
@@ -248,19 +253,20 @@ export function IntegrationBadge({ integrationId, showLabel = false, size = "sm"
 interface IntegrationBadgeRowProps {
     integrations: string[];
     max?: number;
+    shrink?: boolean;
 }
 
-export function IntegrationBadgeRow({ integrations, max = 4 }: IntegrationBadgeRowProps) {
+export function IntegrationBadgeRow({ integrations, max = 4, shrink = false }: IntegrationBadgeRowProps) {
     const displayIntegrations = integrations.slice(0, max);
     const remaining = integrations.length - max;
 
     return (
         <div className="flex items-center gap-1">
             {displayIntegrations.map((id) => (
-                <IntegrationBadge key={id} integrationId={id} />
+                <IntegrationBadge key={id} integrationId={id} shrink={shrink} />
             ))}
             {remaining > 0 && (
-                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-muted text-[10px] font-medium text-muted-foreground">
+                <span className={`flex ${shrink ? 'h-4 w-4 text-[8px]' : 'h-6 w-6 text-[10px]'} items-center justify-center rounded-md bg-muted font-medium text-muted-foreground`}>
                     +{remaining}
                 </span>
             )}

@@ -10,6 +10,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Input } from "@/components/ui/input";
 import { safeFetch } from "@/lib/api/client";
 import { startOAuthFlow } from "@/app/actions/oauth";
+import { INTEGRATION_ICONS } from "@/components/use-cases/integration-badge";
 
 // --- Types mirroring backend types ---
 
@@ -59,6 +60,8 @@ type IntegrationListItem = IntegrationUiConfig & {
   connectedAt: string | null;
   updatedAt: string | null;
   status: string;
+  label: string | null; // Single identity label
+  connectionId: string | null;
 };
 
 type FilterMode = "all" | "connected" | "not_connected";
@@ -226,8 +229,7 @@ export default function IntegrationsPage() {
         const oauthUrl = await startOAuthFlow({
           providerId: integrationId,
           currentPath: window.location.pathname + window.location.search,
-          integrationMode: "manual", // Default for global page
-          // No chat/tool context
+          integrationMode: "manual",
         });
 
         router.push(oauthUrl);
@@ -259,13 +261,18 @@ export default function IntegrationsPage() {
       connectionMode: current.connectionMode,
       auth: {
         ...current.auth,
-        // Inject required params as fields
-        // We cast as any to bypass strict union checks if adding fields to 'none', 
-        // though realistically these integrations are 'oauth'
         fields: [
+          // Inject Connection Label if it's an OAuth flow or already has accounts
+          ...(current.auth.type === "oauth" || current.connectionMode === "hosted_oauth" as any || isConnected ? [{
+            kind: "string" as const,
+            id: "connectionLabel",
+            label: "Connection Label",
+            placeholder: `e.g. My ${current.name} Account`,
+            required: false,
+          }] : []),
           ...("fields" in current.auth ? current.auth.fields || [] : []),
           ...(current.requiredParams || []).map(p => ({
-            kind: "string",
+            kind: "string" as const,
             id: p,
             label: p === "instanceEndpoint" ? "Instance Endpoint" : p.charAt(0).toUpperCase() + p.slice(1),
             placeholder: p === "subdomain" ? "your-company" : "",
@@ -318,11 +325,13 @@ export default function IntegrationsPage() {
       // If OAuth, redirect to start flow
       if (active.connectionMode === "oauth" || active.connectionMode === ("hosted_oauth" as any) || active.auth.type === "oauth") {
         setIsConnecting(true);
+        const { connectionLabel, ...restParams } = formValues;
         const oauthUrl = await startOAuthFlow({
           providerId: active.id,
           currentPath: window.location.pathname + window.location.search,
           integrationMode: "manual",
-          connectionParams: formValues, // Pass collected params here
+          connectionParams: restParams,
+          label: (connectionLabel as string) || undefined,
         });
         router.push(oauthUrl);
         return; // Don't close modal or reload, we are leaving
@@ -337,12 +346,16 @@ export default function IntegrationsPage() {
     }
   }, [active, closeModal, formValues, load]);
 
-  const disconnect = React.useCallback(async () => {
+  const disconnect = React.useCallback(async (accountId?: string) => {
     if (!active) return;
     setSubmitting(true);
     setFormError(null);
     try {
-      await safeFetch(`/api/integrations/${encodeURIComponent(active.id)}`, {
+      const url = accountId
+        ? `/api/integrations/${encodeURIComponent(active.id)}?connectionId=${encodeURIComponent(accountId)}`
+        : `/api/integrations/${encodeURIComponent(active.id)}`;
+
+      await safeFetch(url, {
         method: "DELETE",
       });
       closeModal();
@@ -419,6 +432,8 @@ export default function IntegrationsPage() {
           }
 
           const i = item as IntegrationListItem;
+          const localIcon = INTEGRATION_ICONS[i.id];
+
           return (
             <div
               key={i.id}
@@ -427,15 +442,21 @@ export default function IntegrationsPage() {
               <div className="space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background p-1.5">
-                      <Image
-                        src={i.logoUrl}
-                        alt=""
-                        width={32}
-                        height={32}
-                        className="h-full w-full object-contain"
-                        unoptimized
-                      />
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 ${localIcon?.bg || 'bg-background'} p-1.5`}>
+                      {localIcon ? (
+                        <div className="scale-150">
+                          {localIcon.icon}
+                        </div>
+                      ) : (
+                        <Image
+                          src={i.logoUrl}
+                          alt=""
+                          width={32}
+                          height={32}
+                          className="h-full w-full object-contain"
+                          unoptimized
+                        />
+                      )}
                     </div>
                     <div className="min-w-0">
                       <h3 className="truncate text-base font-semibold text-foreground/90">{i.name}</h3>
@@ -451,7 +472,7 @@ export default function IntegrationsPage() {
 
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/40">
                   <div className="text-xs text-muted-foreground truncate">
-                    {i.connected ? `Synced ${formatTimestamp(i.updatedAt || i.connectedAt || "")}` : "Ready to connect"}
+                    {i.connected ? (i.label || "Connected") : "Ready to connect"}
                   </div>
                   <Button
                     type="button"
@@ -469,191 +490,208 @@ export default function IntegrationsPage() {
         })}
       </div>
 
-      {active ? (
-        <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div className="space-y-1">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <Image
-                    src={active.logoUrl}
-                    alt=""
-                    width={20}
-                    height={20}
-                    className="h-5 w-5 object-contain"
-                    unoptimized
-                  />
-                  {active.name}
-                </h2>
-                <p className="text-sm text-muted-foreground">{active.description}</p>
-              </div>
-              <Button variant="ghost" size="icon" onClick={closeModal} className="rounded-full">
-                <span className="sr-only">Close</span>
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </Button>
-            </div>
-
-            <div className="mt-8 space-y-6">
-              {activeStatus?.connected ? (
-                <div className={`rounded-md border p-3 text-sm ${activeStatus.status === "error"
-                  ? "border-destructive/20 bg-destructive/10 text-destructive"
-                  : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                  }`}>
-                  {activeStatus.status === "error" || activeStatus.status === "failed"
-                    ? "⚠ Connection Error"
-                    : activeStatus.status === "expired"
-                      ? "⚠ Connection Expired"
-                      : "✓ Connected"} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
-                </div>
-              ) : null}
-
-              {formError ? (
-                <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-                  {formError}
-                </div>
-              ) : null}
-
-              {/* MODE SPECIFIC UI */}
-
-              {/* Zero Input */}
-              {active.connectionMode === "zero_input" && !activeStatus?.connected ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
-                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  <p className="text-sm text-muted-foreground">Connecting to {active.name}...</p>
-                </div>
-              ) : null}
-
-              {/* Generic Form (Guided / Advanced / OAuth with fields) */}
-              {(active.connectionMode === "guided" || active.connectionMode === "advanced" || active.connectionMode === "oauth") && !activeStatus?.connected ? (
-                <form
-                  onSubmit={(e) => { e.preventDefault(); void submit(); }}
-                  className="space-y-4"
-                >
-                  {/* Use a simplified message for all integrations as they are handled by Composio */}
-                  {(active.connectionMode === "oauth" || active.auth.type === "oauth") && (
-                    <div className="text-sm text-muted-foreground p-3 border border-border rounded-md bg-muted/30">
-                      Click below to securely connect your {active.name} account via Composio.
-                    </div>
-                  )}
-
-                  {"fields" in active.auth && active.auth.fields && active.auth.fields.map((f) => (
-                    <FieldRenderer
-                      key={f.id}
-                      field={f}
-                      value={formValues[f.id]}
-                      onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
-                    />
-                  ))}
-
-                  {"advancedFields" in active.auth && active.auth.advancedFields && active.auth.advancedFields.length > 0 && (
-                    <div className="pt-2">
-                      <button
-                        type="button"
-                        onClick={() => setAdvancedOpen(!advancedOpen)}
-                        className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                      >
-                        {advancedOpen ? "Hide" : "Show"} Advanced Options
-                      </button>
-                      {advancedOpen && (
-                        <div className="mt-3 space-y-4 border-l-2 border-border pl-4">
-                          {active.auth.advancedFields.map((f) => (
-                            <FieldRenderer
-                              key={f.id}
-                              field={f}
-                              value={formValues[f.id]}
-                              onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+      {
+        active ? (
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) closeModal();
+            }}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold flex items-center gap-2">
+                    {(() => {
+                      const localIcon = INTEGRATION_ICONS[active.id];
+                      return (
+                        <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/60 ${localIcon?.bg || 'bg-background'} p-1`}>
+                          {localIcon ? (
+                            <div className="scale-100">
+                              {localIcon.icon}
+                            </div>
+                          ) : (
+                            <Image
+                              src={active.logoUrl}
+                              alt=""
+                              width={20}
+                              height={20}
+                              className="h-5 w-5 object-contain"
+                              unoptimized
                             />
-                          ))}
+                          )}
+                        </div>
+                      );
+                    })()}
+                    {active.name}
+                  </h2>
+                  <p className="text-sm text-muted-foreground">{active.description}</p>
+                </div>
+                <Button variant="ghost" size="icon" onClick={closeModal} className="rounded-full">
+                  <span className="sr-only">Close</span>
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </Button>
+              </div>
+
+              <div className="mt-8 space-y-6">
+                {activeStatus?.connected ? (
+                  <div className={`rounded-md border p-3 text-sm ${activeStatus.status === "error"
+                    ? "border-destructive/20 bg-destructive/10 text-destructive"
+                    : "border-border bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    }`}>
+                    {activeStatus.status === "error" || activeStatus.status === "failed"
+                      ? "⚠ Connection Error"
+                      : activeStatus.status === "expired"
+                        ? "⚠ Connection Expired"
+                        : `✓ Connected as ${activeStatus.label || "Primary Account"}`} since {activeStatus.connectedAt ? formatTimestamp(activeStatus.connectedAt) : "just now"}
+                  </div>
+                ) : null}
+
+                {formError ? (
+                  <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                    {formError}
+                  </div>
+                ) : null}
+
+                {/* MODE SPECIFIC UI */}
+
+                {/* Zero Input */}
+                {active.connectionMode === "zero_input" && !activeStatus?.connected ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                    <p className="text-sm text-muted-foreground">Connecting to {active.name}...</p>
+                  </div>
+                ) : null}
+
+                {/* Generic Form (Guided / Advanced / OAuth with fields) */}
+                {(active.connectionMode === "guided" || active.connectionMode === "advanced" || active.connectionMode === "oauth") && !activeStatus?.connected ? (
+                  <form
+                    onSubmit={(e) => { e.preventDefault(); void submit(); }}
+                    className="space-y-4"
+                  >
+                    {/* Use a simplified message for all integrations as they are handled by Composio */}
+                    {(active.connectionMode === "oauth" || active.auth.type === "oauth") && (
+                      <div className="text-sm text-muted-foreground p-3 border border-border rounded-md bg-muted/30">
+                        Click below to securely connect your {active.name} account via Composio.
+                      </div>
+                    )}
+
+                    {"fields" in active.auth && active.auth.fields && active.auth.fields.map((f) => (
+                      <FieldRenderer
+                        key={f.id}
+                        field={f}
+                        value={formValues[f.id]}
+                        onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+                      />
+                    ))}
+
+                    {"advancedFields" in active.auth && active.auth.advancedFields && active.auth.advancedFields.length > 0 && (
+                      <div className="pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setAdvancedOpen(!advancedOpen)}
+                          className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                        >
+                          {advancedOpen ? "Hide" : "Show"} Advanced Options
+                        </button>
+                        {advancedOpen && (
+                          <div className="mt-3 space-y-4 border-l-2 border-border pl-4">
+                            {active.auth.advancedFields.map((f) => (
+                              <FieldRenderer
+                                key={f.id}
+                                field={f}
+                                value={formValues[f.id]}
+                                onChange={(val) => setFormValues(prev => ({ ...prev, [f.id]: val }))}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+
+                    <div className="pt-4 flex justify-end">
+                      {!activeStatus?.connected && (
+                        <Button type="submit" disabled={submitting}>
+                          {submitting ? "Processing..." : active.connectionMode === "oauth" ? "Connect & Authorize" : "Connect"}
+                        </Button>
+                      )}
+                    </div>
+                  </form>
+                ) : null}
+
+
+                {/* Disconnect / Close Logic */}
+                <div className="border-t border-border pt-6">
+                  {activeStatus?.connected ? (
+                    <div className="space-y-4">
+                      {!disconnectMode ? (
+                        <div className="flex flex-col gap-4">
+                          <div className="rounded-xl border border-border bg-muted/30 p-4">
+                            <h3 className="text-sm font-semibold mb-1">Danger Zone</h3>
+                            <p className="text-xs text-muted-foreground mb-4">
+                              Disconnecting this integration will immediately stop all automated workflows and tools that depend on it. This action cannot be undone.
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="w-full text-destructive hover:bg-destructive/10 border-destructive/20"
+                              onClick={() => setDisconnectMode(true)}
+                              disabled={submitting}
+                            >
+                              Disconnect {active.name}
+                            </Button>
+                          </div>
+                          <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting} className="w-full">
+                            Done
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 animate-in fade-in zoom-in duration-200">
+                          <h3 className="text-sm font-semibold text-destructive mb-2">Are you absolutely sure?</h3>
+                          <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+                            This will permanently revoke access to your {active.name} account. You will need to re-authenticate to use it again.
+                          </p>
+                          <div className="flex flex-col gap-2">
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              onClick={() => void disconnect()}
+                              disabled={submitting}
+                              className="w-full"
+                            >
+                              {submitting ? "Disconnecting..." : "Yes, Disconnect"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => setDisconnectMode(false)}
+                              disabled={submitting}
+                              className="w-full text-xs"
+                            >
+                              Cancel
+                            </Button>
+                          </div>
                         </div>
                       )}
                     </div>
+                  ) : (
+                    <div className="flex justify-end gap-3">
+                      <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting}>
+                        Cancel
+                      </Button>
+                    </div>
                   )}
+                </div>
 
-                  <div className="pt-4 flex justify-end">
-                    <Button type="submit" disabled={submitting}>
-                      {submitting ? "Processing..." : active.connectionMode === "oauth" ? "Connect & Authorize" : "Connect"}
-                    </Button>
-                  </div>
-                </form>
-              ) : null}
-
-
-              {/* Disconnect / Close Logic */}
-              <div className="border-t border-border pt-6">
-                {activeStatus?.connected ? (
-                  <div className="space-y-4">
-                    {!disconnectMode ? (
-                      <div className="flex flex-col gap-4">
-                        <div className="rounded-xl border border-border bg-muted/30 p-4">
-                          <h3 className="text-sm font-semibold mb-1">Danger Zone</h3>
-                          <p className="text-xs text-muted-foreground mb-4">
-                            Disconnecting this integration will immediately stop all automated workflows and tools that depend on it. This action cannot be undone.
-                          </p>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="w-full text-destructive hover:bg-destructive/10 border-destructive/20"
-                            onClick={() => setDisconnectMode(true)}
-                            disabled={submitting}
-                          >
-                            Disconnect {active.name}
-                          </Button>
-                        </div>
-                        <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting} className="w-full">
-                          Done
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 animate-in fade-in zoom-in duration-200">
-                        <h3 className="text-sm font-semibold text-destructive mb-2">Are you absolutely sure?</h3>
-                        <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-                          This will permanently revoke access to your {active.name} account. You will need to re-authenticate to use it again.
-                        </p>
-                        <div className="flex flex-col gap-2">
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            onClick={() => void disconnect()}
-                            disabled={submitting}
-                            className="w-full"
-                          >
-                            {submitting ? "Disconnecting..." : "Yes, Disconnect"}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            onClick={() => setDisconnectMode(false)}
-                            disabled={submitting}
-                            className="w-full text-xs"
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex justify-end gap-3">
-                    <Button type="button" variant="ghost" onClick={closeModal} disabled={submitting}>
-                      Cancel
-                    </Button>
-                  </div>
-                )}
               </div>
-
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
     </div>
   );
 }

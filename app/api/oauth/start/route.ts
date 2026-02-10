@@ -61,8 +61,13 @@ export async function GET(req: Request) {
       }
     }
 
+    const label = url.searchParams.get("label");
+
     // We pass resumeId in the redirectUri so the callback can handle it
-    const { redirectUrl } = await createConnection(ctx.orgId, providerId, resumeId, connectionParams);
+    const { redirectUrl } = await createConnection(ctx.orgId, providerId, resumeId, {
+      connectionParams,
+      label: label || undefined
+    });
 
     return NextResponse.redirect(redirectUrl);
 

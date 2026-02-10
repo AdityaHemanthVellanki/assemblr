@@ -8,6 +8,8 @@ export interface ComposioConnection {
     status: ComposioConnectionStatus;
     connectedAt: string;
     appName: string;
+    label?: string;
+    metadata?: Record<string, any>;
 }
 
 export interface ComposioSchema {

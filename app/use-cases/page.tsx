@@ -72,9 +72,6 @@ export default function PublicUseCasesPage() {
                         >
                             Use Cases
                         </Link>
-                        <EnterSystemButton className="h-8 px-4 text-xs font-medium">
-                            Launch App
-                        </EnterSystemButton>
                     </div>
                 </div>
             </header>
@@ -107,8 +104,8 @@ export default function PublicUseCasesPage() {
                                 key={category}
                                 onClick={() => setActiveCategory(category)}
                                 className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeCategory === category
-                                        ? "bg-foreground text-background shadow-sm"
-                                        : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                    ? "bg-foreground text-background shadow-sm"
+                                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                                     }`}
                             >
                                 {category === "All" ? "All Use Cases" : categoryLabels[category] || category}
@@ -120,29 +117,28 @@ export default function PublicUseCasesPage() {
 
             {/* Use Cases Grid */}
             <div className="mx-auto max-w-7xl px-6 py-12">
-                <div className="mb-8 flex items-center justify-between">
-                    <h2 className="text-xl font-semibold tracking-tight">
+                <div className="mb-6 flex items-center justify-between">
+                    <h2 className="text-lg font-semibold tracking-tight text-foreground/80">
                         {activeCategory === "All" ? "All Capabilities" : activeCategory}
                     </h2>
-                    <span className="text-xs text-muted-foreground border border-border rounded-md px-2 py-1">
-                        {filteredUseCases.length} available
+                    <span className="text-[10px] font-medium text-muted-foreground bg-muted/30 border border-border/50 rounded-full px-2.5 py-0.5 uppercase tracking-wider">
+                        {filteredUseCases.length} items
                     </span>
                 </div>
 
                 {filteredUseCases.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-border/60 p-20 text-center bg-muted/5">
-                        <div className="h-10 w-10 text-muted-foreground/40 mb-4">
+                    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/40 p-16 text-center bg-muted/5">
+                        <div className="h-8 w-8 text-muted-foreground/30 mb-3">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
                             </svg>
                         </div>
-                        <p className="text-muted-foreground font-medium">No use cases found.</p>
-                        <p className="text-xs text-muted-foreground/60 mt-1">Try selecting a different category.</p>
+                        <p className="text-sm text-muted-foreground font-medium">No results found</p>
                     </div>
                 ) : (
-                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                         {filteredUseCases.map((useCase) => (
-                            <div key={useCase.id} className="group relative">
+                            <div key={useCase.id} className="transition-transform duration-200 hover:-translate-y-1">
                                 <UseCaseCard
                                     id={useCase.id}
                                     name={useCase.name}

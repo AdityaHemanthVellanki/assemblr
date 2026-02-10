@@ -62,9 +62,6 @@ export function PublicHeader({ currentPath }: PublicHeaderProps) {
                     >
                         Use Cases
                     </Link>
-                    <EnterSystemButton className="h-9 px-4 text-sm">
-                        Go to Chat
-                    </EnterSystemButton>
                 </div>
             </nav>
         </header>

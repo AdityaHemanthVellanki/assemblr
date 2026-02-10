@@ -24,10 +24,43 @@ export async function GET(req: NextRequest) {
             // Verify connection status
             const connection = await client.connectedAccounts.get({ connectedAccountId });
 
-            if (connection.status === "ACTIVE") {
-                // If we have a resume ID, return to the original context
+            if ((connection.status as string) === "ACTIVE" || (connection.status as string) === "CONNECTED") {
+                // Persistent State Logic
                 if (resumeId) {
+                    const { getResumeContext } = await import("@/app/actions/oauth");
                     const context = await getResumeContext(resumeId);
+
+                    if (context) {
+                        const { createSupabaseServerClient } = await import("@/lib/supabase/server");
+                        const supabase = await createSupabaseServerClient();
+
+                        const integrationId = connection.appName ? connection.appName.toLowerCase() : connection.integrationId;
+
+                        console.log(`[Composio Callback] Persisting connection for ${integrationId} in Org ${context.orgId}`);
+
+                        // 1. Save to integration_connections (Individual Connection)
+                        await supabase.from("integration_connections").upsert({
+                            org_id: context.orgId,
+                            integration_id: integrationId,
+                            composio_connection_id: connection.id,
+                            user_id: context.userId,
+                            status: connection.status.toLowerCase(),
+                            label: (connection as any).label || null,
+                            scopes: (connection as any).scopes || [],
+                            connected_at: new Date().toISOString()
+                        }, { onConflict: "composio_connection_id" });
+
+                        // 2. Update org_integrations (High-level Status)
+                        await supabase.from("org_integrations").upsert({
+                            org_id: context.orgId,
+                            integration_id: integrationId,
+                            status: "active",
+                            scopes: (connection as any).scopes || [],
+                            connected_at: new Date().toISOString()
+                        }, { onConflict: "org_id, integration_id" });
+                    }
+
+                    // Resume context redirect
                     if (context?.returnPath) {
                         const finalUrl = new URL(context.returnPath, process.env.NEXT_PUBLIC_APP_URL);
                         finalUrl.searchParams.set("integration_connected", "true");

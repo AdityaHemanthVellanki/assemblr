@@ -30,6 +30,30 @@ export async function sendChatMessage(
   }
   const userId = user.id;
 
+  // --- DEMO-ONLY MOCK TOOL INTERCEPT ---
+  // 1. Catch chat messages WITHIN the demo tool
+  if (toolId === "demo-executive-command-center") {
+    return {
+      toolId: "demo-executive-command-center",
+      message: { type: "text", content: "This is a demo environment. Modifications are disabled." },
+      metadata: { status: "completed", executionId: "demo-execution-chat" }
+    };
+  }
+
+  // 2. Catch the CREATION prompt
+  // safe to delete after launch
+  const DEMO_PROMPT = "Build an executive command center that shows engineering velocity, revenue health, customer risk, and real-time alerts across GitHub, Linear, Slack, Intercom, Stripe, and HubSpot.";
+
+  if (message.trim() === DEMO_PROMPT || message.trim().includes("Build an executive command center that shows engineering velocity")) {
+    console.log("[Demo] Intercepting demo prompt directly in sendChatMessage");
+    return {
+      toolId: "demo-executive-command-center",
+      message: { type: "text", content: "Generating Executive Command Center..." },
+      metadata: { status: "completed", executionId: "demo-execution", persist: false }
+    };
+  }
+  // -------------------------------------
+
   let effectiveToolId = toolId;
   let effectiveSpec = currentSpec;
   let orgId: string;

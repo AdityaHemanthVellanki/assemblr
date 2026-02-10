@@ -225,7 +225,7 @@ export function ChatPanel({
   };
 
   return (
-    <div className="flex bg-background flex-col h-full overflow-hidden relative group">
+    <div className="flex bg-[#09090b] flex-col h-full overflow-hidden relative group">
       <ScrollArea className="flex-1 px-4" ref={scrollRef}>
         <div className="flex flex-col gap-6 py-6 pb-4">
           {messages.length === 0 && (
@@ -248,8 +248,8 @@ export function ChatPanel({
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="p-4 bg-background border-t border-border/40 z-10">
-        <div className="relative rounded-xl border border-border bg-muted/20 focus-within:ring-1 focus-within:ring-ring focus-within:border-ring/50 transition-all shadow-sm">
+      <div className="p-4 bg-[#09090b] border-t border-white/10 z-10">
+        <div className="relative rounded-2xl border border-white/10 bg-[#18181b] focus-within:border-white/20 transition-all shadow-xl">
           <Textarea
             ref={textareaRef}
             value={input}
@@ -260,19 +260,19 @@ export function ChatPanel({
             }}
             onKeyDown={handleKeyDown}
             placeholder={readOnly ? "Read only mode" : "Clean data, add a chart..."}
-            className="min-h-[48px] w-full resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0 placeholder:text-muted-foreground/60"
+            className="min-h-[48px] w-full resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0 placeholder:text-muted-foreground/50 text-white"
             disabled={readOnly || isExecuting}
             rows={1}
           />
           <div className="flex items-center justify-between px-2 pb-2">
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground">
+              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-white rounded-lg">
                 <Paperclip className="h-4 w-4" />
               </Button>
             </div>
             <Button
               size="icon"
-              className={cn("h-7 w-7 transition-all", input.trim() ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted-foreground/20")}
+              className={cn("h-8 w-8 rounded-lg transition-all", input.trim() ? "bg-primary text-primary-foreground" : "bg-white/5 text-muted-foreground hover:bg-white/10")}
               onClick={() => submitMessage(input)}
               disabled={!input.trim() || isExecuting || readOnly}
             >
@@ -280,8 +280,8 @@ export function ChatPanel({
             </Button>
           </div>
         </div>
-        <div className="text-[10px] text-muted-foreground text-center mt-2 opacity-60">
-          Assemblr can make mistakes. Verify important info.
+        <div className="text-[10px] text-muted-foreground/30 text-center mt-3">
+          Assemblr generates real infrastructure. Verify critical actions.
         </div>
       </div>
     </div>
@@ -295,10 +295,10 @@ function ChatMessage({ message, onAction }: { message: Message, onAction: (cta: 
   return (
     <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
       <div className={cn(
-        "px-4 py-2.5 max-w-[90%] text-sm rounded-2xl leading-relaxed whitespace-pre-wrap",
+        "px-5 py-3 max-w-[85%] text-sm rounded-2xl leading-relaxed whitespace-pre-wrap",
         isUser
-          ? "bg-primary text-primary-foreground rounded-br-sm effect-shadow"
-          : isError ? "bg-red-50 text-red-700 border border-red-200 rounded-bl-sm" : "bg-muted/50 text-foreground rounded-bl-sm border border-border/40"
+          ? "bg-white/10 text-white"
+          : isError ? "bg-red-500/10 text-red-400 border border-red-500/20" : "bg-transparent text-neutral-200 border border-white/10"
       )}>
         {isError && <AlertCircle className="w-4 h-4 inline mr-2 text-red-500 mb-0.5" />}
         {message.content}
@@ -311,7 +311,7 @@ function ChatMessage({ message, onAction }: { message: Message, onAction: (cta: 
                 key={cta.id}
                 variant="outline"
                 size="sm"
-                className="w-full justify-start bg-background hover:bg-accent text-xs"
+                className="w-full justify-start bg-white/5 hover:bg-white/10 text-xs border-white/10 text-neutral-300 hover:text-white"
                 onClick={() => onAction(cta)}
               >
                 <Zap className="w-3 h-3 mr-2 text-amber-500" />
@@ -323,13 +323,13 @@ function ChatMessage({ message, onAction }: { message: Message, onAction: (cta: 
 
         {/* Data Snapshot */}
         {message.type === "data" && message.result && (
-          <div className="mt-3 rounded-lg border border-border/50 bg-background/50 p-3 text-xs overflow-hidden">
-            <div className="flex items-center gap-2 mb-2 text-muted-foreground font-medium">
+          <div className="mt-3 rounded-lg border border-white/10 bg-white/5 p-3 text-xs overflow-hidden">
+            <div className="flex items-center gap-2 mb-2 text-neutral-400 font-medium">
               {message.result.result_type === "table" ? <Table className="w-3 h-3" /> : <List className="w-3 h-3" />}
               {message.result.summary || "Data Result"}
             </div>
             {Array.isArray(message.result.rows) && (
-              <div className="max-h-40 overflow-auto text-muted-foreground">
+              <div className="max-h-40 overflow-auto text-neutral-400 scrollbar-thin scrollbar-thumb-white/10">
                 <ul className="list-disc pl-4 space-y-1">
                   {message.result.rows.slice(0, 5).map((row, i) => (
                     <li key={i} className="truncate">

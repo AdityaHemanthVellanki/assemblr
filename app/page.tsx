@@ -12,6 +12,7 @@ import { useCases } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
 import { ProductSimulation } from "@/components/landing/product-simulation";
 import { Footer } from "@/components/landing/footer";
+import { WaitlistForm } from "@/components/landing/waitlist-form";
 
 // --- Utilities ---
 
@@ -88,9 +89,6 @@ export default function Home() {
               >
                 Use Cases
               </Link>
-              <EnterSystemButton size="sm" className="h-9 px-4 text-sm bg-foreground text-background hover:bg-foreground/90 font-medium">
-                Go to Chat
-              </EnterSystemButton>
             </div>
           </nav>
         </header>
@@ -150,7 +148,7 @@ export default function Home() {
               variants={fadeUpVariants}
               className="pt-4"
             >
-              <EnterSystemButton>Start Building</EnterSystemButton>
+              <WaitlistForm />
             </m.div>
 
             <div className="absolute top-[60%] left-1/2 -translate-x-1/2 w-[90%] max-w-4xl h-32 bg-gradient-to-t from-blue-500/10 to-transparent blur-3xl opacity-50 pointer-events-none" />
@@ -244,9 +242,7 @@ export default function Home() {
                   Assemblr sits on top of your API layer, orchestrating data, identity, and permissions to build governed applications in realtime.
                 </p>
                 <div className="pt-6">
-                  <EnterSystemButton size="lg" className="bg-foreground text-background hover:bg-foreground/90 font-medium px-8 min-w-[200px]">
-                    Launch Assemblr
-                  </EnterSystemButton>
+                  <WaitlistForm />
                 </div>
               </m.div>
             </div>

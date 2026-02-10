@@ -24,9 +24,6 @@ export function DashboardShell({
     }
     if (savedCollapsed === "true") {
       setIsCollapsed(true);
-      // Ensure we don't start with invalid collapsed state visually?
-      // Actually sidebar handles its own internal collapsed state potentially?
-      // Let's check sidebar props.
     }
   }, []);
 

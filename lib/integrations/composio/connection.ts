@@ -8,7 +8,16 @@ export const getComposioEntityId = (orgId: string) => {
     return `assemblr_org_${orgId}`;
 };
 
-export const createConnection = async (orgId: string, integrationId: string, resumeId?: string, connectionParams?: Record<string, any>, scopes?: string[]): Promise<{ redirectUrl: string; connectionId: string }> => {
+export const createConnection = async (
+    orgId: string,
+    integrationId: string,
+    resumeId?: string,
+    options: {
+        connectionParams?: Record<string, any>;
+        scopes?: string[];
+        label?: string;
+    } = {}
+): Promise<{ redirectUrl: string; connectionId: string }> => {
     const client = getComposioClient();
 
     // Resolve configuration
@@ -33,7 +42,8 @@ export const createConnection = async (orgId: string, integrationId: string, res
         useComposioAuth: config.useComposioAuth,
         redirectUri,
         originalIntegrationId: integrationId,
-        scopes
+        scopes: options.scopes,
+        label: options.label
     });
 
     try {
@@ -55,14 +65,23 @@ export const createConnection = async (orgId: string, integrationId: string, res
             payload.appLogo = `${baseUrl}/images/logo-full.png`;
         }
 
-        if (connectionParams) {
-            payload.connectionParams = connectionParams;
+
+        if (options.label) {
+            // Many Composio versions use 'label' in payload or connectionParams
+            // We'll put it in both to be safe as per different SDK versions observed
+            payload.label = options.label;
+            payload.connectionParams = {
+                ...(options.connectionParams || {}),
+                label: options.label
+            };
+        } else if (options.connectionParams) {
+            payload.connectionParams = options.connectionParams;
         }
 
         // Inject scopes if provided (merged from config and runtime)
         const finalScopes = [
             ...(config.scopes || []),
-            ...(scopes || [])
+            ...(options.scopes || [])
         ];
         // Deduplicate
         const uniqueScopes = Array.from(new Set(finalScopes));
@@ -121,13 +140,15 @@ export const listConnections = async (orgId: string): Promise<ComposioConnection
     const entityId = getComposioEntityId(orgId);
     try {
         const response = await client.connectedAccounts.list({ entityId });
-        return response.items.map(c => ({
-            id: c.id,
+        return response.items.map((conn: any) => ({
+            id: conn.id,
             // Map appName to integrationId if available (preferred for Assemblr mapping)
-            integrationId: c.appName ? c.appName.toLowerCase() : c.integrationId,
-            status: c.status as any,
-            connectedAt: c.createdAt,
-            appName: c.appName,
+            integrationId: conn.appName ? conn.appName.toLowerCase() : conn.integrationId,
+            status: conn.status as any,
+            connectedAt: conn.createdAt,
+            appName: conn.appName,
+            label: conn.label,
+            metadata: conn.metadata
         }));
     } catch (e) {
         console.error("Failed to list connections", e);
@@ -135,17 +156,23 @@ export const listConnections = async (orgId: string): Promise<ComposioConnection
     }
 }
 
-export const removeConnection = async (orgId: string, integrationId: string): Promise<void> => {
+export const removeConnection = async (orgId: string, integrationId: string, connectionId?: string): Promise<void> => {
     const client = getComposioClient();
     const entityId = getComposioEntityId(orgId);
     const config = getIntegrationConfig(integrationId);
 
     try {
-        // Use appName for filtering
-        // @ts-ignore - SDK types might be stricter but appNames accepts string
-        const connections = await client.connectedAccounts.list({ entityId, appNames: config.appName });
-        for (const conn of connections.items) {
-            await client.connectedAccounts.delete({ connectedAccountId: conn.id });
+        if (connectionId) {
+            console.log(`[Composio] Explicitly removing connectionId: ${connectionId}`);
+            await client.connectedAccounts.delete({ connectedAccountId: connectionId });
+        } else {
+            console.log(`[Composio] Removing all connections for app: ${config.appName} in org: ${orgId}`);
+            // Use appName for filtering
+            // @ts-ignore - SDK types might be stricter but appNames accepts string
+            const connections = await client.connectedAccounts.list({ entityId, appNames: config.appName });
+            for (const conn of connections.items) {
+                await client.connectedAccounts.delete({ connectedAccountId: conn.id });
+            }
         }
     } catch (e) {
         console.error("Failed to remove connection", e);

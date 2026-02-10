@@ -138,7 +138,7 @@ export type TriggerSpec = z.infer<typeof TriggerSpecSchema>;
 export const ViewSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  type: z.enum(["table", "kanban", "timeline", "chat", "form", "inspector", "command", "detail"]),
+  type: z.enum(["table", "kanban", "timeline", "chat", "form", "inspector", "command", "detail", "dashboard"]),
   source: z.object({
     entity: z.string().min(1),
     statePath: z.string().min(1),

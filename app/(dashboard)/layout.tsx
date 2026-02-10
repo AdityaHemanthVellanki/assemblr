@@ -3,13 +3,18 @@ import { DashboardShell } from "@/components/dashboard/shell";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ProfileProvider } from "@/components/profile/profile-provider";
 
+
+
 export const dynamic = "force-dynamic";
+
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+
+
   // 1. Check Session (Read-Only, Once)
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: userError } = await supabase.auth.getUser();

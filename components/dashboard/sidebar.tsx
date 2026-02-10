@@ -191,28 +191,29 @@ export function Sidebar({
     <aside
       style={style}
       className={cn(
-        "flex h-full flex-col border-r border-border/60 bg-background/50 backdrop-blur-sm",
+        "flex h-full flex-col border-r border-white/10 bg-[#09090b]",
         className,
       )}
     >
       {/* Brand Header */}
       <div
         className={cn(
-          "flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80",
+          "flex h-14 items-center gap-2.5 px-4 cursor-pointer transition-opacity hover:opacity-80 border-b border-white/5",
           isCollapsed && "justify-center px-0"
         )}
         onClick={() => router.push('/app/chat')}
       >
-        <div className="relative h-8 w-8 shrink-0">
+        <div className="relative h-6 w-6 shrink-0 bg-primary/20 rounded-md flex items-center justify-center">
+          {/* Using the image from before but maybe wrapped nicely or just the image */}
           <Image
             src="/images/logo-icon.png"
             alt={APP_NAME}
             fill
-            className="object-contain"
+            className="object-contain p-0.5"
             priority
           />
         </div>
-        {!isCollapsed && <span className="text-base font-semibold text-foreground truncate">{APP_NAME}</span>}
+        {!isCollapsed && <span className="text-lg font-bold tracking-tight text-white">{APP_NAME}</span>}
       </div>
 
       <div className={cn("flex flex-col gap-2 px-3 py-2", isCollapsed && "px-2")}>
@@ -222,7 +223,10 @@ export function Sidebar({
           type="button"
           onClick={handleNewChat}
           className={cn(
-            "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 bg-primary/10 text-primary hover:bg-primary/20",
+            "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
+            pathname === '/app/chat'
+              ? "bg-white/10 text-white shadow-none border border-white/5"
+              : "text-muted-foreground hover:bg-white/5 hover:text-white",
             isCollapsed && "justify-center px-0 h-10 w-10 mx-auto"
           )}
           title="New Chat"
@@ -232,13 +236,14 @@ export function Sidebar({
         </button>
 
         {/* Persistent Navigation */}
-        <div className="flex flex-col gap-0.5 mt-2 pb-2 border-b border-border/40">
+        <div className="flex flex-col gap-0.5 mt-2 pb-2">
+          <div className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Platform</div>
           <Link
             href={useCasesHref}
             className={cn(
               "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
               isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
-              useCasesActive ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              useCasesActive ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5 hover:text-white"
             )}
             title="Use Cases"
           >
@@ -251,7 +256,7 @@ export function Sidebar({
             className={cn(
               "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
               isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
-              integrationsActive ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              integrationsActive ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5 hover:text-white"
             )}
             title="Integrations"
           >
@@ -278,8 +283,8 @@ export function Sidebar({
               />
             </div>
 
-            <div className="px-2 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest mb-1">
-              Recent
+            <div className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+              Recent Chats
             </div>
 
             {projectsLoading && projects.length === 0 ? (
@@ -316,10 +321,10 @@ export function Sidebar({
                   <div
                     key={project.id}
                     className={cn(
-                      "group relative rounded-lg transition-all duration-200 w-full overflow-hidden",
+                      "group relative rounded-lg transition-all duration-200 w-full overflow-hidden mb-0.5",
                       active
-                        ? "bg-accent text-accent-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        ? "bg-white/10 text-white font-medium"
+                        : "text-muted-foreground hover:bg-white/5 hover:text-white",
                       isInvalid ? "opacity-50" : ""
                     )}
                   >
@@ -381,12 +386,12 @@ export function Sidebar({
       </ScrollArea>
 
       {/* Collapse Toggle */}
-      <div className={cn("p-4 border-t border-border/40", isCollapsed && "flex justify-center p-2")}>
+      <div className={cn("p-4 border-t border-white/10", isCollapsed && "flex justify-center p-2")}>
         <Button
           variant="ghost"
           size="sm"
           onClick={onToggleCollapse}
-          className={cn("text-muted-foreground hover:text-foreground", isCollapsed ? "h-8 w-8 p-0" : "w-full justify-start gap-2")}
+          className={cn("text-muted-foreground hover:text-white hover:bg-white/5", isCollapsed ? "h-8 w-8 p-0" : "w-full justify-start gap-2")}
         >
           {isCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
           {!isCollapsed && <span>Collapse Sidebar</span>}
