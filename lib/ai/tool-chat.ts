@@ -414,6 +414,7 @@ async function _executeToolRuntime(
 export async function runCompilerPipeline(
   input: ToolChatRequest,
 ): Promise<ToolChatResponse> {
+  let degraded = false;
   getServerEnv();
   const runtimeGate = runtimeGuardResponse();
   if (runtimeGate) {
@@ -866,7 +867,7 @@ export async function runCompilerPipeline(
 
       // Mark as compiled
       if (input.executionId) {
-        await updateExecution(input.executionId, { status: "compiled" });
+        await updateExecution(input.executionId as string, { status: "compiled" });
       }
 
       // FIX: Compiler Stage Guard - Ensure spec is valid before processing
@@ -887,9 +888,12 @@ export async function runCompilerPipeline(
         try {
           spec = await applyIntentContract(spec, resolvedPrompt);
           spec = await applySemanticPlan(spec, resolvedPrompt);
-        } catch (err) {
+        } catch (err: any) {
           intentPlanError = err as Error;
-          appendStep(stepsById.get("compile"), `Semantic planning unavailable: ${intentPlanError.message}`);
+          const compileStep = stepsById.get("compile");
+          if (compileStep) {
+            appendStep(compileStep, `Semantic planning unavailable: ${intentPlanError.message}`);
+          }
         }
         spec = await applyGoalPlan(spec, resolvedPrompt);
         if (!intentPlanError) {
@@ -898,7 +902,10 @@ export async function runCompilerPipeline(
           } catch (err) {
             const warningMessage =
               err instanceof Error ? `Answer contract skipped: ${err.message}` : "Answer contract skipped";
-            appendStep(stepsById.get("compile"), warningMessage);
+            const compileStep = stepsById.get("compile");
+            if (compileStep) {
+              appendStep(compileStep, warningMessage);
+            }
           }
         }
       }
@@ -917,13 +924,16 @@ export async function runCompilerPipeline(
         !toolSystemValidation.viewsBound
       ) {
         const errorMsg = `Tool Validation Failed:\n${toolSystemValidation.errors.join("\n")}`;
-        toolSystemValidation.errors.forEach((error) => appendStep(stepsById.get("compile"), error));
+        const compileStep = stepsById.get("compile");
+        toolSystemValidation.errors.forEach((error) => {
+          if (compileStep) appendStep(compileStep, error);
+        });
         markStep(steps, "compile", "error", "Validation failed");
         throw new Error(errorMsg);
       }
       compiledTool = buildCompiledToolArtifact(spec);
       if (input.executionId) {
-        await updateExecution(input.executionId, { status: "compiled" });
+        await updateExecution(input.executionId as string, { status: "compiled" });
       }
       markStep(steps, "compile", "success", "Runtime compiled");
       markStep(steps, "views", "running", "Preparing runtime views");
@@ -936,11 +946,11 @@ export async function runCompilerPipeline(
       if (!normalizedSpecResult.ok) {
         console.error("[ToolSpecNormalizationFailed]", {
           toolId,
-          error: normalizedSpecResult.error,
+          error: (normalizedSpecResult as any).error,
         });
-        throw new Error(`ToolSpec normalization failed: ${normalizedSpecResult.error}`);
+        throw new Error(`ToolSpec normalization failed: ${(normalizedSpecResult as any).error}`);
       }
-      const normalizedSpec = normalizedSpecResult.spec;
+      const normalizedSpec = (normalizedSpecResult as any).spec;
       spec = normalizedSpec;
       compiledTool = buildCompiledToolArtifact(normalizedSpec);
       const specValidation = ToolSystemSpecSchema.safeParse(normalizedSpec);
