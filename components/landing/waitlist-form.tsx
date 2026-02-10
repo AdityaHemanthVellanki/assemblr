@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CheckCircle2, ArrowRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { createSupabaseClient } from "@/lib/supabase/client";
+import { joinWaitlistAction } from "@/app/actions/waitlist";
 
 export function WaitlistForm() {
     const [email, setEmail] = React.useState("");
@@ -23,18 +23,10 @@ export function WaitlistForm() {
         setIsSubmitting(true);
 
         try {
-            const supabase = createSupabaseClient();
-            const { error } = await supabase
-                .from("waitlist")
-                .insert([{ email }]);
+            const result = await joinWaitlistAction(email);
 
-            if (error) {
-                if (error.code === "23505") {
-                    toast.error("This email is already on the waitlist!");
-                } else {
-                    console.error("Waitlist error:", error);
-                    toast.error("Failed to join waitlist. Please try again.");
-                }
+            if (result.error) {
+                toast.error(result.error);
                 return;
             }
 
