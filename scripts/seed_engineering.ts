@@ -178,7 +178,7 @@ async function main() {
                 name: projectName,
                 teamIds: [team.id]
             });
-            project = await projectCreate.project;
+            project = (await projectCreate.project) as any;
         } else {
             console.log(`✅ Project '${projectName}' exists.`);
         }

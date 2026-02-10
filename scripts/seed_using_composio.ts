@@ -3,6 +3,7 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { getComposioClient } from "@/lib/integrations/composio/client";
+import { executeAction } from "@/lib/integrations/composio/execution";
 import { bootstrapRealUserSession } from "./auth-bootstrap";
 
 async function main() {
@@ -28,27 +29,25 @@ async function main() {
         console.log("\n--- Seeding GitHub ---");
         try {
             // Fetch repos to find a target
-            const repos = await client.executeAction({
+            const repos = await executeAction(
                 entityId,
-                appName: "github",
-                actionName: "github_repos_list",
-                input: { per_page: 5 }
-            });
+                "github_repos_list",
+                { per_page: 5 }
+            );
 
             const targetRepo = (repos.data as any)?.[0]?.full_name || "AdityaHemanthVellanki/assemblr"; // Fallback
             console.log(`Using Repo: ${targetRepo}`);
 
-            await client.executeAction({
+            await executeAction(
                 entityId,
-                appName: "github",
-                actionName: "github_issues_create",
-                input: {
+                "github_issues_create",
+                {
                     owner: targetRepo.split("/")[0],
                     repo: targetRepo.split("/")[1],
                     title: "🚀 Hardening Test: Scalability Audit",
                     body: "Automatically generated for integration verification."
                 }
-            });
+            );
             console.log("✅ Created GitHub Issue.");
         } catch (e: any) {
             console.error("❌ GitHub Seeding failed:", e.message);
@@ -59,25 +58,23 @@ async function main() {
     if (activeApps.includes("linear")) {
         console.log("\n--- Seeding Linear ---");
         try {
-            const teams = await client.executeAction({
+            const teams = await executeAction(
                 entityId,
-                appName: "linear",
-                actionName: "linear_teams_list",
-                input: {}
-            });
+                "linear_teams_list",
+                {}
+            );
             const teamId = (teams.data as any)?.teams?.[0]?.id;
 
             if (teamId) {
-                await client.executeAction({
+                await executeAction(
                     entityId,
-                    appName: "linear",
-                    actionName: "linear_issues_create",
-                    input: {
+                    "linear_issues_create",
+                    {
                         teamId,
                         title: "🛠️ Integration Polish: Composio Handlers",
                         description: "Verifying multi-tool execution consistency."
                     }
-                });
+                );
                 console.log("✅ Created Linear Issue.");
             } else {
                 console.warn("⚠️ No Linear teams found.");
@@ -91,24 +88,22 @@ async function main() {
     if (activeApps.includes("slack")) {
         console.log("\n--- Seeding Slack ---");
         try {
-            const channels = await client.executeAction({
+            const channels = await executeAction(
                 entityId,
-                appName: "slack",
-                actionName: "slack_channels_list",
-                input: { types: "public_channel" }
-            });
+                "slack_channels_list",
+                { types: "public_channel" }
+            );
             const channelId = (channels.data as any)?.channels?.[0]?.id;
 
             if (channelId) {
-                await client.executeAction({
+                await executeAction(
                     entityId,
-                    appName: "slack",
-                    actionName: "slack_chat_postMessage",
-                    input: {
+                    "slack_chat_postMessage",
+                    {
                         channel: channelId,
                         text: "🔔 *Integration Success*: Restricted bot scopes verified. Assemblr is now communicating via bot tokens!"
                     }
-                });
+                );
                 console.log("✅ Posted Slack Message.");
             } else {
                 console.warn("⚠️ No Slack channels found.");

@@ -44,7 +44,7 @@ async function main() {
             }
 
             // Execute
-            const { redirectUrl } = await createConnection(MOCK_ORG_ID, integration.id, MOCK_RESUME_ID, params);
+            const { redirectUrl } = await createConnection(MOCK_ORG_ID, integration.id, MOCK_RESUME_ID, { connectionParams: params });
 
             if (!redirectUrl || !redirectUrl.startsWith("http")) {
                 throw new Error(`Invalid URL returned: ${redirectUrl}`);

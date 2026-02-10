@@ -19,7 +19,7 @@ async function main() {
     console.log(`Org: ${orgId}`);
 
     try {
-        const result = await createConnection(orgId, "salesforce", resumeId, params);
+        const result = await createConnection(orgId, "salesforce", resumeId, { connectionParams: params });
 
         console.log("SUCCESS!");
         console.log("Redirect URL:", result.redirectUrl);
