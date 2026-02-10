@@ -44,7 +44,7 @@ const serverEnvSchema = z
     SUPABASE_SECRET_KEY: z.string().min(1),
 
     NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
-    APP_BASE_URL: z.string().url(),
+    APP_BASE_URL: z.string().url().optional(),
 
     // --------------------------------------------------------------------------
     // AI CONFIGURATION (MANDATORY)
@@ -96,7 +96,7 @@ const serverEnvSchema = z
     EMAIL_FROM: optionalString(),
     EMAIL_SERVER: optionalString(),
 
-    DATA_ENCRYPTION_KEY: z.string().min(1, "DATA_ENCRYPTION_KEY is required"),
+    DATA_ENCRYPTION_KEY: z.string().min(1).optional(),
 
     CRON_SECRET: optionalString(),
 

@@ -13,15 +13,15 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const env = getServerEnv();
-  
+
   // Guardrail: Ensure APP_BASE_URL is valid for the environment
-  if (process.env.NODE_ENV === "production" && env.APP_BASE_URL.includes("localhost")) {
+  if (process.env.NODE_ENV === "production" && env.APP_BASE_URL?.includes("localhost")) {
     console.error(`[CRITICAL] APP_BASE_URL is set to localhost in production: ${env.APP_BASE_URL}`);
     return NextResponse.json({ error: "Server misconfiguration: Invalid APP_BASE_URL" }, { status: 500 });
   }
 
   const { id: providerId } = await params;
-  
+
   const body = await req.json().catch(() => ({}));
   let redirectPath = body.redirectPath || "/dashboard/integrations";
   const resumeId = body.resumeId;
@@ -51,24 +51,24 @@ export async function POST(
   let clientSecret: string | undefined;
 
   switch (providerId) {
-    case "github": 
-      clientId = env.GITHUB_CLIENT_ID; 
+    case "github":
+      clientId = env.GITHUB_CLIENT_ID;
       clientSecret = env.GITHUB_CLIENT_SECRET;
       break;
-    case "slack": 
-      clientId = env.SLACK_CLIENT_ID; 
+    case "slack":
+      clientId = env.SLACK_CLIENT_ID;
       clientSecret = env.SLACK_CLIENT_SECRET;
       break;
-    case "notion": 
-      clientId = env.NOTION_CLIENT_ID; 
+    case "notion":
+      clientId = env.NOTION_CLIENT_ID;
       clientSecret = env.NOTION_CLIENT_SECRET;
       break;
-    case "linear": 
-      clientId = env.LINEAR_CLIENT_ID; 
+    case "linear":
+      clientId = env.LINEAR_CLIENT_ID;
       clientSecret = env.LINEAR_CLIENT_SECRET;
       break;
-    case "google": 
-      clientId = env.GOOGLE_CLIENT_ID; 
+    case "google":
+      clientId = env.GOOGLE_CLIENT_ID;
       clientSecret = env.GOOGLE_CLIENT_SECRET;
       break;
   }

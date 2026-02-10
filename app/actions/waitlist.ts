@@ -8,8 +8,14 @@ export async function joinWaitlistAction(email: string) {
     }
 
     try {
-        console.log("[WaitlistAction] Initializing Supabase Admin Client...");
-        const supabase = createSupabaseAdminClient();
+        let supabase;
+        try {
+            console.log("[WaitlistAction] Initializing Supabase Admin Client...");
+            supabase = createSupabaseAdminClient();
+        } catch (envError: any) {
+            console.error("[WaitlistAction] Env initialization failed:", envError.message);
+            return { error: `Environment config error: ${envError.message}. Please check Vercel "Production" scopes.` };
+        }
 
         console.log("[WaitlistAction] Inserting email:", email);
         const { error } = await supabase
@@ -21,8 +27,8 @@ export async function joinWaitlistAction(email: string) {
             if (error.code === "23505") {
                 return { error: "This email is already on the waitlist!" };
             }
-            if (error.code === "PGRST116") {
-                return { error: "Waitlist table not found. Please ensure migrations are applied." };
+            if (error.code === "PGRST116" || error.code === "42P01") {
+                return { error: "Waitlist table not found. Please ensure the migration was run in your Supabase SQL Editor." };
             }
             return { error: `Database error: ${error.message || error.code || "unknown"}` };
         }
@@ -31,9 +37,8 @@ export async function joinWaitlistAction(email: string) {
         return { success: true };
     } catch (error: any) {
         console.error("[WaitlistAction] Critical failure:", error?.message || error);
-        // This usually means getServerEnv() thrown due to missing variables
         return {
-            error: `Server initialization error: ${error?.message?.substring(0, 100) || "Check environment variables scopes (Production vs Preview)."}`
+            error: `Unexpected error: ${error?.message?.substring(0, 100) || "Check logs."}`
         };
     }
 }
