@@ -78,6 +78,10 @@ export function validateRuntimeConfig(env?: NodeJS.ProcessEnv): RuntimeValidatio
   }
 
   if (!runtimeEnv) {
+    if (nodeEnv === "production" || process.env.VERCEL) {
+      console.warn("⚠️  RUNTIME_ENV is missing in production. Defaulting to REAL_RUNTIME.");
+      return setResult({ ok: true, runtimeEnv: "REAL_RUNTIME" });
+    }
     return setResult({
       ok: false,
       error: "Assemblr requires explicit runtime configuration. Set RUNTIME_ENV=DEV_WITH_REAL_CREDS in .env.local.",
