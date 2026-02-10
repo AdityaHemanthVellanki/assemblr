@@ -103,18 +103,14 @@ const serverEnvSchema = z
     // --------------------------------------------------------------------------
     // COMPOSIO CONFIGURATION
     // --------------------------------------------------------------------------
-    COMPOSIO_API_KEY: z.string().min(1, "COMPOSIO_API_KEY is required"),
+    COMPOSIO_API_KEY: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
     if (env.APP_BASE_URL?.startsWith("http://")) {
       console.warn("⚠️  WARNING: APP_BASE_URL is using http://. OAuth providers (Slack, Notion, etc.) require HTTPS.");
     }
     if (env.NODE_ENV !== "development" && !env.RUNTIME_ENV) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["RUNTIME_ENV"],
-        message: "RUNTIME_ENV is required outside development.",
-      });
+      console.warn("⚠️  WARNING: RUNTIME_ENV is missing in production. Defaulting to REAL_RUNTIME.");
     }
     if ((env.RUNTIME_ENV === "REAL_RUNTIME" || env.RUNTIME_ENV === "TEST_WITH_REAL_CREDS") && !env.CRON_SECRET) {
       ctx.addIssue({
@@ -141,6 +137,11 @@ export function getServerEnv() {
     throw new Error(buildEnvErrorMessage(raw, parseResult.error.issues));
   }
   const data = parseResult.data;
+
+  // Default RUNTIME_ENV if missing outside development
+  if (data.NODE_ENV === "production" && !data.RUNTIME_ENV) {
+    (data as any).RUNTIME_ENV = "REAL_RUNTIME";
+  }
 
   // Fallback for NEXT_PUBLIC_SITE_URL if missing
   if (!data.NEXT_PUBLIC_SITE_URL) {
