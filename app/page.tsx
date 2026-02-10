@@ -12,7 +12,7 @@ import { useCases } from "@/lib/use-cases/registry";
 import { UseCaseCard } from "@/components/use-cases/use-case-card";
 import { ProductSimulation } from "@/components/landing/product-simulation";
 import { Footer } from "@/components/landing/footer";
-import { WaitlistForm } from "@/components/landing/waitlist-form";
+import { ArrowRight } from "lucide-react";
 
 // --- Utilities ---
 
@@ -34,8 +34,9 @@ function EnterSystemButton({ children, className, size = "lg" }: { children: Rea
   }, [router]);
 
   return (
-    <Button onClick={handleEnter} size={size} className={`rounded-full shadow-lg hover:shadow-primary/25 transition-all w-fit ${className ?? ""}`}>
+    <Button onClick={handleEnter} size={size} className={`rounded-full shadow-lg hover:shadow-primary/25 transition-all group gap-2 ${className ?? ""}`}>
       {children}
+      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
     </Button>
   );
 }
@@ -148,7 +149,9 @@ export default function Home() {
               variants={fadeUpVariants}
               className="pt-4"
             >
-              <WaitlistForm />
+              <EnterSystemButton className="h-12 px-8 text-lg">
+                Get Started
+              </EnterSystemButton>
             </m.div>
 
             <div className="absolute top-[60%] left-1/2 -translate-x-1/2 w-[90%] max-w-4xl h-32 bg-gradient-to-t from-blue-500/10 to-transparent blur-3xl opacity-50 pointer-events-none" />
@@ -241,8 +244,10 @@ export default function Home() {
                 <p className="mx-auto max-w-2xl text-lg text-muted-foreground">
                   Assemblr sits on top of your API layer, orchestrating data, identity, and permissions to build governed applications in realtime.
                 </p>
-                <div className="pt-6">
-                  <WaitlistForm />
+                <div className="pt-6 flex justify-center">
+                  <EnterSystemButton className="h-12 px-8 text-lg">
+                    Get Started
+                  </EnterSystemButton>
                 </div>
               </m.div>
             </div>

@@ -76,7 +76,7 @@ export function ProjectWorkspace({
       >
         <div className="w-[400px] flex flex-col h-full">
           <ProjectHeader
-            title={currentSpec?.name || "New Tool"}
+            title={currentSpec?.name || project?.name || "Untitled Project"}
             status={projectStatus}
             onShare={() => setIsShareOpen(true)}
           />

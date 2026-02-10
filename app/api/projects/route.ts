@@ -5,7 +5,7 @@ import { getServerEnv } from "@/lib/env";
 import { hasMinimalToolSpecFields, parseToolSpec } from "@/lib/spec/toolSpec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { ensureToolIdentity } from "@/lib/toolos/lifecycle";
+import { ensureToolIdentity, ensureProjectIdentity } from "@/lib/toolos/lifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -66,13 +66,28 @@ export async function POST(req: Request) {
     const maybeName =
       body && typeof body === "object" && "name" in body
         ? (body as { name?: unknown }).name
-        : undefined;
+        : body && typeof body === "object" && "prompt" in body
+          ? (body as { prompt?: unknown }).prompt
+          : undefined;
     const name =
       typeof maybeName === "string" && maybeName.trim().length > 0
         ? maybeName.trim()
         : "Untitled Project";
 
     const adminSupabase = createSupabaseAdminClient();
+
+    // Only create a tool identity if a specific name/prompt was provided.
+    // "Untitled Project" is the default for a "New Chat" click without a prompt.
+    if (!maybeName || name === "Untitled Project") {
+      const { projectId } = await ensureProjectIdentity({
+        supabase: adminSupabase,
+        orgId: ctx.orgId,
+        userId: ctx.userId,
+        name,
+      });
+      return NextResponse.json({ id: projectId }, { status: 201 });
+    }
+
     const { toolId } = await ensureToolIdentity({
       supabase: adminSupabase,
       orgId: ctx.orgId,

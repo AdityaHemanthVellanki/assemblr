@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import type { ToolSpec } from "@/lib/spec/toolSpec";
+import { ToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec, type ViewSpec, type ActionSpec, type TimelineEvent } from "@/lib/toolos/spec";
 import { getCapability } from "@/lib/capabilities/registry";
 import { linkEntities } from "@/lib/toolos/linking-engine";
@@ -10,6 +10,7 @@ import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/exe
 import { SystemTimeline } from "@/components/dashboard/system-timeline";
 import { safeFetch, ApiError } from "@/lib/api/client";
 import { RealDashboard } from "@/components/dashboard/real-dashboard";
+import { Zap } from "lucide-react";
 
 type DataEvidence = {
   integration: string;
@@ -97,6 +98,8 @@ export function ToolRenderer({
   const [timelineLoading, setTimelineLoading] = React.useState(false);
   const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
   const [pollingInterval, setPollingInterval] = React.useState<number | null>(1500);
+  const [pollCount, setPollCount] = React.useState(0);
+  const MAX_POLL_ATTEMPTS = 200; // ~5 mins at 1.5s interval
   const authBackoffRef = React.useRef<number | null>(null);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
@@ -437,7 +440,20 @@ export function ToolRenderer({
     let intervalId: number | null = null;
 
     const poll = async () => {
-      const status = await fetchStatus();
+      // Don't poll if project is in DRAFT or IDLE
+      if (status === "DRAFT" || status === "IDLE") {
+        setPollingInterval(null);
+        return;
+      }
+
+      if (pollCount > MAX_POLL_ATTEMPTS) {
+        console.warn("[Polling] Max attempts reached for tool:", toolId);
+        setPollingInterval(null);
+        return;
+      }
+
+      const pollStatus = await fetchStatus();
+      setPollCount(c => c + 1);
       if (cancelled) return;
       if (status === "unauthenticated") {
         if (intervalId) clearInterval(intervalId);
@@ -457,7 +473,7 @@ export function ToolRenderer({
       if (intervalId) clearInterval(intervalId);
       if (authBackoffRef.current) window.clearTimeout(authBackoffRef.current);
     };
-  }, [spec, fetchStatus, pollingInterval]);
+  }, [spec, fetchStatus, pollingInterval, status, pollCount, toolId]);
 
   React.useEffect(() => {
     if (!spec || !isToolSystemSpec(spec)) return;
@@ -596,8 +612,34 @@ export function ToolRenderer({
 
   if (!spec) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
-        No tool specification found. Start chatting to build one.
+      <div className="flex flex-col items-center justify-center h-full bg-background p-8 text-center">
+        <div className="relative mb-8">
+          <div className="absolute -inset-4 bg-primary/5 rounded-full blur-2xl animate-pulse" />
+          <div className="relative h-24 w-24 rounded-2xl bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-primary/60">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            </svg>
+          </div>
+        </div>
+        <h3 className="text-xl font-semibold mb-2 bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
+          Describe what you want to build
+        </h3>
+        <p className="text-muted-foreground max-w-sm mb-8 leading-relaxed">
+          The canvas is ready for your vision. Use the chat to define your tool's purpose, integrations, and logic.
+        </p>
+        <div className="grid grid-cols-2 gap-4 max-w-md w-full">
+          {[
+            { label: "Connect Data", icon: "📊" },
+            { label: "Define Logic", icon: "⚡" },
+            { label: "Build UI", icon: "✨" },
+            { label: "Go Live", icon: "🚀" }
+          ].map((item) => (
+            <div key={item.label} className="flex items-center gap-3 p-3 rounded-xl border border-border/40 bg-muted/5 text-left text-sm">
+              <span className="text-lg">{item.icon}</span>
+              <span className="font-medium text-foreground/80">{item.label}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -726,6 +768,14 @@ export function ToolRenderer({
                   <div className="text-xs mt-2 opacity-70">Triggers and automations are active.</div>
                 </div>
               </>
+            ) : status === "DRAFT" || status === "IDLE" ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center">
+                  <Zap className="h-5 w-5 text-muted-foreground/50" />
+                </div>
+                <div className="font-medium">This tool hasn't been run yet.</div>
+                <div className="text-xs opacity-60">Send a message to start the execution engine.</div>
+              </div>
             ) : (
               <div>No views configured yet.</div>
             )}

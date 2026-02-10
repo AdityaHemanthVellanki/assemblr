@@ -47,7 +47,7 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
     data_fetched_at,
   } = input;
   const supabase = createSupabaseAdminClient();
-  
+
   console.log(`[Lifecycle] Tool finalized: ${status}`, { toolId, errorMessage, lifecycle_done: true });
   console.log("[FINALIZE] FINALIZING TOOL", toolId);
 
@@ -119,8 +119,43 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
 
   console.log("[FINALIZE] TOOL FINALIZED", toolId);
   if (updatePayload.data_ready) {
-      console.log("[FINALIZE] data_ready set to true for tool", toolId);
+    console.log("[FINALIZE] data_ready set to true for tool", toolId);
   }
+}
+
+export async function ensureProjectIdentity(params: {
+  supabase?: ReturnType<typeof createSupabaseAdminClient>;
+  projectId?: string;
+  orgId: string;
+  userId: string;
+  name?: string;
+}) {
+  const supabase = params.supabase ?? createSupabaseAdminClient();
+  const projectId = params.projectId ?? randomUUID();
+  const name = params.name ?? "Untitled Project";
+  const now = new Date().toISOString();
+
+  const { data: projectRow, error: projectError } = await (supabase.from("projects") as any)
+    .upsert(
+      {
+        id: projectId,
+        org_id: params.orgId,
+        owner_id: params.userId,
+        name,
+        status: "DRAFT",
+        created_at: now,
+        updated_at: now,
+      },
+      { onConflict: "id" },
+    )
+    .select("id, org_id")
+    .single();
+
+  if (projectError || !projectRow) {
+    throw new Error(`Fatal: failed to create project shell: ${projectError?.message || "Unknown error"}`);
+  }
+
+  return { projectId };
 }
 
 export async function ensureToolIdentity(params: {

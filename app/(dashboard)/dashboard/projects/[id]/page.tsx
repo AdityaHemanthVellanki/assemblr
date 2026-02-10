@@ -8,6 +8,7 @@ import { loadMemory, type MemoryScope } from "@/lib/toolos/memory-store";
 import { type ToolBuildLog } from "@/lib/toolos/build-state-machine";
 import { ToolLifecycleStateSchema, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { validateProjectRow } from "@/lib/db/schema-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +56,7 @@ export default async function ProjectPage({
   // 2. Fetch Project & Messages
   const projectResPromise = (supabase.from("projects") as any)
     .select(
-      "id, name, description, spec, active_version_id, org_id, status, error_message, view_spec, view_ready, data_snapshot, data_ready"
+      "id, name, spec, active_version_id, org_id, status, error_message, view_spec, view_ready, data_snapshot, data_ready"
     )
     .eq("id", toolId)
     .single();
@@ -83,6 +84,9 @@ export default async function ProjectPage({
     });
   }
   if (!projectRes.data) notFound();
+
+  // Validate schema invariants
+  validateProjectRow(projectRes.data);
 
   if (messagesRes.error) {
     throw new Error("Failed to load messages");
@@ -152,7 +156,7 @@ export default async function ProjectPage({
       project={{
         id: projectRes.data.id,
         name: projectRes.data.name,
-        description: projectRes.data.description || "",
+        description: (spec as any)?.description || "",
         spec,
         spec_error: specError,
         status: projectRes.data.status,
