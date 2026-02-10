@@ -19,7 +19,7 @@ export function WaitlistForm() {
             toast.error("Please enter a valid email address");
             return;
         }
-        const DIAGNOSTIC_VERSION = "v7-diag-r6";
+        const DIAGNOSTIC_VERSION = "v8-diag";
         console.log(`[WaitlistForm] Starting submission (${DIAGNOSTIC_VERSION})...`);
 
         setIsSubmitting(true);
