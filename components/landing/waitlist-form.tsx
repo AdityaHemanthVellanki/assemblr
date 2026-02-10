@@ -28,16 +28,16 @@ export function WaitlistForm() {
             const result = await joinWaitlistAction(email);
 
             if (result.error) {
-                toast.error(`[v7-diag] ${result.error}`);
+                toast.error(`[v8-diag] ${result.error}`);
                 return;
             }
 
             setIsSuccess(true);
-            toast.success("[v7-diag] You've been added to the waitlist!");
+            toast.success("[v8-diag] You've been added to the waitlist!");
         } catch (error: any) {
             console.error("Waitlist submission failed:", error);
             const msg = error?.message || "An unexpected error occurred.";
-            toast.error(`[v7-diag] Submission error: ${msg}`);
+            toast.error(`[v8-diag] Submission error: ${msg}`);
         } finally {
             setIsSubmitting(false);
         }

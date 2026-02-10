@@ -130,7 +130,9 @@ export function getServerEnv() {
   const runtimeEnv = runtimeResult.ok ? runtimeResult.runtimeEnv : raw.RUNTIME_ENV;
   const parseResult = serverEnvSchema.safeParse({
     ...raw,
+    SUPABASE_URL: raw.SUPABASE_URL || raw.NEXT_PUBLIC_SUPABASE_URL,
     SUPABASE_PUBLISHABLE_KEY: raw.SUPABASE_PUBLISHABLE_KEY || raw.NEXT_PUBLIC_SUPABASE_ANON_KEY || raw.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    SUPABASE_SECRET_KEY: raw.SUPABASE_SECRET_KEY || raw.SUPABASE_SERVICE_ROLE_KEY,
     RUNTIME_ENV: runtimeEnv,
   });
   if (!parseResult.success) {
