@@ -184,7 +184,7 @@ export async function generateChatTitle(params: {
   let raw = "";
   try {
     const response = await getAzureOpenAIClient().chat.completions.create({
-      model: env.AZURE_OPENAI_DEPLOYMENT_NAME,
+      model: env.AZURE_OPENAI_DEPLOYMENT_NAME!,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
@@ -2118,7 +2118,7 @@ async function generateIntent(
     ? `${prompt}\n\nYou MUST include these integrations as sections: ${requiredIntegrations.join(", ")}.`
     : prompt;
   const response = await getAzureOpenAIClient().chat.completions.create({
-    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME,
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       { role: "system", content: INTENT_SYSTEM_PROMPT },
       { role: "user", content: enforcedPrompt },
@@ -2137,7 +2137,7 @@ async function generateIntent(
   }
 
   const retry = await getAzureOpenAIClient().chat.completions.create({
-    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME,
+    model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       { role: "system", content: INTENT_SYSTEM_PROMPT },
       {

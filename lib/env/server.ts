@@ -49,21 +49,21 @@ const serverEnvSchema = z
     // --------------------------------------------------------------------------
     // AI CONFIGURATION (MANDATORY)
     // --------------------------------------------------------------------------
-    AZURE_OPENAI_ENDPOINT: z.string().url("AZURE_OPENAI_ENDPOINT is required").refine((url) => {
+    AZURE_OPENAI_ENDPOINT: z.string().url().optional().refine((url) => {
+      if (!url) return true;
       try {
         const u = new URL(url);
-        // Ensure strictly base URL (no path segments)
         return u.pathname === "/" || u.pathname === "";
       } catch {
         return false;
       }
     }, {
-      message: "AZURE_OPENAI_ENDPOINT must be the base resource URL (e.g. https://resource.openai.azure.com). Do not include /openai or /v1 paths."
+      message: "AZURE_OPENAI_ENDPOINT must be the base resource URL."
     }),
-    AZURE_OPENAI_API_KEY: z.string().min(1, "AZURE_OPENAI_API_KEY is required"),
-    AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1, "AZURE_OPENAI_DEPLOYMENT_NAME is required"),
-    AZURE_OPENAI_API_VERSION: z.string().refine((val) => val === "2024-08-01-preview", {
-      message: "AZURE_OPENAI_API_VERSION must be exactly '2024-08-01-preview'",
+    AZURE_OPENAI_API_KEY: z.string().min(1).optional(),
+    AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1).optional(),
+    AZURE_OPENAI_API_VERSION: z.string().optional().refine((val) => !val || val === "2024-08-01-preview", {
+      message: "AZURE_OPENAI_API_VERSION must be '2024-08-01-preview'",
     }),
 
     // --------------------------------------------------------------------------
@@ -74,24 +74,24 @@ const serverEnvSchema = z
     // --------------------------------------------------------------------------
 
     // GitHub
-    GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required"),
-    GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required"),
+    GITHUB_CLIENT_ID: z.string().min(1).optional(),
+    GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
 
     // Slack
-    SLACK_CLIENT_ID: z.string().min(1, "SLACK_CLIENT_ID is required"),
-    SLACK_CLIENT_SECRET: z.string().min(1, "SLACK_CLIENT_SECRET is required"),
+    SLACK_CLIENT_ID: z.string().min(1).optional(),
+    SLACK_CLIENT_SECRET: z.string().min(1).optional(),
 
     // Notion
-    NOTION_CLIENT_ID: z.string().min(1, "NOTION_CLIENT_ID is required"),
-    NOTION_CLIENT_SECRET: z.string().min(1, "NOTION_CLIENT_SECRET is required"),
+    NOTION_CLIENT_ID: z.string().min(1).optional(),
+    NOTION_CLIENT_SECRET: z.string().min(1).optional(),
 
     // Linear
-    LINEAR_CLIENT_ID: z.string().min(1, "LINEAR_CLIENT_ID is required"),
-    LINEAR_CLIENT_SECRET: z.string().min(1, "LINEAR_CLIENT_SECRET is required"),
+    LINEAR_CLIENT_ID: z.string().min(1).optional(),
+    LINEAR_CLIENT_SECRET: z.string().min(1).optional(),
 
     // Google
-    GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
-    GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required"),
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
 
     EMAIL_FROM: optionalString(),
     EMAIL_SERVER: optionalString(),
