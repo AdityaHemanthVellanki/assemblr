@@ -9,8 +9,8 @@ export async function joinWaitlistAction(email: string) {
 
     try {
         const supabase = createSupabaseAdminClient();
-        const { error } = await (supabase
-            .from("waitlist") as any)
+        const { error } = await supabase
+            .from("waitlist")
             .insert([{ email }]);
 
         if (error) {

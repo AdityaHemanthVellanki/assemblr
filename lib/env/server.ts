@@ -43,7 +43,7 @@ const serverEnvSchema = z
     SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
     SUPABASE_SECRET_KEY: z.string().min(1),
 
-    NEXT_PUBLIC_SITE_URL: z.string().url(),
+    NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
     APP_BASE_URL: z.string().url(),
 
     // --------------------------------------------------------------------------
@@ -140,6 +140,13 @@ export function getServerEnv() {
   if (!parseResult.success) {
     throw new Error(buildEnvErrorMessage(raw, parseResult.error.issues));
   }
-  cachedEnv = parseResult.data;
+  const data = parseResult.data;
+
+  // Fallback for NEXT_PUBLIC_SITE_URL if missing
+  if (!data.NEXT_PUBLIC_SITE_URL) {
+    data.NEXT_PUBLIC_SITE_URL = data.APP_BASE_URL || (process.env.NEXT_PUBLIC_APP_URL as string);
+  }
+
+  cachedEnv = data;
   return cachedEnv;
 }
