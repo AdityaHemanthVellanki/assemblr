@@ -32,9 +32,10 @@ export function WaitlistForm() {
 
             setIsSuccess(true);
             toast.success("You've been added to the waitlist!");
-        } catch (error) {
+        } catch (error: any) {
             console.error("Waitlist submission failed:", error);
-            toast.error("An unexpected error occurred.");
+            const msg = error?.message || "An unexpected error occurred.";
+            toast.error(`Submission error: ${msg}`);
         } finally {
             setIsSubmitting(false);
         }

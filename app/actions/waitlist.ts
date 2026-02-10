@@ -3,6 +3,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export async function joinWaitlistAction(email: string) {
+    console.log("[WaitlistAction] SERVER ACTION CALLED with email:", email);
     if (!email || !email.includes("@")) {
         return { error: "Please enter a valid email address." };
     }
