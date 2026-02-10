@@ -122,16 +122,16 @@ const buildSpec = (input: {
 };
 
 // --- Common Entities ---
-const githubIssue = { name: "Issue", sourceIntegration: "github" as const, identifiers: ["id"], fields: [] };
-const githubPR = { name: "PullRequest", sourceIntegration: "github" as const, identifiers: ["id"], fields: [] };
-const linearIssue = { name: "Issue", sourceIntegration: "linear" as const, identifiers: ["id"], fields: [] };
-const slackMessage = { name: "Message", sourceIntegration: "slack" as const, identifiers: ["id"], fields: [] };
-const hubspotDeal = { name: "Deal", sourceIntegration: "hubspot" as const, identifiers: ["id"], fields: [] };
-const stripeCharge = { name: "Charge", sourceIntegration: "stripe" as const, identifiers: ["id"], fields: [] };
-const intercomTicket = { name: "Ticket", sourceIntegration: "intercom" as const, identifiers: ["id"], fields: [] };
-const notionPage = { name: "Page", sourceIntegration: "notion" as const, identifiers: ["id"], fields: [] };
-const trelloCard = { name: "Card", sourceIntegration: "trello" as const, identifiers: ["id"], fields: [] };
-const zoomMeeting = { name: "Meeting", sourceIntegration: "zoom" as const, identifiers: ["id"], fields: [] };
+const githubIssue = { name: "Issue", sourceIntegration: "github" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const githubPR = { name: "PullRequest", sourceIntegration: "github" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const linearIssue = { name: "Issue", sourceIntegration: "linear" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const slackMessage = { name: "Message", sourceIntegration: "slack" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const hubspotDeal = { name: "Deal", sourceIntegration: "hubspot" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const stripeCharge = { name: "Charge", sourceIntegration: "stripe" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const intercomTicket = { name: "Ticket", sourceIntegration: "intercom" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const notionPage = { name: "Page", sourceIntegration: "notion" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const trelloCard = { name: "Card", sourceIntegration: "trello" as const, identifiers: ["id"], fields: [], supportedActions: [] };
+const zoomMeeting = { name: "Meeting", sourceIntegration: "zoom" as const, identifiers: ["id"], fields: [], supportedActions: [] };
 
 export const useCases: UseCaseDefinition[] = [
   // =================================================================
@@ -179,7 +179,7 @@ export const useCases: UseCaseDefinition[] = [
       actions: [
         { id: "github.checks.list", name: "Check CI", description: "Get status checks", type: "READ", integrationId: "github", capabilityId: "github_checks_list", inputSchema: {}, outputSchema: {}, writesToState: false }
       ],
-      views: [{ id: "readiness-view", name: "Readiness Check", type: "summary", source: { entity: "Issue" }, fields: ["status"], actions: [] }]
+      views: [{ id: "readiness-view", name: "Readiness Check", type: "dashboard", source: { entity: "Issue", statePath: "linear.issues" }, fields: ["status"], actions: [] }]
     })
   },
   {
@@ -199,7 +199,7 @@ export const useCases: UseCaseDefinition[] = [
       integrations: ["github", "linear", "slack"],
       entities: [githubIssue, linearIssue, slackMessage],
       actions: [],
-      views: [{ id: "incident-view", name: "Active Incidents", type: "table", source: { entity: "Issue" }, fields: ["title", "status"], actions: [] }]
+      views: [{ id: "incident-view", name: "Active Incidents", type: "table", source: { entity: "Issue", statePath: "github.issues" }, fields: ["title", "status"], actions: [] }]
     })
   },
   {
