@@ -909,8 +909,8 @@ export async function runCompilerPipeline(
         }
       }
       if (assumptions && assumptions.length > 0) {
-        const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
-        spec = { ...spec, clarifications: [...existing, ...(assumptions as any[])] };
+        const existing = (Array.isArray(spec.clarifications) ? spec.clarifications : []) as any[];
+        spec = { ...spec, clarifications: existing.concat(assumptions as any[]) };
       }
       transition("INTENT_PARSED", "ToolSpec generated");
       markStep(steps, "compile", "running", "Validating spec and runtime wiring");
@@ -979,26 +979,26 @@ export async function runCompilerPipeline(
             const compiled = compiledTool!;
             const version = await createToolVersion({
               orgId,
-              toolId,
+              toolId: toolId as string,
               userId,
               spec: normalizedSpec,
               compiledTool: compiled,
-              baseSpec,
+              baseSpec: baseSpec as any,
               supabase, // Pass shared client
             });
             createdVersionId = version.id;
             console.log("[ToolPersistence] Version created:", version.id);
-            await promoteToolVersion({ toolId, versionId: version.id, supabase });
+            await promoteToolVersion({ toolId: toolId as string, versionId: version.id, supabase });
             console.log("[ToolPersistence] Version promoted");
             if (input.executionId) {
-              await updateExecution(input.executionId, { toolVersionId: version.id });
+              await updateExecution(input.executionId as string, { toolVersionId: version.id });
             }
           }
           console.log("[ToolPersistence] Updating project status to READY");
           const { error: projectError } = await (supabase.from("projects") as any)
             .update({
               spec: normalizedSpec,
-              name: normalizedSpec.name,
+              name: (normalizedSpec as any).name,
               status: "READY",
               updated_at: new Date().toISOString(),
               compiled_at: new Date().toISOString(),
@@ -1231,8 +1231,8 @@ export async function runCompilerPipeline(
 
       if (spec.initialFetch?.actionId) {
         const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
-        if (initial && !readActions.find(a => a.id === (initial as any).id)) {
-          readActions.unshift(initial);
+        if (initial && !readActions.find(a => (a as any).id === (initial as any).id)) {
+          readActions.unshift(initial as any);
         }
       }
 
@@ -1253,11 +1253,11 @@ export async function runCompilerPipeline(
             };
             await updateIntegrationConnectionStatus(buildContext.orgId, "slack", "reauth_required");
           }
-        } catch (err) {
+        } catch (err: any) {
           integrationStatuses.slack = {
             integration: "slack",
             status: "reauth_required",
-            reason: err instanceof Error ? err.message : "missing_credentials",
+            reason: err?.message || "missing_credentials",
             required: true,
             userActionRequired: true,
           };
@@ -1318,11 +1318,11 @@ export async function runCompilerPipeline(
                   } else {
                     integrationStatuses.slack = { integration: "slack", status: "ok", required: false };
                   }
-                } catch (err) {
+                } catch (err: any) {
                   integrationStatuses.slack = {
                     integration: "slack",
                     status: "reauth_required",
-                    reason: err instanceof Error ? err.message : "missing_credentials",
+                    reason: err?.message || "missing_credentials",
                     required: false,
                     userActionRequired: true,
                   };
@@ -1412,7 +1412,7 @@ export async function runCompilerPipeline(
 
       const integrationResults = snapshotRecords.integrations ?? {};
       const recordCount = countSnapshotRecords(snapshotRecords);
-      const derivedCount = Array.isArray(derivedResult.rows) ? derivedResult.rows.length : 0;
+      const derivedCount = (derivedResult as any)?.rows?.length || 0;
       const dataReady = recordCount > 0 || derivedCount > 0;
 
       const goalValidation = evaluateGoalSatisfaction({
