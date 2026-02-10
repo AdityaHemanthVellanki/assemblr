@@ -889,17 +889,16 @@ export async function runCompilerPipeline(
           spec = await applyIntentContract(spec, resolvedPrompt);
           spec = await applySemanticPlan(spec, resolvedPrompt);
         } catch (err: any) {
-          intentPlanError = err as Error;
           const compileStep = stepsById.get("compile");
           if (compileStep) {
-            appendStep(compileStep, `Semantic planning unavailable: ${intentPlanError.message}`);
+            appendStep(compileStep, `Semantic planning unavailable: ${err?.message || String(err)}`);
           }
         }
         spec = await applyGoalPlan(spec, resolvedPrompt);
         if (!intentPlanError) {
           try {
             spec = await applyAnswerContract(spec, resolvedPrompt);
-          } catch (err) {
+          } catch (err: any) {
             const warningMessage =
               err instanceof Error ? `Answer contract skipped: ${err.message}` : "Answer contract skipped";
             const compileStep = stepsById.get("compile");
@@ -909,9 +908,9 @@ export async function runCompilerPipeline(
           }
         }
       }
-      if (assumptions.length > 0) {
+      if (assumptions && assumptions.length > 0) {
         const existing = Array.isArray(spec.clarifications) ? spec.clarifications : [];
-        spec = { ...spec, clarifications: [...existing, ...assumptions] };
+        spec = { ...spec, clarifications: [...existing, ...(assumptions as any[])] };
       }
       transition("INTENT_PARSED", "ToolSpec generated");
       markStep(steps, "compile", "running", "Validating spec and runtime wiring");
@@ -1004,7 +1003,7 @@ export async function runCompilerPipeline(
               updated_at: new Date().toISOString(),
               compiled_at: new Date().toISOString(),
             })
-            .eq("id", toolId);
+            .eq("id", toolId as string);
           if (projectError) {
             throw new Error(`Project update failed: ${projectError.message}`);
           }
@@ -1085,7 +1084,7 @@ export async function runCompilerPipeline(
         );
         markStep(steps, "readiness", "error", "Integrations required");
         if (input.executionId) {
-          await updateExecution(input.executionId, {
+          await updateExecution(input.executionId as string, {
             status: "awaiting_integration",
             requiredIntegrations,
             missingIntegrations: missingIntegrationIds,
@@ -1103,9 +1102,9 @@ export async function runCompilerPipeline(
             requiresIntegrations: true,
             missingIntegrations: missingIntegrationIds,
             requiredIntegrations,
-            executionId: input.executionId,
+            executionId: input.executionId as string,
             build_steps: steps,
-            progress: compilerResult.progress,
+            progress: (compilerResult as any).progress,
           },
         };
       }
@@ -1119,7 +1118,7 @@ export async function runCompilerPipeline(
           spec: spec as any,
           orgId: buildContext.orgId,
         });
-      } catch (err) {
+      } catch (err: any) {
         if (isIntegrationNotConnectedError(err)) {
           markStep(steps, "readiness", "error", "Integration authorization required");
 
@@ -1127,7 +1126,7 @@ export async function runCompilerPipeline(
           const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
 
           if (input.executionId) {
-            await updateExecution(input.executionId, {
+            await updateExecution(input.executionId as string, {
               status: "awaiting_integration",
               requiredIntegrations,
               missingIntegrations,
@@ -1145,9 +1144,9 @@ export async function runCompilerPipeline(
               requiresIntegrations: true,
               missingIntegrations,
               requiredIntegrations,
-              executionId: input.executionId,
+              executionId: input.executionId as string,
               build_steps: steps,
-              progress: compilerResult.progress,
+              progress: (compilerResult as any).progress,
               integration_error: {
                 type: "INTEGRATION_NOT_CONNECTED",
                 integrationIds: err.integrationIds,
@@ -1170,7 +1169,7 @@ export async function runCompilerPipeline(
       if (readiness.authErrors.length > 0) {
         markStep(steps, "readiness", "error", "Integration authorization required");
         if (input.executionId) {
-          await updateExecution(input.executionId, {
+          await updateExecution(input.executionId as string, {
             status: "awaiting_integration",
             requiredIntegrations,
             missingIntegrations: readiness.authErrors,
@@ -1232,7 +1231,7 @@ export async function runCompilerPipeline(
 
       if (spec.initialFetch?.actionId) {
         const initial = spec.actions.find(a => a.id === spec.initialFetch?.actionId);
-        if (initial && !readActions.find(a => a.id === initial.id)) {
+        if (initial && !readActions.find(a => a.id === (initial as any).id)) {
           readActions.unshift(initial);
         }
       }
@@ -1592,7 +1591,7 @@ export async function runCompilerPipeline(
       }
 
       if (input.executionId) {
-        await completeExecution(input.executionId);
+        await completeExecution(input.executionId as string);
       }
       const assistantSummary = buildAssistantSummary(spec);
       return {
