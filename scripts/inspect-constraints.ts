@@ -1,61 +1,75 @@
-/**
- * Inspect indexes on integration_schemas
- */
-import { config } from "dotenv";
-config({ path: ".env.local" });
 
-import { createClient } from "@supabase/supabase-js";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { getServerEnv } from "@/lib/env";
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY!;
+async function run() {
+    getServerEnv();
+    const supabase = createSupabaseAdminClient();
 
-async function main() {
-    console.log("🔍 Inspecting indexes...\n");
+    // Fetch valid Org IDs
+    let orgId = null;
+    let organizationId = null;
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
-        auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    // Query pg_indexes via rpc if possible, or just try to blindly hit constraints.
-    // Since we can't easily run arbitrary SQL select on system tables via client (usually),
-    // we can use the `rpc` called `exec_sql` if we created it previously, or just try onConflicts.
-
-    // Let's try upsert with different onConflicts to see which one works.
-
-    const testPayload = {
-        org_id: "00000000-0000-0000-0000-000000000000",
-        integration_id: "_constraint_test_",
-        resource: "_test_",
-        resource_type: "_test_",
-        schema: { test: true },
-        last_discovered_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-    };
-
-    console.log("1. Trying onConflict: 'org_id,integration_id,resource'");
-    const { error: error1 } = await supabase
-        .from("integration_schemas")
-        .upsert(testPayload, { onConflict: "org_id,integration_id,resource" });
-
-    if (!error1) {
-        console.log("   ✅ MATCH! The constraint is on (org_id, integration_id, resource)");
-    } else {
-        console.log("   ❌ Failed:", error1.message);
+    const { data: orgs } = await supabase.from('orgs').select('id').limit(1);
+    if (orgs && orgs.length > 0) {
+        orgId = orgs[0].id; // Org from 'orgs'
     }
 
-    console.log("\n2. Trying onConflict: 'org_id,integration_id,resource_type'");
-    const { error: error2 } = await supabase
-        .from("integration_schemas")
-        .upsert(testPayload, { onConflict: "org_id,integration_id,resource_type" });
-
-    if (!error2) {
-        console.log("   ✅ MATCH! The constraint is on (org_id, integration_id, resource_type)");
-    } else {
-        console.log("   ❌ Failed:", error2.message);
+    const { data: organizations } = await supabase.from('organizations').select('id').limit(1);
+    if (organizations && organizations.length > 0) {
+        organizationId = organizations[0].id;
     }
 
-    // Cleanup
-    await supabase.from("integration_schemas").delete().eq("integration_id", "_constraint_test_");
+    console.log(`Using Org ID (orgs): ${orgId}`);
+    console.log(`Using Org ID (organizations): ${organizationId}`);
+
+    // Fetch valid Version ID
+    let versionId: string | null = null;
+    const { data: versions } = await supabase.from('tool_versions').select('id').limit(1);
+    if (versions && versions.length > 0) {
+        versionId = versions[0].id;
+    }
+
+    console.log("Attempting CREATED -> MATERIALIZED transition test...");
+
+    // Create Project + Version
+    const { data: project, error: insertError } = await supabase.from('projects').insert({
+        org_id: orgId || organizationId,
+        name: `Test Project Transition ${new Date().getTime()}`,
+        status: 'CREATED', // Crucially, start as CREATED
+        spec: {},
+        active_version_id: versionId
+    }).select().single();
+
+    if (insertError) {
+        console.log(`Setup Error (Insert Project): ${insertError.message}`);
+        return;
+    }
+
+    console.log(`Created Project: ${project.id} (Status: CREATED)`);
+
+    // Now try to update project DIRECTLY to MATERIALIZED
+    const { error: updateError } = await supabase.from('projects').update({
+        data_snapshot: { foo: "bar" },
+        data_ready: true,
+        view_spec: {},
+        view_ready: true,
+        status: 'MATERIALIZED',
+        finalized_at: new Date().toISOString(),
+        lifecycle_done: true
+    }).eq('id', project.id);
+
+    if (updateError) {
+        if (updateError.message.includes("projects_status_check")) {
+            console.log(`❌ Update REJECTED by constraint projects_status_check (CREATED -> MATERIALIZED Forbidden)`);
+        } else {
+            console.log(`❌ Update ERROR: ${updateError.message}`);
+        }
+    } else {
+        console.log(`✅ Update SUCCEEDED (CREATED -> MATERIALIZED Allowed)`);
+    }
+
+    await supabase.from('projects').delete().eq('id', project.id);
 }
 
-main().catch(console.error);
+run();

@@ -9,17 +9,17 @@ import { CompiledIntent } from "@/lib/core/intent";
 import { createHash } from "crypto";
 
 export class VersioningService {
-  
+
   async createDraft(
-    toolId: string, 
-    newSpec: ToolSpec, 
+    toolId: string,
+    newSpec: ToolSpec,
     userId: string,
     intent?: CompiledIntent,
     baseVersionId?: string
   ): Promise<ToolVersion> {
     // Use Admin Client for versioning to ensure persistence reliability
     const supabase = createSupabaseAdminClient();
-    
+
     const memorySchema = {
       observations: [],
       aggregates: {},
@@ -67,7 +67,7 @@ export class VersioningService {
         manualRetryControls: true,
       },
     };
-    
+
     if (baseVersionId) {
       const { data: version } = await (supabase.from("tool_versions") as any)
         .select("tool_spec")
@@ -93,14 +93,14 @@ export class VersioningService {
     const diff = calculateDiff(baseSpec, newSpec);
 
     const version: ToolVersion = {
-        id: randomUUID(),
-        tool_id: toolId,
-        created_at: new Date().toISOString(),
-        created_by: userId,
-        intent_summary: intent?.system_goal || "Manual Edit",
-        mini_app_spec: newSpec,
-        status: "CREATED",
-        diff
+      id: randomUUID(),
+      tool_id: toolId,
+      created_at: new Date().toISOString(),
+      created_by: userId,
+      intent_summary: intent?.system_goal || "Manual Edit",
+      mini_app_spec: newSpec,
+      status: "CREATED",
+      diff
     };
 
     const compiledTool = {
@@ -126,30 +126,30 @@ export class VersioningService {
   }
 
   async promoteVersion(toolId: string, versionId: string): Promise<void> {
-      const supabase = await createSupabaseServerClient();
-      
-      // 1. Fetch Version
-      const { data: version } = await (supabase.from("tool_versions") as any).select("*").eq("id", versionId).single();
-      if (!version) throw new Error("Version not found");
+    const supabase = await createSupabaseServerClient();
 
-      await (supabase.from("projects") as any).update({
-          spec: version.tool_spec ?? version.mini_app_spec,
-          active_version_id: versionId,
-      }).eq("id", toolId);
+    // 1. Fetch Version
+    const { data: version } = await (supabase.from("tool_versions") as any).select("*").eq("id", versionId).single();
+    if (!version) throw new Error("Version not found");
 
-      // 3. Update Version Status
-      await (supabase.from("tool_versions") as any).update({ status: "READY" }).eq("id", versionId);
+    await (supabase.from("projects") as any).update({
+      spec: version.tool_spec ?? version.mini_app_spec,
+      active_version_id: versionId,
+    }).eq("id", toolId);
+
+    // 3. Update Version Status
+    await (supabase.from("tool_versions") as any).update({ status: "active" }).eq("id", versionId);
   }
 
   async getLatestDraft(toolId: string): Promise<ToolVersion | null> {
-      const supabase = await createSupabaseServerClient();
-      const { data } = await (supabase.from("tool_versions") as any)
-        .select("*")
-        .eq("tool_id", toolId)
-        .eq("status", "CREATED")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
-      return data as ToolVersion;
+    const supabase = await createSupabaseServerClient();
+    const { data } = await (supabase.from("tool_versions") as any)
+      .select("*")
+      .eq("tool_id", toolId)
+      .eq("status", "CREATED")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    return data as ToolVersion;
   }
 }

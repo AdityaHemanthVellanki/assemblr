@@ -78,7 +78,7 @@ export async function GET(
     const responseDataReady = renderState?.data_ready === true || project.data_ready === true;
     const responseViewReady = renderState?.view_ready === true || project.view_ready === true;
     const responseBuildLogs = Array.isArray(resolvedBuildLogs) ? resolvedBuildLogs : null;
-    const terminalStatus = ["READY", "FAILED", "CORRUPTED"].includes(project.status);
+    const terminalStatus = ["MATERIALIZED", "READY", "FAILED"].includes(project.status);
     const done = Boolean(project.lifecycle_done || terminalStatus || responseViewReady || responseDataReady);
 
     console.log("[STATUS]", { toolId, data_ready: project.data_ready, view_ready: project.view_ready });

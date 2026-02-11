@@ -44,7 +44,7 @@ export async function createToolVersion(params: {
   }
   // Enforce "Fix 3: tool_versions write order" - Spec must be finalized
   if (!params.spec.name || !params.spec.purpose) {
-     throw new Error("Cannot create tool version: Spec is incomplete (missing name/purpose)");
+    throw new Error("Cannot create tool version: Spec is incomplete (missing name/purpose)");
   }
   // Hard Assertions for Canonical Ownership
   if (!params.orgId) throw new Error("Cannot create tool version: orgId is required");
@@ -52,14 +52,14 @@ export async function createToolVersion(params: {
 
   const supabase = params.supabase || createSupabaseAdminClient();
 
-  // FIX: Hard Guard - Verify Parent Tool Exists
-  const { data: parentTool } = await (supabase.from("tools") as any)
+  // FIX: Check 'projects' table (no separate 'tools' table exists in DB schema)
+  const { data: parentTool } = await (supabase.from("projects") as any)
     .select("id")
     .eq("id", params.toolId)
     .single();
 
   if (!parentTool) {
-    throw new Error(`Invariant violation: Cannot create version for non-existent tool ${params.toolId} (checked 'tools' table)`);
+    throw new Error(`Invariant violation: Cannot create version for non-existent project ${params.toolId} (checked 'projects' table)`);
   }
 
   const normalizedSpecResult = normalizeToolSpec(params.spec, {

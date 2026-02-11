@@ -440,8 +440,8 @@ export function ToolRenderer({
     let intervalId: number | null = null;
 
     const poll = async () => {
-      // Don't poll if project is in DRAFT or IDLE
-      if (status === "DRAFT" || status === "IDLE") {
+      // Stop polling if project is in a terminal or non-executing state
+      if (status === "CREATED" || status === "FAILED" || status === "MATERIALIZED" || status === "DRAFT" || status === "IDLE") {
         setPollingInterval(null);
         return;
       }
@@ -693,9 +693,6 @@ export function ToolRenderer({
         )}
         {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
         {isLoading && <div className="mb-4 text-sm text-muted-foreground">Loading view…</div>}
-        <div className="mb-4 rounded-md border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-          Built with smart defaults. You can adjust behavior in settings.
-        </div>
         {activeView ? (
           <div className="flex gap-6 h-full">
             <div className="flex-1 overflow-auto">
@@ -757,17 +754,40 @@ export function ToolRenderer({
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-            {materialized && lifecycle === "ACTIVE" ? (
+            {status === "FAILED" ? (
               <>
-                <div className="h-12 w-12 rounded-full bg-green-500/10 flex items-center justify-center text-green-600">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+                <div className="h-12 w-12 rounded-full bg-red-500/10 flex items-center justify-center text-red-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></svg>
                 </div>
                 <div className="text-center">
-                  <div className="font-medium text-foreground">Monitoring Active</div>
-                  <div className="text-sm mt-1">This tool is running but has no materialized views yet.</div>
-                  <div className="text-xs mt-2 opacity-70">Triggers and automations are active.</div>
+                  <div className="font-medium text-red-600">Tool Failed</div>
+                  <div className="text-sm mt-1">{error || "Execution failed. Check build logs for details."}</div>
                 </div>
               </>
+            ) : status === "CREATED" ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center">
+                  <Zap className="h-5 w-5 text-muted-foreground/50" />
+                </div>
+                <div className="font-medium">This tool hasn't been run yet.</div>
+                <div className="text-xs opacity-60">Send a message to start the execution engine.</div>
+              </div>
+            ) : status === "PLANNED" || status === "READY_TO_EXECUTE" ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-10 w-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500 animate-pulse"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" /></svg>
+                </div>
+                <div className="font-medium">Preparing to execute...</div>
+                <div className="text-xs opacity-60">Verifying integrations and building execution plan.</div>
+              </div>
+            ) : status === "EXECUTING" ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-10 w-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                </div>
+                <div className="font-medium">Fetching data...</div>
+                <div className="text-xs opacity-60">Running integrations and materializing datasets.</div>
+              </div>
             ) : status === "DRAFT" || status === "IDLE" ? (
               <div className="flex flex-col items-center gap-2">
                 <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center">
@@ -777,7 +797,10 @@ export function ToolRenderer({
                 <div className="text-xs opacity-60">Send a message to start the execution engine.</div>
               </div>
             ) : (
-              <div>No views configured yet.</div>
+              <div className="text-center">
+                <div className="font-medium text-red-600">No views available</div>
+                <div className="text-sm mt-1">This tool completed but produced no viewable output.</div>
+              </div>
             )}
           </div>
         )}

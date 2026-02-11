@@ -165,7 +165,7 @@ export async function sendChatMessage(
       // The compiler will create a NEW version and promote it.
       await (adminSupabase.from("projects") as any).update({
         active_version_id: null,
-        status: "DRAFT", // Reset to DRAFT to allow compiler to run
+        status: "CREATED", // Reset to CREATED to allow compiler to run
         compiled_at: null // Clear legacy flag too
       }).eq("id", effectiveToolId);
 
