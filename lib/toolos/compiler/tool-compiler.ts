@@ -15,6 +15,7 @@ import { runFetchData } from "@/lib/toolos/compiler/stages/fetch-data";
 import { runBuildWorkflows } from "@/lib/toolos/compiler/stages/build-workflows";
 import { runDesignViews } from "@/lib/toolos/compiler/stages/design-views";
 import { runValidateSpec } from "@/lib/toolos/compiler/stages/validate-spec";
+import { runGenerateQueryPlans } from "@/lib/toolos/compiler/stages/generate-query-plans";
 import { getExecutionById } from "@/lib/toolos/executions";
 
 export type ToolCompilerStage =
@@ -22,6 +23,7 @@ export type ToolCompilerStage =
   | "extract-entities"
   | "resolve-integrations"
   | "define-actions"
+  | "generate-query-plans"
   | "fetch-data"
   | "build-workflows"
   | "design-views"
@@ -226,31 +228,49 @@ export class ToolCompiler {
       return { status: "completed" as const };
     };
 
-    const stages: Array<() => Promise<{ status: "completed"; clarifications?: string[] }>> = [
-      () => runStage("understand-purpose", budgets.understandPurposeMs, runUnderstandPurpose),
-      () => runStage("extract-entities", budgets.extractEntitiesMs, runExtractEntities),
-      () => runStage("resolve-integrations", budgets.resolveIntegrationsMs, runResolveIntegrations),
-      () => runStage("define-actions", budgets.defineActionsMs, runDefineActions),
-      // Integration Readiness Gate: Check for missing credentials BEFORE runtime/fetch-data.
-      async () => {
-        try {
-          return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
-        } catch (error: any) {
-          if (error.constructor.name === "IntegrationNotConnectedError" || error.type === "INTEGRATION_NOT_CONNECTED") {
-            throw error; // Propagate up to tool-chat.ts to handle UI modal
-          }
-          throw error;
-        }
-      },
-      () => runStage("fetch-data", budgets.fetchDataMs, runFetchData),
-      () => runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows),
-      () => runStage("design-views", budgets.designViewsMs, runDesignViews),
-      () => runStage("validate-spec", budgets.validateSpecMs, runValidateSpec),
-    ];
+    // Stage 1: understand-purpose (must run first)
+    await runStage("understand-purpose", budgets.understandPurposeMs, runUnderstandPurpose);
 
-    for (const stage of stages) {
-      await stage();
+    // Stage 2+3: extract-entities + resolve-integrations (independent, run in parallel)
+    await Promise.all([
+      runStage("extract-entities", budgets.extractEntitiesMs, runExtractEntities),
+      runStage("resolve-integrations", budgets.resolveIntegrationsMs, runResolveIntegrations),
+    ]);
+
+    // Stage 4: define-actions (depends on entities + integrations)
+    await runStage("define-actions", budgets.defineActionsMs, runDefineActions);
+
+    // Stage 5: generate-query-plans (deterministic, fast — depends on actions)
+    await runStage("generate-query-plans", 500, runGenerateQueryPlans);
+
+    // Stage 6: Integration Readiness Gate
+    await (async () => {
+      try {
+        return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
+      } catch (error: any) {
+        if (error.constructor.name === "IntegrationNotConnectedError" || error.type === "INTEGRATION_NOT_CONNECTED") {
+          throw error; // Propagate up to tool-chat.ts to handle UI modal
+        }
+        throw error;
+      }
+    })();
+
+    // Stage 7: fetch-data
+    await runStage("fetch-data", budgets.fetchDataMs, runFetchData);
+
+    // Stage 8: build-workflows (skip for read-only tools — saves ~2s)
+    const allActionsReadOnly = spec.actions.length > 0 && spec.actions.every((a) => a.type === "READ");
+    if (!allActionsReadOnly) {
+      await runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows);
+    } else {
+      emitProgress({ stage: "build-workflows", status: "completed", message: "Skipped (read-only)" });
     }
+
+    // Stage 9+10: design-views + validate-spec (can run in parallel)
+    await Promise.all([
+      runStage("design-views", budgets.designViewsMs, runDesignViews),
+      runStage("validate-spec", budgets.validateSpecMs, runValidateSpec),
+    ]);
 
     spec = ensureMinimumSpec(spec, input.prompt, input.connectedIntegrationIds ?? [], capabilities);
     const validation = ToolSystemSpecSchema.safeParse(spec);
@@ -298,6 +318,7 @@ function stageLabel(stage: ToolCompilerStage) {
   if (stage === "extract-entities") return "Extracting entities";
   if (stage === "resolve-integrations") return "Resolving integrations";
   if (stage === "define-actions") return "Defining actions";
+  if (stage === "generate-query-plans") return "Generating query plans";
   if (stage === "build-workflows") return "Building workflows";
   if (stage === "design-views") return "Designing views";
   return "Validating spec";
@@ -308,6 +329,7 @@ function shouldSkipStage(stage: ToolCompilerStage, spec: ToolSystemSpec) {
   if (stage === "extract-entities") return spec.entities.length > 0;
   if (stage === "resolve-integrations") return spec.integrations.length > 0;
   if (stage === "define-actions") return spec.actions.length > 0;
+  if (stage === "generate-query-plans") return spec.query_plans.length > 0;
   if (stage === "build-workflows") return spec.workflows.length > 0;
   if (stage === "design-views") return spec.views.length > 0;
   return false;
@@ -483,24 +505,11 @@ function ensureMinimumSpec(
 
   let actions = spec.actions;
   if (actions.length === 0) {
-    actions = integrationIds.flatMap((integration) => {
-      const integrationCaps = capabilities.filter(c => c.integrationId === integration);
-      if (integrationCaps.length > 0) {
-        return integrationCaps.map(cap => ({
-          id: cap.id,
-          name: cap.name,
-          description: cap.description || cap.name,
-          type: (cap.type === "list" || cap.type === "get" || cap.type === "search") ? "READ" : "WRITE",
-          integrationId: integration,
-          capabilityId: cap.id,
-          inputSchema: cap.parameters ?? {},
-          outputSchema: {},
-          writesToState: !(cap.type === "list" || cap.type === "get" || cap.type === "search"),
-          confidenceLevel: "medium",
-        }));
-      }
-      return buildFallbackActionsForIntegration(integration);
-    });
+    // Always use curated fallback actions — never dump all synthesized
+    // Composio capabilities, which would create hundreds of invalid actions.
+    actions = integrationIds.flatMap((integration) =>
+      buildFallbackActionsForIntegration(integration),
+    );
   }
 
   let reducers = spec.state.reducers;
@@ -652,6 +661,18 @@ function buildFallbackActionsForIntegration(integration: IntegrationId): ActionS
         integrationId: "github",
         capabilityId: "github_issues_list",
         inputSchema: buildDefaultInputForCapability("github_issues_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "github.listCommits",
+        name: "List commits",
+        description: "List GitHub commits",
+        type: "READ",
+        integrationId: "github",
+        capabilityId: "github_commits_list",
+        inputSchema: buildDefaultInputForCapability("github_commits_list"),
         outputSchema: {},
         writesToState: false,
         confidenceLevel: "medium",

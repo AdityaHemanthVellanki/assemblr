@@ -233,7 +233,7 @@ export async function POST(
                     data_ready: dataReady,
                     view_spec: viewSpec,
                     view_ready: viewReady,
-                    status: dataReady ? "READY" : "FAILED",
+                    status: dataReady ? "MATERIALIZED" : "FAILED",
                     finalized_at: finalizedAt,
                     lifecycle_done: true,
                   })

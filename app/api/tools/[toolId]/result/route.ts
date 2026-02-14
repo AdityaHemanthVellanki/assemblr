@@ -2,6 +2,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse } from "@/lib/api/response";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
+import { getActiveExecution } from "@/lib/toolos/executions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,11 +48,13 @@ export async function GET(
         });
       }
 
-      // Tool exists but no result yet — return structured pending, NOT 404
+      // Tool exists but no result yet — return structured pending with build progress
+      const activeExec = await getActiveExecution(toolId);
       return jsonResponse({
         ok: true,
         data: null,
-        status: "pending"
+        status: "pending",
+        build_steps: activeExec?.buildSteps ?? [],
       });
     }
 

@@ -24,7 +24,7 @@ import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords, c
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
-import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
+import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution, persistBuildSteps } from "@/lib/toolos/executions";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
@@ -32,6 +32,7 @@ import { getRuntimeValidationResult } from "@/lib/core/guard";
 
 import { IntegrationNotConnectedError, isIntegrationNotConnectedError } from "@/lib/errors/integration-errors";
 import { runCheckIntegrationReadiness } from "@/lib/toolos/compiler/stages/check-integration-readiness";
+import { extractPayloadArray } from "@/lib/integrations/composio/execution";
 
 export interface ToolChatRequest {
   orgId: string;
@@ -455,6 +456,11 @@ export async function runCompilerPipeline(
 
   return await withToolBuildLock(input.toolId, async () => {
     const steps = createBuildSteps();
+    _activeExecutionId = input.executionId ?? null;
+    if (_activeExecutionId) {
+      persistBuildSteps(_activeExecutionId, steps);
+    }
+    try {
     const builderNamespace = "tool_builder";
 
     // 0. Resolve Context Securely
@@ -1214,10 +1220,32 @@ export async function runCompilerPipeline(
         console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
         markStep(steps, "runtime", "running", "Executing actions...");
 
-        for (const action of readActions) {
+        // Sort GitHub actions: repos_list first so we can discover owner/repo for subsequent actions
+        const sortedActions = [...readActions].sort((a, b) => {
+          const aIsRepos = a.capabilityId === "github_repos_list" ? 0 : 1;
+          const bIsRepos = b.capabilityId === "github_repos_list" ? 0 : 1;
+          return aIsRepos - bIsRepos;
+        });
+        // Track discovered GitHub repo context for chaining
+        let githubRepoContext: { owner: string; repo: string } | null = null;
+
+        console.log(`[ToolRuntime] Action execution order:`, sortedActions.map(a => `${a.id}(cap=${a.capabilityId})`).join(", "));
+
+        for (const action of sortedActions) {
           try {
             const plan = queryPlanByAction.get(action.id);
-            const input = buildReadActionInput({ action, plan, spec });
+            let input = buildReadActionInput({ action, plan, spec });
+
+            // Inject owner/repo for repo-scoped GitHub actions that don't have them
+            if (action.integrationId === "github" && githubRepoContext && !input.owner && !input.repo) {
+              const repoScoped = ["github_commits_list", "github_issues_list", "github_issues_search",
+                "github_pull_requests_search", "github_pull_request_get", "github_pull_request_reviews_list",
+                "github_pull_request_comments_list", "github_repo_collaborators_list", "github_commit_status_list"];
+              if (repoScoped.includes(action.capabilityId)) {
+                input = { ...input, ...githubRepoContext };
+                console.log(`[ToolRuntime] Injected repo context for ${action.capabilityId}: ${githubRepoContext.owner}/${githubRepoContext.repo}`);
+              }
+            }
             if (action.integrationId === "slack" && !slackRequired) {
               if (!integrationStatuses.slack) {
                 try {
@@ -1275,6 +1303,26 @@ export async function runCompilerPipeline(
               }
             }
             outputs.push({ action, output: result.output });
+
+            // Extract repo context from repos list for chaining to subsequent GitHub actions
+            if (action.capabilityId === "github_repos_list" && !githubRepoContext && result.output) {
+              const repos = extractPayloadArray(result.output);
+              if (repos.length > 0 && repos[0]?.full_name) {
+                // Pick the most recently pushed repo
+                const sorted = [...repos].sort((a: any, b: any) =>
+                  new Date(b.pushed_at || 0).getTime() - new Date(a.pushed_at || 0).getTime()
+                );
+                const top = sorted[0];
+                const owner = top.owner?.login || top.full_name?.split("/")[0];
+                const repo = top.name || top.full_name?.split("/")[1];
+                if (owner && repo) {
+                  githubRepoContext = { owner, repo };
+                  console.log(`[ToolRuntime] Discovered GitHub repo context: ${owner}/${repo}`);
+                }
+              } else {
+                console.warn(`[ToolRuntime] Could not extract repos from output. Raw type: ${typeof result.output}, extracted: ${repos.length} items`);
+              }
+            }
           } catch (err) {
             console.warn(`[ToolRuntime] Action ${action.id} failed:`, err);
             outputs.push({ action, output: null, error: err });
@@ -1657,6 +1705,9 @@ export async function runCompilerPipeline(
         completenessScore,
       },
     };
+    } finally {
+      _activeExecutionId = null;
+    }
   });
 }
 
@@ -1799,10 +1850,29 @@ export async function resumeToolExecution(params: {
     outputs = planResult.outputs;
     goalEvidence = planResult.evidence;
   } else if (readActions.length > 0) {
-    for (const action of readActions) {
+    // Sort GitHub actions: repos_list first so we can discover owner/repo for subsequent actions
+    const sortedActions2 = [...readActions].sort((a, b) => {
+      const aIsRepos = a.capabilityId === "github_repos_list" ? 0 : 1;
+      const bIsRepos = b.capabilityId === "github_repos_list" ? 0 : 1;
+      return aIsRepos - bIsRepos;
+    });
+    let githubRepoContext2: { owner: string; repo: string } | null = null;
+
+    for (const action of sortedActions2) {
       try {
         const plan = queryPlanByAction.get(action.id);
-        const input = buildReadActionInput({ action, plan, spec: params.spec });
+        let input = buildReadActionInput({ action, plan, spec: params.spec });
+
+        // Inject owner/repo for repo-scoped GitHub actions
+        if (action.integrationId === "github" && githubRepoContext2 && !input.owner && !input.repo) {
+          const repoScoped = ["github_commits_list", "github_issues_list", "github_issues_search",
+            "github_pull_requests_search", "github_pull_request_get", "github_pull_request_reviews_list",
+            "github_pull_request_comments_list", "github_repo_collaborators_list", "github_commit_status_list"];
+          if (repoScoped.includes(action.capabilityId)) {
+            input = { ...input, ...githubRepoContext2 };
+            console.log(`[ToolRuntime2] Injected repo context for ${action.capabilityId}: ${githubRepoContext2.owner}/${githubRepoContext2.repo}`);
+          }
+        }
         if (action.integrationId === "slack" && !slackRequired) {
           if (!integrationStatuses.slack) {
             try {
@@ -1860,6 +1930,23 @@ export async function resumeToolExecution(params: {
           }
         }
         outputs.push({ action, output: result.output });
+
+            // Extract repo context from repos list for chaining
+            if (action.capabilityId === "github_repos_list" && !githubRepoContext2 && result.output) {
+              const repos = extractPayloadArray(result.output);
+              if (repos.length > 0 && repos[0]?.full_name) {
+                const sorted = [...repos].sort((a: any, b: any) =>
+                  new Date(b.pushed_at || 0).getTime() - new Date(a.pushed_at || 0).getTime()
+                );
+                const top = sorted[0];
+                const owner = top.owner?.login || top.full_name?.split("/")[0];
+                const repo = top.name || top.full_name?.split("/")[1];
+                if (owner && repo) {
+                  githubRepoContext2 = { owner, repo };
+                  console.log(`[ToolRuntime2] Discovered GitHub repo context: ${owner}/${repo}`);
+                }
+              }
+            }
       } catch (err) {
         outputs.push({ action, output: null, error: err });
       }
@@ -3373,11 +3460,18 @@ function createBuildSteps(): BuildStep[] {
   ];
 }
 
+// Module-level tracking for active execution (set at pipeline start, cleared at end)
+let _activeExecutionId: string | null = null;
+
 function markStep(steps: BuildStep[], id: string, status: BuildStep["status"], log?: string) {
   const step = steps.find((s) => s.id === id);
   if (!step) return;
   step.status = status;
   if (log) step.logs.push(log);
+  // Fire-and-forget persist to DB for real-time progress polling
+  if (_activeExecutionId) {
+    persistBuildSteps(_activeExecutionId, steps);
+  }
 }
 
 function appendStep(step: BuildStep | undefined, log: string) {
@@ -3402,7 +3496,20 @@ async function runDataReadiness(
     return cap?.allowedOperations.includes("read");
   });
 
-  for (const action of readActions) {
+  // Sort GitHub actions: repos_list first so we can discover owner/repo for subsequent actions
+  const sortedReadActions = [...readActions].sort((a, b) => {
+    const aIsRepos = a.capabilityId === "github_repos_list" ? 0 : 1;
+    const bIsRepos = b.capabilityId === "github_repos_list" ? 0 : 1;
+    return aIsRepos - bIsRepos;
+  });
+  let githubRepoCtx: { owner: string; repo: string } | null = null;
+
+  // GitHub repo-scoped capabilities that require owner/repo params
+  const REPO_SCOPED_CAPS = ["github_commits_list", "github_issues_list", "github_issues_search",
+    "github_pull_requests_search", "github_pull_request_get", "github_pull_request_reviews_list",
+    "github_pull_request_comments_list", "github_repo_collaborators_list", "github_commit_status_list"];
+
+  for (const action of sortedReadActions) {
     const cap = getCapability(action.capabilityId);
     if (!cap) {
       logs.push(`Capability missing for ${action.name}.`);
@@ -3418,14 +3525,23 @@ async function runDataReadiness(
     if (context) {
       try {
         const plan = queryPlanByAction.get(action.id);
-        const input =
+        let input =
           plan && Object.keys(plan.query ?? {}).length > 0
-            ? plan.query
+            ? { ...plan.query }
             : buildDefaultInput(cap);
+
+        // Inject owner/repo for repo-scoped GitHub actions
+        if (action.integrationId === "github" && githubRepoCtx && !input.owner && !input.repo) {
+          if (REPO_SCOPED_CAPS.includes(action.capabilityId)) {
+            input = { ...input, ...githubRepoCtx };
+            console.log(`[Readiness] Injected repo context for ${action.capabilityId}: ${githubRepoCtx.owner}/${githubRepoCtx.repo}`);
+          }
+        }
+
         const requiredFilters = cap?.constraints?.requiredFilters ?? [];
-        const missing = requiredFilters.filter((key) => input?.[key] === undefined || input?.[key] === null);
-        if (missing.length > 0) {
-          logs.push(`Skipping ${action.name} (${action.integrationId}) missing ${missing.join(", ")}.`);
+        const missingFilters = requiredFilters.filter((key) => input?.[key] === undefined || input?.[key] === null);
+        if (missingFilters.length > 0) {
+          logs.push(`Skipping ${action.name} (${action.integrationId}) missing ${missingFilters.join(", ")}.`);
           continue;
         }
         logs.push(`Executing ${action.name} (${action.integrationId})...`);
@@ -3440,10 +3556,28 @@ async function runDataReadiness(
           dryRun: false
         });
 
-        const recordCount = Array.isArray(result.output) ? result.output.length : (result.output ? 1 : 0);
+        // Extract repo context from repos list for chaining to subsequent actions
+        if (action.capabilityId === "github_repos_list" && !githubRepoCtx && result.output) {
+          const repos = extractPayloadArray(result.output);
+          if (repos.length > 0 && repos[0]?.full_name) {
+            const sorted = [...repos].sort((a: any, b: any) =>
+              new Date(b.pushed_at || 0).getTime() - new Date(a.pushed_at || 0).getTime()
+            );
+            const top = sorted[0];
+            const owner = top.owner?.login || top.full_name?.split("/")[0];
+            const repo = top.name || top.full_name?.split("/")[1];
+            if (owner && repo) {
+              githubRepoCtx = { owner, repo };
+              console.log(`[Readiness] Discovered GitHub repo context: ${owner}/${repo}`);
+            }
+          }
+        }
+
+        const payloadArr = extractPayloadArray(result.output);
+        const recordCount = payloadArr.length;
         if (recordCount > 0) {
           outputs.push({ action, output: result.output });
-          const inferredFields = inferFieldsFromData(result.output);
+          const inferredFields = inferFieldsFromData(payloadArr);
           if (inferredFields.length > 0) {
             const entity = spec.entities.find(e => e.sourceIntegration === action.integrationId) || spec.entities[0];
             if (entity) {
@@ -3472,10 +3606,12 @@ async function runDataReadiness(
             authErrors.push(action.integrationId);
           }
         } else if (action.integrationId === "slack") {
-          // FIX: Slack failures must not block the build
-          // Slack tokens often expire and don't refresh easily, but it's an optional integration
           console.warn(`[Readiness] Slack fetch failed (non-fatal):`, err.message);
           logs.push(`⚠️ Slack fetch failed: ${err.message} (ignoring)`);
+        } else if (action.integrationId === "github" && REPO_SCOPED_CAPS.includes(action.capabilityId) && !githubRepoCtx) {
+          // Repo-scoped GitHub actions failing because we couldn't discover repo context — non-fatal
+          console.warn(`[Readiness] ${action.name} failed (no repo context yet, non-fatal):`, err.message);
+          logs.push(`⚠️ ${action.name} skipped: needs repo context`);
         } else {
           const msg = err.message || "Unknown error";
           console.error(`[Readiness] Action ${action.name} failed:`, err);
@@ -3511,8 +3647,16 @@ function buildReadActionInput(params: {
   spec: ToolSystemSpec;
 }) {
   const query = params.plan?.query ?? {};
-  const input: Record<string, any> =
-    Object.keys(query).length > 0 ? { ...query } : { limit: params.spec.initialFetch?.limit ?? 10 };
+  const hasQueryPlan = Object.keys(query).length > 0;
+  const input: Record<string, any> = hasQueryPlan
+    ? { ...query }
+    : { limit: params.spec.initialFetch?.limit ?? 30 };
+
+  // If query plan already has a limit, use it; otherwise ensure a reasonable default
+  if (hasQueryPlan && !input.limit) {
+    input.limit = params.spec.initialFetch?.limit ?? 50;
+  }
+
   if (params.action.capabilityId === "google_gmail_list") {
     if (input.order_by === undefined) {
       input.order_by = params.spec.initialFetch?.order_by ?? "internalDate";
@@ -4082,7 +4226,7 @@ async function runPlannerExecutorLoop(params: {
     triggerId: "planner_loop",
     recordRun: true,
   });
-  const repos = Array.isArray(reposResult.output) ? reposResult.output : [];
+  const repos = extractPayloadArray(reposResult.output);
   const filteredRepos = keyword
     ? repos.filter((repo: any) => String(repo?.name ?? "").toLowerCase().includes(keyword))
     : repos;
@@ -4110,7 +4254,7 @@ async function runPlannerExecutorLoop(params: {
       triggerId: "planner_loop",
       recordRun: true,
     });
-    const commits = Array.isArray(commitsResult.output) ? commitsResult.output : [];
+    const commits = extractPayloadArray(commitsResult.output);
     for (const commit of commits.slice(0, 10)) {
       const sha = String(commit?.sha ?? "");
       if (!sha) continue;
@@ -4215,7 +4359,7 @@ async function runNotionTodoLoop(params: {
     triggerId: "semantic_loop",
     recordRun: true,
   });
-  const pages = Array.isArray(pagesResult.output) ? pagesResult.output : [];
+  const pages = extractPayloadArray(pagesResult.output);
   const selectedPage = selectNotionPage(pages, keyword);
   if (!selectedPage) {
     return { outputs: [{ action: derivedAction, output: [] }], evidence: null };
@@ -4230,7 +4374,7 @@ async function runNotionTodoLoop(params: {
     triggerId: "semantic_loop",
     recordRun: true,
   });
-  const blocks = Array.isArray(blocksResult.output) ? blocksResult.output : [];
+  const blocks = extractPayloadArray(blocksResult.output);
   const pageTitle = extractNotionTitle(selectedPage) ?? "Untitled";
   const todos = blocks
     .filter((block) => block?.type === "to_do" || block?.type === "to_do")
@@ -4337,10 +4481,8 @@ function isFailureStatus(status: any) {
 }
 
 function normalizeEmailRows(output: any): Array<Record<string, any>> {
-  if (Array.isArray(output)) {
-    return output.map((row) => normalizeEmailRow(row) ?? row).filter(Boolean) as Array<Record<string, any>>;
-  }
-  return [];
+  const rows = extractPayloadArray(output);
+  return rows.map((row) => normalizeEmailRow(row) ?? row).filter(Boolean) as Array<Record<string, any>>;
 }
 
 function normalizeEmailRow(row: any): Record<string, any> | null {

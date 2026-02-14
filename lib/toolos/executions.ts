@@ -248,3 +248,51 @@ export async function completeExecution(executionId: string) {
     lockToken: null,
   });
 }
+
+/**
+ * Fire-and-forget persist build steps to prompt_executions.
+ * Used for real-time build progress tracking.
+ */
+export function persistBuildSteps(executionId: string, steps: any[]) {
+  if (!executionId) return;
+  const supabase = createSupabaseAdminClient();
+  (supabase.from("prompt_executions") as any)
+    .update({ build_steps: steps, updated_at: new Date().toISOString() })
+    .eq("id", executionId)
+    .then(({ error }: any) => {
+      if (error) console.warn("[BuildSteps] Failed to persist:", error.message);
+    });
+}
+
+/**
+ * Get current build steps for an execution.
+ */
+export async function getBuildSteps(executionId: string): Promise<any[]> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await (supabase.from("prompt_executions") as any)
+    .select("build_steps")
+    .eq("id", executionId)
+    .maybeSingle();
+  if (error || !data) return [];
+  return Array.isArray(data.build_steps) ? data.build_steps : [];
+}
+
+/**
+ * Get the latest active execution for a tool (for polling build progress).
+ */
+export async function getActiveExecution(toolId: string): Promise<{ id: string; status: string; buildSteps: any[] } | null> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await (supabase.from("prompt_executions") as any)
+    .select("id, status, build_steps")
+    .eq("tool_id", toolId)
+    .in("status", ["compiling", "executing", "created"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    id: data.id,
+    status: data.status,
+    buildSteps: Array.isArray(data.build_steps) ? data.build_steps : [],
+  };
+}

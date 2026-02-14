@@ -30,7 +30,7 @@ Only use capabilities from:\n${capabilityCatalog}`,
   if (content) {
     console.log("[ToolCompilerLLMOutput]", { stage: "define-actions", content });
   }
-  if (!content) return { specPatch: { actions: buildFallbackActions(integrations) } };
+  if (!content) return { specPatch: { actions: buildFallbackActions(integrations, ctx.prompt) } };
   try {
     const json = JSON.parse(content);
     const actions: ActionSpec[] = Array.isArray(json.actions)
@@ -72,15 +72,16 @@ Only use capabilities from:\n${capabilityCatalog}`,
       })
       : [];
     if (actions.length === 0) {
-      return { specPatch: { actions: buildFallbackActions(integrations) } };
+      return { specPatch: { actions: buildFallbackActions(integrations, ctx.prompt) } };
     }
     return { specPatch: { actions } };
   } catch {
-    return { specPatch: { actions: buildFallbackActions(integrations) } };
+    return { specPatch: { actions: buildFallbackActions(integrations, ctx.prompt) } };
   }
 }
 
-function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
+function buildFallbackActions(integrations: IntegrationId[], prompt: string): ActionSpec[] {
+  const p = prompt.toLowerCase();
   return integrations.map((integration) => {
     if (integration === "google") {
       return {
@@ -96,6 +97,46 @@ function buildFallbackActions(integrations: IntegrationId[]): ActionSpec[] {
       };
     }
     if (integration === "github") {
+      // Pick the most relevant GitHub action based on prompt keywords
+      if (/\bcommits?\b/.test(p)) {
+        return {
+          id: "github.listCommits",
+          name: "List commits",
+          description: "List GitHub commits",
+          type: "READ",
+          integrationId: "github",
+          capabilityId: "github_commits_list",
+          inputSchema: {},
+          outputSchema: {},
+          writesToState: false,
+        };
+      }
+      if (/\bissues?\b/.test(p)) {
+        return {
+          id: "github.listIssues",
+          name: "List issues",
+          description: "List GitHub issues",
+          type: "READ",
+          integrationId: "github",
+          capabilityId: "github_issues_list",
+          inputSchema: {},
+          outputSchema: {},
+          writesToState: false,
+        };
+      }
+      if (/\bpull\s*requests?\b|\bprs?\b/.test(p)) {
+        return {
+          id: "github.searchPRs",
+          name: "Search pull requests",
+          description: "Search GitHub pull requests",
+          type: "READ",
+          integrationId: "github",
+          capabilityId: "github_pull_requests_search",
+          inputSchema: {},
+          outputSchema: {},
+          writesToState: false,
+        };
+      }
       return {
         id: "github.listRepos",
         name: "List repositories",

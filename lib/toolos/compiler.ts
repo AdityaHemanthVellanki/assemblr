@@ -129,11 +129,14 @@ export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
     }
     const cap = getCapability(action.capabilityId);
     if (!cap) {
-      actionsBound = false;
-      errors.push(`Choose a valid capability for ${action.name}.`);
-      continue;
-    }
-    if (cap.integrationId !== action.integrationId) {
+      // Accept synthesized Composio capabilities with format "integrationId:ACTION_NAME"
+      const isSynthesized = action.capabilityId.startsWith(`${action.integrationId}:`);
+      if (!isSynthesized) {
+        actionsBound = false;
+        errors.push(`Choose a valid capability for ${action.name}.`);
+        continue;
+      }
+    } else if (cap.integrationId !== action.integrationId) {
       actionsBound = false;
       errors.push(`Align ${action.name} with a ${action.integrationId} capability.`);
     }

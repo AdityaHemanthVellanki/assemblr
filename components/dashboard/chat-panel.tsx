@@ -10,6 +10,7 @@ import { cn } from "@/lib/ui/cn";
 import { ToolSpec } from "@/lib/spec/toolSpec";
 import { safeFetch, ApiError } from "@/lib/api/client";
 import { startOAuthFlow } from "@/app/actions/oauth";
+import { ExecutionTimeline, type TimelineStep } from "@/components/dashboard/execution-timeline";
 
 // Types
 type Role = "user" | "assistant";
@@ -67,6 +68,33 @@ export function ChatPanel({
     normalizeMessages(initialMessages)
   );
   const [isExecuting, setIsExecuting] = React.useState(false);
+  const [buildSteps, setBuildSteps] = React.useState<TimelineStep[]>([]);
+
+  // Poll for build progress while executing
+  React.useEffect(() => {
+    if (!isExecuting || !toolId) {
+      setBuildSteps([]);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/tools/${toolId}/result`);
+        if (!res.ok || cancelled) return;
+        const json = await res.json();
+        if (json.build_steps && Array.isArray(json.build_steps) && json.build_steps.length > 0) {
+          setBuildSteps(json.build_steps.map((s: any) => ({
+            id: s.id,
+            label: s.title || s.label || s.id,
+            status: s.status === "running" ? "running" : s.status,
+          })));
+        }
+      } catch { /* ignore polling errors */ }
+    };
+    void poll();
+    const intervalId = setInterval(poll, 1500);
+    return () => { cancelled = true; clearInterval(intervalId); };
+  }, [isExecuting, toolId]);
 
   // Auto-scroll
   React.useEffect(() => {
@@ -249,11 +277,15 @@ export function ChatPanel({
             <ChatMessage key={msg.id} message={msg} onAction={handleActionClick} />
           ))}
           {isExecuting && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse px-2">
-              <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce" />
-              <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce delay-75" />
-              <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce delay-150" />
-            </div>
+            buildSteps.length > 0 ? (
+              <ExecutionTimeline steps={buildSteps} />
+            ) : (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse px-2">
+                <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce" />
+                <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce delay-75" />
+                <div className="w-2 h-2 bg-primary/40 rounded-full animate-bounce delay-150" />
+              </div>
+            )
           )}
         </div>
       </ScrollArea>
