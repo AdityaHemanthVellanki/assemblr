@@ -44,6 +44,10 @@ export async function POST(
     }
     const { message: userMessage, mode, integrationMode, selectedIntegrationIds, resumeId } = parsed.data;
 
+    if (!resumeId && (!userMessage || userMessage.trim().length === 0)) {
+      return errorResponse("Prompt is required to generate a tool.", 400);
+    }
+
     // Use Admin Client to ensure robust tool execution/updates without cookie/RLS issues
     const supabase = createSupabaseAdminClient();
 
@@ -135,10 +139,10 @@ export async function POST(
               executionId: execution.id,
               status: "awaiting_integration",
               integration_error: {
-                  type: "INTEGRATION_NOT_CONNECTED",
-                  integrationIds: err.integrationIds,
-                  requiredBy: err.requiredBy,
-                  blockingActions: err.blockingActions
+                type: "INTEGRATION_NOT_CONNECTED",
+                integrationIds: err.integrationIds,
+                requiredBy: err.requiredBy,
+                blockingActions: err.blockingActions
               },
               prompt: resumeRow.original_prompt
             },
@@ -230,7 +234,7 @@ export async function POST(
           orgId: ctx.orgId,
           firstUserMessage: userMessage,
         });
-      } catch {}
+      } catch { }
 
       try {
         execution = await createExecution({

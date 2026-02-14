@@ -131,7 +131,7 @@ export async function executeToolAction(params: {
       output = await executor.execute(input, context, tracer);
 
       const recordCount = Array.isArray(output) ? output.length : (output ? 1 : 0);
-      console.log(`[Runtime] Action ${action.id} COMPLETED. Records: ${recordCount}`);
+      console.log(`[Runtime] Action ${action.id} COMPLETED. Records: ${recordCount}. Integration: ${action.integrationId}, Capability: ${action.capabilityId}`);
 
       if (run) {
         const durationMs = Date.now() - startedAt;

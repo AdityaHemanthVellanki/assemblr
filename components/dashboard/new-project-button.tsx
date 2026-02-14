@@ -16,23 +16,9 @@ export function NewProjectButton({
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  async function onClick() {
-    setError(null);
-    setIsLoading(true);
-    try {
-      const data = await safeFetch<{ id: string }>("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-
-      router.push(`/dashboard/projects/${data.id}`);
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create project");
-    } finally {
-      setIsLoading(false);
-    }
+  function onClick() {
+    router.push("/app/chat");
+    router.refresh();
   }
 
   return (

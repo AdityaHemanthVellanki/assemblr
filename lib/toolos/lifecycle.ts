@@ -271,7 +271,7 @@ export async function ensureToolIdentity(params: {
       build_hash: specHash,
       compiled_tool: compiledTool,
       updated_at: new Date().toISOString()
-    }).eq("id", versionRow.id);
+    }).eq("id", versionRow!.id);
 
     if (updateVerError) {
       throw new Error(`Fatal: failed to update existing tool version: ${updateVerError.message}`);

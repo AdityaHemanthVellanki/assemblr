@@ -1,11 +1,11 @@
 import { validateCompiledIntent, repairCompiledIntent } from "../lib/ai/planner-logic";
 
 function assert(condition: any, msg: string) {
-  if (!condition) {
-      console.error(`❌ FAILED: ${msg}`);
-      process.exit(1);
-  }
-  console.log(`✅ PASSED: ${msg}`);
+    if (!condition) {
+        console.error(`❌ FAILED: ${msg}`);
+        process.exit(1);
+    }
+    console.log(`✅ PASSED: ${msg}`);
 }
 
 function testInvalidActionTypeRepair() {
@@ -19,7 +19,7 @@ function testInvalidActionTypeRepair() {
         }
     };
     repairCompiledIntent(intent);
-    
+
     try {
         validateCompiledIntent(intent);
         assert(true, "Repaired action passes validation");
@@ -52,12 +52,12 @@ function testFilterActionConversion() {
                 { id: "list1", type: "list", dataSource: { type: "state", value: "filteredData" } }
             ],
             actionsAdded: [
-                { 
-                    id: "filter_list", 
-                    type: "internal", 
-                    config: { 
-                        operation: "assign", 
-                        assign: { "filteredData": { deriveFrom: ["rawData"], logic: "filter" } } 
+                {
+                    id: "filter_list",
+                    type: "internal",
+                    config: {
+                        operation: "assign",
+                        assign: { "filteredData": { deriveFrom: ["rawData"], logic: "filter" } }
                     },
                     triggeredBy: { type: "state_change", stateKey: "filters.status" }
                 }
@@ -65,12 +65,12 @@ function testFilterActionConversion() {
         }
     };
     repairCompiledIntent(intent);
-    
+
     const list = intent.tool_mutation.componentsAdded[0];
     assert(list.dataSource.type === "derived", "Converted dataSource to derived");
     assert(list.dataSource.source === "rawData", "Preserved source key");
     assert(list.dataSource.filters.includes("filters.status"), "Inferred filter dependency");
-    
+
     assert(intent.tool_mutation.actionsAdded.length === 0, "Removed filter action");
 }
 
@@ -89,7 +89,7 @@ function testUntriggeredActionRescue() {
     const action = intent.tool_mutation.actionsAdded[0];
     const trigger = action.triggeredBy;
     assert(trigger.type === "lifecycle" && trigger.event === "onPageLoad", "Bound orphan to onPageLoad");
-    
+
     const pageUpdate = intent.tool_mutation.pagesUpdated[0];
     assert(pageUpdate.patch.events.some((e: any) => e.actionId === "orphan"), "Updated page events");
 }

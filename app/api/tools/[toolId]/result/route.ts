@@ -1,3 +1,4 @@
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse } from "@/lib/api/response";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
@@ -11,6 +12,7 @@ export async function GET(
 ) {
   try {
     const { toolId } = await params;
+    // Auth check uses server client (with cookies)
     const supabase = await createSupabaseServerClient();
     const {
       data: { user },
@@ -21,10 +23,10 @@ export async function GET(
       return errorResponse("Unauthorized", 401);
     }
 
-    // Verify tool ownership/access
+    // Verify tool ownership/access via server client (RLS)
     const { data: tool, error: toolError } = await supabase
       .from("projects")
-      .select("id, org_id")
+      .select("id, org_id, status")
       .eq("id", toolId)
       .single();
 
@@ -32,17 +34,12 @@ export async function GET(
       return errorResponse("Tool not found", 404);
     }
 
+    // Use admin client for result query to bypass RLS on tool_results
     const result = await getLatestToolResult(toolId, tool.org_id);
 
     if (!result) {
-      // Check if the tool is actually READY but just has no data (e.g. monitoring/alert tool)
-      const { data: project } = await supabase
-        .from("projects")
-        .select("status")
-        .eq("id", toolId)
-        .single();
-
-      if (project?.status === "READY") {
+      // Check if the tool is actually materialized but just has no data (e.g. monitoring/alert tool)
+      if (tool.status === "MATERIALIZED" || tool.status === "READY") {
         return jsonResponse({
           ok: true,
           data: null,
@@ -50,7 +47,20 @@ export async function GET(
         });
       }
 
-      return errorResponse("No materialized result found", 404);
+      // Tool exists but no result yet — return structured pending, NOT 404
+      return jsonResponse({
+        ok: true,
+        data: null,
+        status: "pending"
+      });
+    }
+
+    if (result.status === "FAILED") {
+      return jsonResponse({
+        ok: true,
+        data: result,
+        status: "error"
+      });
     }
 
     return jsonResponse({

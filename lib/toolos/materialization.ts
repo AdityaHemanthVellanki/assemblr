@@ -50,22 +50,22 @@ export class FatalSchemaMismatchError extends Error {
 }
 
 async function checkProjectSchemaRuntime(toolId: string): Promise<boolean> {
-   const supabase = createSupabaseAdminClient();
-   // Runtime Schema Validation:
-   // We attempt to select the mandatory lifecycle columns. 
-   // If the database does not have these columns, Supabase/Postgres will return an error.
-   // This is a "canary query" to verify schema contract.
+  const supabase = createSupabaseAdminClient();
+  // Runtime Schema Validation:
+  // We attempt to select the mandatory lifecycle columns. 
+  // If the database does not have these columns, Supabase/Postgres will return an error.
+  // This is a "canary query" to verify schema contract.
   const { error } = await (supabase.from("projects") as any)
     .select("status, error_message, finalized_at, environment, view_spec, view_ready, data_snapshot, data_ready, data_fetched_at")
-     .eq("id", toolId)
-     .limit(1)
-     .single();
- 
-   if (error) {
-     console.error("[SchemaMismatch] Failed to validate project schema:", error);
-     return false;
-   }
-   return true;
+    .eq("id", toolId)
+    .limit(1)
+    .single();
+
+  if (error) {
+    console.error("[SchemaMismatch] Failed to validate project schema:", error);
+    return false;
+  }
+  return true;
 }
 
 export async function materializeToolOutput(input: MaterializationInput): Promise<MaterializationResult> {
@@ -81,10 +81,10 @@ export async function finalizeToolEnvironment(
   actionOutputs: Array<{ action: any; output: any; error?: any }>,
   previousRecords?: SnapshotRecords | null
 ): Promise<MaterializationResult> {
-   // 1. Invariant Check (Real)
-   if (!(await checkProjectSchemaRuntime(toolId))) {
-       throw new FatalSchemaMismatchError("Database schema does not match tool lifecycle contract");
-   }
+  // 1. Invariant Check (Real)
+  if (!(await checkProjectSchemaRuntime(toolId))) {
+    throw new FatalSchemaMismatchError("Database schema does not match tool lifecycle contract");
+  }
 
   const supabase = createSupabaseAdminClient();
 
@@ -106,25 +106,22 @@ export async function finalizeToolEnvironment(
   });
 
   const recordCount = countSnapshotRecords(records);
-  
+
   // Rule: If >= 1 integration returns data -> materialize tool.
   // Even if recordCount is 0, if we executed successfully (e.g. empty list), we should materialize.
   // But if ALL failed, then FAILED.
   const hasSuccess = successfulOutputs.length > 0;
   const allFailed = actionOutputs.length > 0 && successfulOutputs.length === 0;
-  
+
   let finalStatus: "MATERIALIZED" | "FAILED" = "MATERIALIZED";
-  
+
   if (allFailed) {
-      finalStatus = "FAILED";
-  } else if (recordCount === 0 && !hasSuccess && !previousRecords) {
-      // No data, no success, no previous -> likely nothing happened? 
-      // But if actionOutputs was empty, maybe we shouldn't fail if we just wanted to clear?
-      // For now, assume if we called this, we expect something.
-      // But if the tool has NO read actions, maybe it's just a form?
-      // If spec has no read actions, maybe MATERIALIZED is correct with 0 records.
-      // Let's assume MATERIALIZED unless explicit failure.
-      finalStatus = "MATERIALIZED";
+    finalStatus = "FAILED";
+  } else if (recordCount === 0 && !hasSuccess) {
+    // Only fail if no actions succeeded at all.
+    // If execution succeeded but returned 0 records (e.g. no commits in date range),
+    // materialize normally and let the UI show "no results" gracefully.
+    finalStatus = "FAILED";
   }
 
   // 3. Write to tool_results (Atomic Insert)
@@ -146,10 +143,10 @@ export async function finalizeToolEnvironment(
 
   // 4. PREPARE ENVIRONMENT (Do NOT update projects here - delegated to barrier)
   const environment = {
-      schema: spec.entities ?? {},
-      records: records,
-      recordCount: recordCount,
-      metadata: { materialized_at: new Date().toISOString() }
+    schema: spec.entities ?? {},
+    records: records,
+    recordCount: recordCount,
+    metadata: { materialized_at: new Date().toISOString() }
   };
 
   return {
@@ -161,21 +158,21 @@ export async function finalizeToolEnvironment(
 }
 
 export async function getLatestToolResult(toolId: string, orgId: string): Promise<ToolResultRow | null> {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-        .from("tool_results")
-        .select("*")
-        .eq("tool_id", toolId)
-        .eq("org_id", orgId)
-        .order("materialized_at", { ascending: false })
-        .limit(1)
-        .single();
-    
-    if (error && error.code !== "PGRST116") {
-        throw error;
-    }
-    
-    return data as ToolResultRow | null;
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("tool_results")
+    .select("*")
+    .eq("tool_id", toolId)
+    .eq("org_id", orgId)
+    .order("materialized_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    throw error;
+  }
+
+  return data as ToolResultRow | null;
 }
 
 export function buildSnapshotRecords(params: {

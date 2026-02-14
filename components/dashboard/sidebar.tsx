@@ -91,31 +91,8 @@ export function Sidebar({
     }
   }, [pathname, loadProjects]);
 
-  const handleNewChat = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "New chat" }),
-      });
-      if (!res.ok) {
-        throw new Error("Failed to create chat");
-      }
-      const json = await res.json();
-      if (json.id) {
-        router.push(`/dashboard/projects/${json.id}`);
-        // We push the new project to state immediately to avoid lag
-        setProjects(prev => [{
-          id: json.id,
-          name: "New chat",
-          updatedAt: new Date().toISOString(),
-          isValidSpec: true,
-          specError: null
-        }, ...prev]);
-      }
-    } catch {
-      setProjectsError("Failed to create chat");
-    }
+  const handleNewChat = React.useCallback(() => {
+    router.push('/app/chat');
   }, [router]);
 
   const startRename = (project: { id: string; name: string }) => {

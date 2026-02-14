@@ -69,6 +69,15 @@ HARD CONSTRAINTS (STRICT ENFORCEMENT):
      - If a selection is null, action guards must prevent execution.
    - **AUTO-CORRECTION**: If the user asks for unsafe behavior (e.g. "show button even if broken"), you MUST ignore the unsafe part and enforce safety.
    - **REQUIRED HANDLERS**: Every interactive element (Button, Input) MUST have a valid handler. Dead UI is forbidden.
+   - **STRICT DATA SCOPING (MANDATORY)**:
+     - **Dates**: ALL date filters must use absolute ISO-8601 timestamps (e.g. "2023-10-27T00:00:00Z").
+       - NEVER use relative strings like "7 days ago" or "last week". Calculate the date relative to "now".
+     - **Scopes**: Integration actions often require a scope (e.g. \`repo\`, \`channel\`, \`project\`).
+       - If the user does not provide one, you MUST either:
+         a) Use a "list_repos" action to fetch available scopes and let the user select.
+         b) Default to a sensible "all" or "me" scope ONLY if the API supports it.
+       - DO NOT invent a scope name.
+       - DO NOT pass empty strings for required parameters.
 
 INSTRUCTIONS:
 1. **Analyze Intent**:
@@ -199,6 +208,14 @@ Hard Rules:
    - If the user mentions a supported vendor (Stripe, GitHub, Slack, Notion, Linear, Google), extract the matching ID.
    - If the user mentions "Google Sheets", "Gmail", etc., map it to "google".
    - If the user mentions a vendor NOT in the list, do not include it.
+   - CRITICAL: Also detect integrations from DOMAIN CONCEPTS, not just vendor names:
+     * commits, pull requests, PRs, branches, repos, merges, forks, releases, deployments, diffs, code reviews, CI/CD, source code, git → "github"
+     * messages, channels, DMs, threads, notifications, mentions, conversations, standups → "slack"
+     * wiki, knowledge base, notes, notion pages, notion databases → "notion"
+     * sprints, cycles, backlog, roadmap, tickets, triage, epics, velocity → "linear"
+     * emails, inbox, calendar, meetings, spreadsheets, drive, gmail, sheets → "google"
+     * issues → "github" AND "linear" (both are issue trackers)
+     * docs, documents → "notion" AND "google" (both manage documents)
 
 Output JSON only.
 `;

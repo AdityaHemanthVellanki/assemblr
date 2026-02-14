@@ -2,6 +2,7 @@
 
 import { createHash } from "crypto";
 import { ActionSpec, EntitySpec, IntegrationId, IntegrationIdSchema, TOOL_SPEC_VERSION, ToolSystemSpec, ToolSystemSpecSchema, ViewSpec } from "@/lib/toolos/spec";
+import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { capabilityRegistry } from "@/lib/capabilities/synthesis/registry";
 import { Capability } from "@/lib/capabilities/types";
@@ -559,14 +560,7 @@ function ensureMinimumSpec(
 }
 
 function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
-  const normalized = text.toLowerCase();
-  const hits = new Set<ToolSystemSpec["integrations"][number]["id"]>();
-  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("email") || normalized.includes("inbox")) hits.add("google");
-  if (normalized.includes("github") || normalized.includes("repo") || normalized.includes("pr") || normalized.includes("pull request")) hits.add("github");
-  if (normalized.includes("slack") || normalized.includes("message") || normalized.includes("channel")) hits.add("slack");
-  if (normalized.includes("notion") || normalized.includes("page") || normalized.includes("doc")) hits.add("notion");
-  if (normalized.includes("linear") || normalized.includes("issue") || normalized.includes("ticket")) hits.add("linear");
-  return Array.from(hits);
+  return detectIntegrationsFromText(text);
 }
 
 function buildFallbackAction(integration: IntegrationId): ActionSpec {

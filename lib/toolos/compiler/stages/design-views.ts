@@ -2,6 +2,7 @@ import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { getServerEnv } from "@/lib/env";
 import { ViewSpec } from "@/lib/toolos/spec";
 import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/compiler/tool-compiler";
+import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 
 export async function runDesignViews(
   ctx: ToolCompilerStageContext,
@@ -54,23 +55,13 @@ Only include views that directly answer the user prompt. Do not include unrelate
 }
 
 function filterRelevantViews(ctx: ToolCompilerStageContext, views: ViewSpec[]): ViewSpec[] {
-  const prompt = ctx.prompt.toLowerCase();
-  const wantsEmail = prompt.includes("mail") || prompt.includes("email") || prompt.includes("inbox") || prompt.includes("gmail");
-  const wantsGithub = prompt.includes("github");
-  const wantsLinear = prompt.includes("linear");
-  const wantsNotion = prompt.includes("notion");
-  const wantsSlack = prompt.includes("slack");
+  const detected = new Set(detectIntegrationsFromText(ctx.prompt));
   const entityIntegration = new Map(ctx.spec.entities.map((entity) => [entity.name, entity.sourceIntegration]));
   const matchesIntegration = (view: ViewSpec) => {
     const integration = entityIntegration.get(view.source.entity);
     if (!integration) return false;
-    if (wantsEmail && integration === "google") return true;
-    if (wantsGithub && integration === "github") return true;
-    if (wantsLinear && integration === "linear") return true;
-    if (wantsNotion && integration === "notion") return true;
-    if (wantsSlack && integration === "slack") return true;
-    if (!wantsEmail && !wantsGithub && !wantsLinear && !wantsNotion && !wantsSlack) return true;
-    return false;
+    if (detected.size === 0) return true; // no specific detection → keep all
+    return detected.has(integration as any);
   };
   return views.filter((view) => matchesIntegration(view));
 }

@@ -5,7 +5,7 @@ import { getServerEnv } from "@/lib/env";
 import { getAzureOpenAIClient } from "@/lib/ai/azureOpenAI";
 import { ToolSystemSpecSchema, ToolSystemSpec, IntegrationId, IntegrationIdSchema, StateReducer, isToolSystemSpec, AnswerContractSchema, GoalPlanSchema, IntentContractSchema, SemanticPlanSchema, TOOL_SPEC_VERSION, createEmptyToolSpec, type AnswerContract, type GoalPlan, type IntegrationQueryPlan, type ToolGraph, type ViewSpecPayload, type IntentContract, type SemanticPlan, type IntegrationStatus, coerceViewSpecPayload } from "@/lib/toolos/spec";
 import { normalizeToolSpec } from "@/lib/spec/toolSpec";
-import { getCapabilitiesForIntegration, getCapability } from "@/lib/capabilities/registry";
+import { getCapabilitiesForIntegration, getCapability, getAllCapabilities } from "@/lib/capabilities/registry";
 import { buildCompiledToolArtifact, validateToolSystem, CompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolCompiler } from "@/lib/toolos/compiler/tool-compiler";
 import { saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
@@ -26,6 +26,7 @@ import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedInci
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution } from "@/lib/toolos/executions";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
+import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
 import { getRuntimeValidationResult } from "@/lib/core/guard";
 
@@ -192,6 +193,13 @@ export async function generateChatTitle(params: {
       temperature: 0.2,
       max_tokens: 24,
     });
+
+    // DEBUG: Log prompt and response
+    try {
+      const fs = require('fs');
+      fs.appendFileSync('llm-debug.log', `\n--- CHAT TITLE GENERATION ---\nPROMPT:\n${userContent}\nRESPONSE:\n${JSON.stringify(response.choices[0])}\n`);
+    } catch (e) { }
+
     raw = response.choices[0]?.message?.content ?? "";
   } catch {
     return null;
@@ -261,7 +269,11 @@ async function createToolBuilderSystemPrompt(input: {
   capabilities: any[];
   context: any;
 }) {
-  return INTENT_SYSTEM_PROMPT;
+  const capsList = input.capabilities
+    .map(c => `- ${c.id} (fields: ${c.supportedFields?.join(", ")})`)
+    .join("\n");
+
+  return INTENT_SYSTEM_PROMPT.replace("{{CAPABILITIES}}", capsList || "No capabilities available.");
 }
 
 export async function runToolRuntimePipeline(input: ToolChatRequest) {
@@ -513,7 +525,7 @@ export async function runCompilerPipeline(
     // Valid statuses: DRAFT, BUILDING, READY, FAILED
     // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
     // If status is READY but no active_version_id (handled above), we recompile.
-    if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
+    if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "CREATED" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
       // If we are here, status is READY (or similar) but active_version_id is missing (checked above).
       // So we should actually ALLOW compilation to fix the broken state.
       // But if status is READY and we HAVE active_version_id, we caught it above.
@@ -570,7 +582,7 @@ export async function runCompilerPipeline(
       toolId: effectiveToolIdValue,
       currentSpec: input.currentSpec || null,
       history: input.messages,
-      capabilities: [], // Will be filled by discovery
+      capabilities: getAllCapabilities().filter(c => input.connectedIntegrationIds.includes(c.integrationId)),
       context: {
         connectedIntegrations: [],
         availableCapabilities: [],
@@ -1466,10 +1478,11 @@ export async function runCompilerPipeline(
       // Even if no actions or all failed, we must finalize to ACTIVE or FAILED.
       // This persists the unified environment object and sets status=ACTIVE.
       if (spec) {
-        console.log("[ToolRuntime] Runtime completed");
+        console.log("[Materialization] Runtime completed");
         let matResult;
         try {
           markStep(steps, "runtime", "running", "Finalizing environment...");
+          console.log("[Materialization] Writing result to DB");
           matResult = await finalizeToolEnvironment(
             toolId,
             buildContext.orgId,
@@ -1478,14 +1491,15 @@ export async function runCompilerPipeline(
             null
           );
         } catch (err: any) {
-          console.error(`[ToolRuntime] Fatal Finalization Error (Materialization):`, err);
+          console.error(`[Materialization] Fatal Finalization Error:`, err);
           throw new Error(`Fatal Finalization Error: ${err.message}`);
         }
 
+        console.log("[Materialization] Rows inserted:", matResult.recordCount, "resultId:", matResult.resultId);
         const success = matResult.status === "MATERIALIZED";
         if (success) {
           markStep(steps, "runtime", "success", "Environment READY");
-          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: READY`);
+          console.log(`[Materialization] Tool marked as materialized. toolId=${toolId}`);
         } else {
           markStep(steps, "runtime", "error", "Environment Finalization Failed");
           console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
@@ -1984,6 +1998,25 @@ export async function resumeToolExecution(params: {
     throw new Error(`Finalize transaction failed: ${finalizeError.message}`);
   }
 
+  // Materialize results to tool_results table (CRITICAL: this is what /result queries)
+  try {
+    console.log("[Materialization] Runtime completed");
+    console.log("[Materialization] Writing result to DB");
+    const matResult = await finalizeToolEnvironment(
+      params.toolId,
+      params.orgId,
+      params.spec,
+      outputs,
+      null
+    );
+    console.log("[Materialization] Rows inserted:", matResult.recordCount, "resultId:", matResult.resultId);
+    console.log(`[Materialization] Tool marked as materialized. toolId=${params.toolId}`);
+  } catch (matErr: any) {
+    console.error("[Materialization] Failed to write tool_results:", matErr?.message);
+    // Non-fatal: tool_render_state and projects are already updated
+    // But log loudly so we can track
+  }
+
   await updateExecution(params.executionId, { status: "completed" });
   await completeExecution(params.executionId);
   const assistantSummary = buildAssistantSummary(params.spec);
@@ -2034,6 +2067,13 @@ async function generateIntent(
     max_tokens: 800,
     response_format: { type: "json_object" },
   });
+
+  // DEBUG: Log prompt and response
+  try {
+    const fs = require('fs');
+    fs.appendFileSync('llm-debug.log', `\n--- TOOL SPEC GENERATION ---\nPROMPT:\n${enforcedPrompt}\nRESPONSE:\n${JSON.stringify(response.choices[0])}\n`);
+  } catch (e) { }
+
   await onUsage?.(response.usage);
 
   const content = response.choices[0]?.message?.content;
@@ -2090,14 +2130,7 @@ function parseIntent(
 export const SUPPORTED_INTEGRATIONS = ["google", "github", "slack", "notion", "linear"] as const;
 
 export function detectIntegrations(text: string): Array<ToolSystemSpec["integrations"][number]["id"]> {
-  const normalized = text.toLowerCase();
-  const hits = new Set<ToolSystemSpec["integrations"][number]["id"]>();
-  if (normalized.includes("google") || normalized.includes("gmail") || normalized.includes("drive") || normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox") || normalized.includes("calendar")) hits.add("google");
-  if (normalized.includes("github")) hits.add("github");
-  if (normalized.includes("slack")) hits.add("slack");
-  if (normalized.includes("notion")) hits.add("notion");
-  if (normalized.includes("linear")) hits.add("linear");
-  return Array.from(hits);
+  return detectIntegrationsFromText(text);
 }
 
 export function resolveIntegrationRequirements(params: {
@@ -3506,24 +3539,14 @@ function applySchemaToViews(spec: ToolSystemSpec) {
 }
 
 function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSystemSpec {
-  const normalized = prompt.toLowerCase();
-  const wantsEmail = normalized.includes("mail") || normalized.includes("email") || normalized.includes("inbox") || normalized.includes("gmail");
-  const wantsGithub = normalized.includes("github");
-  const wantsLinear = normalized.includes("linear");
-  const wantsNotion = normalized.includes("notion");
-  const wantsSlack = normalized.includes("slack");
+  const detected = new Set(detectIntegrationsFromText(prompt));
   const entityIntegration = new Map(spec.entities.map((entity) => [entity.name, entity.sourceIntegration]));
   const entityFields = new Map(spec.entities.map((entity) => [entity.name, entity.fields.map((field) => field.name)]));
   const matchesIntegration = (view: ToolSystemSpec["views"][number]) => {
     const integration = entityIntegration.get(view.source.entity);
     if (!integration) return false;
-    if (wantsEmail && integration === "google") return true;
-    if (wantsGithub && integration === "github") return true;
-    if (wantsLinear && integration === "linear") return true;
-    if (wantsNotion && integration === "notion") return true;
-    if (wantsSlack && integration === "slack") return true;
-    if (!wantsEmail && !wantsGithub && !wantsLinear && !wantsNotion && !wantsSlack) return true;
-    return false;
+    if (detected.size === 0) return true; // no specific detection → keep all
+    return detected.has(integration as any);
   };
   const filtered = spec.views.filter((view) => matchesIntegration(view));
   // FIX: Fall back to all views instead of throwing — throwing kills the entire pipeline
@@ -3535,7 +3558,7 @@ function enforceViewSpecForPrompt(spec: ToolSystemSpec, prompt: string): ToolSys
   }
   const normalizedViews = viewsToUse.map((view) => {
     const availableFields = entityFields.get(view.source.entity) ?? view.fields;
-    if (wantsEmail) {
+    if (detected.has("google") && !detected.has("github") && !detected.has("slack") && !detected.has("notion") && !detected.has("linear")) {
       return { ...view, fields: ["from", "subject", "snippet", "date"] };
     }
     if (!Array.isArray(view.fields) || view.fields.length === 0) {

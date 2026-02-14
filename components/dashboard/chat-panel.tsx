@@ -44,6 +44,7 @@ interface ChatPanelProps {
   initialPrompt?: string | null;
   initialRequiredIntegrations?: string[] | null;
   onSpecUpdate: (spec: ToolSpec) => void;
+  onStatusUpdate?: (status: string) => void;
   onToolIdChange: (id: string) => void;
   readOnly?: boolean;
 }
@@ -54,6 +55,7 @@ export function ChatPanel({
   initialPrompt,
   initialRequiredIntegrations,
   onSpecUpdate,
+  onStatusUpdate,
   onToolIdChange,
   readOnly
 }: ChatPanelProps) {
@@ -167,12 +169,21 @@ export function ChatPanel({
         }
       }
 
+      // Use "create" mode when this is the first message (tool was just created),
+      // so the compiler pipeline generates the spec and executes actions.
+      // Use "chat" mode for subsequent messages on an existing tool.
+      const chatMode = !toolId ? "create" : "chat";
       const data = await safeFetch<any>(url, {
         method: "POST",
-        body: JSON.stringify({ message: content })
+        body: JSON.stringify({ message: content, mode: chatMode })
       });
 
-      if (data.spec) onSpecUpdate(data.spec);
+      if (data.spec) {
+        onSpecUpdate(data.spec);
+        // Signal that tool is now materialized — this unblocks ToolRenderer
+        console.log("[ChatPanel] Spec received, setting status to MATERIALIZED");
+        onStatusUpdate?.("MATERIALIZED");
+      }
 
       const msgData = data.message || {};
       const assistantMsg: Message = {

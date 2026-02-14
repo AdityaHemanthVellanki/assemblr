@@ -53,7 +53,7 @@ export function ProjectWorkspace({
   // Core Identity State
   const [toolId, setToolId] = React.useState<string | undefined>(project?.id);
   const [currentSpec, setCurrentSpec] = React.useState<ToolSpec | null>(project?.spec || null);
-  const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "DRAFT");
+  const [projectStatus, setProjectStatus] = React.useState<string>(project?.status || "IDLE");
 
   // UI State
   const [isShareOpen, setIsShareOpen] = React.useState(false);
@@ -86,6 +86,7 @@ export function ProjectWorkspace({
             initialPrompt={initialPrompt}
             initialRequiredIntegrations={initialRequiredIntegrations}
             onSpecUpdate={handleSpecUpdate}
+            onStatusUpdate={handleStatusUpdate}
             onToolIdChange={setToolId}
             readOnly={readOnly}
           />
