@@ -1,35 +1,29 @@
 /**
  * Lifecycle State Machine
- * 
+ *
  * Central authority for tool lifecycle transitions.
- * 
- * LEGACY MAPPING DUE TO DB CONSTRAINT:
- * 
- * Logical State       | DB State (projects.status)
- * ------------------- | --------------------------
- * CREATED             | DRAFT
- * PLANNED             | DRAFT
- * READY_TO_EXECUTE    | BUILDING  <-- Gate: if in BUILDING but no active_version -> invalid?
- * EXECUTING           | BUILDING
- * MATERIALIZED        | READY     <-- Means "Ready for user" / "Done"
- * FAILED              | FAILED
- * 
- * DB Constraint: status in ('DRAFT', 'BUILDING', 'READY', 'FAILED', 'CORRUPTED')
+ *
+ * DB Constraint (from 20260210_lifecycle_states migration):
+ * status IN ('CREATED', 'PLANNED', 'READY_TO_EXECUTE', 'EXECUTING', 'MATERIALIZED', 'FAILED')
  */
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export type ToolLifecycleState =
-    | "DRAFT"    // Covers: CREATED, PLANNED
-    | "BUILDING" // Covers: READY_TO_EXECUTE, EXECUTING
-    | "READY"    // Covers: MATERIALIZED
-    | "FAILED";  // Covers: FAILED
+    | "CREATED"
+    | "PLANNED"
+    | "READY_TO_EXECUTE"
+    | "EXECUTING"
+    | "MATERIALIZED"
+    | "FAILED";
 
 const LEGAL_TRANSITIONS: Record<ToolLifecycleState, ToolLifecycleState[]> = {
-    DRAFT: ["BUILDING", "FAILED"],
-    BUILDING: ["READY", "FAILED"],
-    READY: ["FAILED"], // Can go to FAILED if post-materialization checks fail? Or strictly terminal?
-    FAILED: [],
+    CREATED: ["PLANNED", "EXECUTING", "MATERIALIZED", "FAILED"],
+    PLANNED: ["READY_TO_EXECUTE", "EXECUTING", "FAILED"],
+    READY_TO_EXECUTE: ["EXECUTING", "FAILED"],
+    EXECUTING: ["MATERIALIZED", "FAILED"],
+    MATERIALIZED: ["EXECUTING", "FAILED"], // Re-execution allowed
+    FAILED: ["CREATED", "EXECUTING"], // Retry allowed
 };
 
 /**
@@ -52,15 +46,14 @@ export function assertLegalTransition(
  * Check if a state is terminal (no further transitions possible).
  */
 export function isTerminalState(state: ToolLifecycleState): boolean {
-    return state === "FAILED" || state === "READY";
+    return state === "FAILED" || state === "MATERIALIZED";
 }
 
 /**
  * Check if a state allows execution.
- * In legacy mode: BUILDING is the execution state.
  */
 export function isExecutableState(state: ToolLifecycleState): boolean {
-    return state === "BUILDING";
+    return state === "READY_TO_EXECUTE" || state === "EXECUTING" || state === "MATERIALIZED";
 }
 
 /**
@@ -99,7 +92,7 @@ export async function transitionToolState(params: {
         updatePayload.error_message = params.errorMessage;
     }
 
-    if (params.to === "READY") {
+    if (params.to === "MATERIALIZED") {
         updatePayload.lifecycle_done = true;
         updatePayload.finalized_at = new Date().toISOString();
     }

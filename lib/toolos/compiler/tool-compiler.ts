@@ -507,8 +507,9 @@ function ensureMinimumSpec(
   if (actions.length === 0) {
     // Always use curated fallback actions — never dump all synthesized
     // Composio capabilities, which would create hundreds of invalid actions.
+    // Pass prompt to filter to only relevant actions for the user's request.
     actions = integrationIds.flatMap((integration) =>
-      buildFallbackActionsForIntegration(integration),
+      buildFallbackActionsForIntegration(integration, prompt),
     );
   }
 
@@ -531,7 +532,7 @@ function ensureMinimumSpec(
 
   let entities = spec.entities;
   if (entities.length === 0) {
-    entities = integrationIds.flatMap((integration) => buildFallbackEntitiesForIntegration(integration));
+    entities = integrationIds.flatMap((integration) => buildFallbackEntitiesForIntegration(integration, prompt));
   }
 
   let views = spec.views;
@@ -638,9 +639,9 @@ function buildFallbackAction(integration: IntegrationId): ActionSpec {
   };
 }
 
-function buildFallbackActionsForIntegration(integration: IntegrationId): ActionSpec[] {
+function buildFallbackActionsForIntegration(integration: IntegrationId, prompt?: string): ActionSpec[] {
   if (integration === "github") {
-    return [
+    const allActions: ActionSpec[] = [
       {
         id: "github.listRepos",
         name: "List repositories",
@@ -678,6 +679,31 @@ function buildFallbackActionsForIntegration(integration: IntegrationId): ActionS
         confidenceLevel: "medium",
       },
     ];
+
+    // If we have a prompt, filter to only relevant actions
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\bcommits?\b|\bcommitted\b|\bpush(es|ed)?\b|\bchanges?\b/.test(p)) {
+        filtered.push(allActions[2]); // commits
+      }
+      if (/\bissues?\b|\bbugs?\b|\btickets?\b/.test(p)) {
+        filtered.push(allActions[1]); // issues
+      }
+      if (/\brepos?\b|\brepositories?\b|\bprojects?\b/.test(p)) {
+        filtered.push(allActions[0]); // repos
+      }
+      if (/\bpull\s*requests?\b|\bPRs?\b|\bmerge\b/.test(p)) {
+        filtered.push(allActions[1]); // PRs use issues search
+      }
+      if (filtered.length > 0) {
+        // Only return the actions matching the prompt — don't add extra actions
+        // that would overwrite the primary data in the snapshot
+        return filtered;
+      }
+    }
+
+    return allActions;
   }
   if (integration === "slack") {
     return [
@@ -696,44 +722,44 @@ function buildFallbackActionsForIntegration(integration: IntegrationId): ActionS
     ];
   }
   if (integration === "google") {
-    return [
+    // Primary action: search spreadsheets (zero params, works as discovery)
+    // Note: Assemblr "google" maps to Composio "googlesheets" app — only Sheets actions available
+    const allActions: ActionSpec[] = [
       {
-        id: "google.listEmails",
-        name: "List emails",
-        description: "List recent Gmail emails",
-        type: "READ",
-        integrationId: "google",
-        capabilityId: "google_gmail_list",
-        inputSchema: buildDefaultInputForCapability("google_gmail_list"),
-        outputSchema: {},
-        writesToState: false,
-        confidenceLevel: "medium",
-      },
-      {
-        id: "google.listDriveFiles",
-        name: "List Google Drive Files",
-        description: "List files from Google Drive",
+        id: "google.searchSpreadsheets",
+        name: "Search spreadsheets",
+        description: "Search Google Sheets spreadsheets",
         type: "READ",
         integrationId: "google",
         capabilityId: "google_drive_list",
-        inputSchema: buildDefaultInputForCapability("google_drive_list"),
+        inputSchema: {},
         outputSchema: {},
         writesToState: false,
-        confidenceLevel: "medium",
+        confidenceLevel: "high",
       },
       {
-        id: "google.listCalendarEvents",
-        name: "List Calendar Events",
-        description: "List upcoming calendar events",
+        id: "google.getSpreadsheetData",
+        name: "Get spreadsheet data",
+        description: "Get data from a Google Sheets spreadsheet",
         type: "READ",
         integrationId: "google",
-        capabilityId: "google_calendar_list",
-        inputSchema: buildDefaultInputForCapability("google_calendar_list"),
+        capabilityId: "google_sheets_get",
+        inputSchema: buildDefaultInputForCapability("google_sheets_get"),
         outputSchema: {},
         writesToState: false,
         confidenceLevel: "medium",
       },
     ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      if (/\bdata\b|\brows?\b|\bcells?\b|\bvalues?\b/.test(p)) {
+        return [allActions[1]]; // get spreadsheet data
+      }
+    }
+
+    // Default: search spreadsheets (zero params)
+    return [allActions[0]];
   }
   if (integration === "linear") {
     return [
@@ -751,15 +777,691 @@ function buildFallbackActionsForIntegration(integration: IntegrationId): ActionS
       },
     ];
   }
+  if (integration === "notion") {
+    return [
+      {
+        id: "notion.listPages",
+        name: "List pages",
+        description: "List Notion pages",
+        type: "READ",
+        integrationId: "notion",
+        capabilityId: "notion_pages_search",
+        inputSchema: buildDefaultInputForCapability("notion_pages_search"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "trello") {
+    return [
+      {
+        id: "trello.listBoards",
+        name: "List boards",
+        description: "List Trello boards for the authenticated user",
+        type: "READ",
+        integrationId: "trello",
+        capabilityId: "trello_boards_list",
+        inputSchema: { idMember: "me" },
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+      {
+        id: "trello.listCards",
+        name: "List cards",
+        description: "List Trello cards from a board",
+        type: "READ",
+        integrationId: "trello",
+        capabilityId: "trello_cards_list",
+        inputSchema: buildDefaultInputForCapability("trello_cards_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "airtable") {
+    return [
+      {
+        id: "airtable.listRecords",
+        name: "List records",
+        description: "List Airtable records",
+        type: "READ",
+        integrationId: "airtable",
+        capabilityId: "airtable_records_list",
+        inputSchema: buildDefaultInputForCapability("airtable_records_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "intercom") {
+    const lower = (prompt ?? "").toLowerCase();
+    const wantsCompanies = /compan(y|ies)/i.test(lower);
+    const wantsContacts = /contacts?/i.test(lower);
+    const actions: any[] = [];
+
+    if (!wantsCompanies && !wantsContacts) {
+      // Default: conversations
+      actions.push({
+        id: "intercom.listConversations",
+        name: "List conversations",
+        description: "List Intercom conversations",
+        type: "READ",
+        integrationId: "intercom",
+        capabilityId: "intercom_conversations_list",
+        inputSchema: buildDefaultInputForCapability("intercom_conversations_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      });
+    }
+    if (wantsCompanies) {
+      actions.push({
+        id: "intercom.listCompanies",
+        name: "List companies",
+        description: "List Intercom companies",
+        type: "READ",
+        integrationId: "intercom",
+        capabilityId: "intercom_companies_list",
+        inputSchema: buildDefaultInputForCapability("intercom_companies_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      });
+    }
+    if (wantsContacts) {
+      actions.push({
+        id: "intercom.listContacts",
+        name: "List contacts",
+        description: "List Intercom contacts",
+        type: "READ",
+        integrationId: "intercom",
+        capabilityId: "intercom_contacts_list",
+        inputSchema: buildDefaultInputForCapability("intercom_contacts_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      });
+    }
+    if (actions.length === 0) {
+      actions.push({
+        id: "intercom.listConversations",
+        name: "List conversations",
+        description: "List Intercom conversations",
+        type: "READ",
+        integrationId: "intercom",
+        capabilityId: "intercom_conversations_list",
+        inputSchema: buildDefaultInputForCapability("intercom_conversations_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      });
+    }
+    return actions;
+  }
+  if (integration === "zoom") {
+    return [
+      {
+        id: "zoom.listMeetings",
+        name: "List meetings",
+        description: "List Zoom meetings",
+        type: "READ",
+        integrationId: "zoom",
+        capabilityId: "zoom_meetings_list",
+        inputSchema: { userId: "me" },
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+    ];
+  }
+  if (integration === "gitlab") {
+    const allActions: ActionSpec[] = [
+      {
+        id: "gitlab.listProjects",
+        name: "List projects",
+        description: "List GitLab projects",
+        type: "READ",
+        integrationId: "gitlab",
+        capabilityId: "gitlab_projects_list",
+        inputSchema: buildDefaultInputForCapability("gitlab_projects_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "gitlab.listMergeRequests",
+        name: "List merge requests",
+        description: "List GitLab merge requests",
+        type: "READ",
+        integrationId: "gitlab",
+        capabilityId: "gitlab_merge_requests_list",
+        inputSchema: buildDefaultInputForCapability("gitlab_merge_requests_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "gitlab.listCommits",
+        name: "List commits",
+        description: "List GitLab commits",
+        type: "READ",
+        integrationId: "gitlab",
+        capabilityId: "gitlab_commits_list",
+        inputSchema: buildDefaultInputForCapability("gitlab_commits_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\bcommits?\b|\bcommitted\b|\bpush(es|ed)?\b/.test(p)) {
+        filtered.push(allActions[2]); // commits
+      }
+      if (/\bmerge\s*requests?\b|\bMRs?\b/.test(p)) {
+        filtered.push(allActions[1]); // merge requests
+      }
+      if (/\bprojects?\b|\brepos?\b/.test(p)) {
+        filtered.push(allActions[0]); // projects
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allActions;
+  }
+  if (integration === "bitbucket") {
+    // Discovery action first — zero params, returns all workspaces
+    const allActions: ActionSpec[] = [
+      {
+        id: "bitbucket.listWorkspaces",
+        name: "List workspaces",
+        description: "List Bitbucket workspaces for the authenticated user",
+        type: "READ",
+        integrationId: "bitbucket",
+        capabilityId: "bitbucket_workspaces_list",
+        inputSchema: {},
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+      {
+        id: "bitbucket.listRepos",
+        name: "List repositories",
+        description: "List Bitbucket repositories in a workspace",
+        type: "READ",
+        integrationId: "bitbucket",
+        capabilityId: "bitbucket_repos_list",
+        inputSchema: buildDefaultInputForCapability("bitbucket_repos_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "bitbucket.listPullRequests",
+        name: "List pull requests",
+        description: "List Bitbucket pull requests",
+        type: "READ",
+        integrationId: "bitbucket",
+        capabilityId: "bitbucket_pull_requests_list",
+        inputSchema: buildDefaultInputForCapability("bitbucket_pull_requests_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\brepos?\b|\brepositories?\b/.test(p)) {
+        filtered.push(allActions[1]); // repos
+      }
+      if (/\bpull\s*requests?\b|\bPRs?\b/.test(p)) {
+        filtered.push(allActions[2]); // pull requests
+      }
+      if (/\bworkspaces?\b/.test(p)) {
+        filtered.push(allActions[0]); // workspaces
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    // Default: return discovery action (workspaces) so it works with zero params
+    return [allActions[0]];
+  }
+  if (integration === "asana") {
+    // Discovery action first — zero params, returns all workspaces
+    const allActions: ActionSpec[] = [
+      {
+        id: "asana.listWorkspaces",
+        name: "List workspaces",
+        description: "List Asana workspaces for the authenticated user",
+        type: "READ",
+        integrationId: "asana",
+        capabilityId: "asana_workspaces_list",
+        inputSchema: {},
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+      {
+        id: "asana.listTasks",
+        name: "List tasks",
+        description: "List Asana tasks from a project",
+        type: "READ",
+        integrationId: "asana",
+        capabilityId: "asana_tasks_list",
+        inputSchema: buildDefaultInputForCapability("asana_tasks_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "asana.listProjects",
+        name: "List projects",
+        description: "List Asana projects in a workspace",
+        type: "READ",
+        integrationId: "asana",
+        capabilityId: "asana_workspace_projects_list",
+        inputSchema: buildDefaultInputForCapability("asana_workspace_projects_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\btasks?\b/.test(p)) {
+        filtered.push(allActions[1]); // tasks
+      }
+      if (/\bprojects?\b/.test(p)) {
+        filtered.push(allActions[2]); // projects
+      }
+      if (/\bworkspaces?\b/.test(p)) {
+        filtered.push(allActions[0]); // workspaces
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    // Default: return discovery action (workspaces) so it works with zero params
+    return [allActions[0]];
+  }
+  if (integration === "microsoft_teams") {
+    // Discovery action first — zero params, returns all teams
+    const allActions: ActionSpec[] = [
+      {
+        id: "teams.listTeams",
+        name: "List teams",
+        description: "List Microsoft Teams for the organization",
+        type: "READ",
+        integrationId: "microsoft_teams",
+        capabilityId: "teams_list",
+        inputSchema: {},
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+      {
+        id: "teams.listChannels",
+        name: "List channels",
+        description: "List Microsoft Teams channels",
+        type: "READ",
+        integrationId: "microsoft_teams",
+        capabilityId: "teams_channels_list",
+        inputSchema: buildDefaultInputForCapability("teams_channels_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "teams.listMessages",
+        name: "List messages",
+        description: "List Microsoft Teams messages",
+        type: "READ",
+        integrationId: "microsoft_teams",
+        capabilityId: "teams_messages_list",
+        inputSchema: buildDefaultInputForCapability("teams_messages_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\bmessages?\b|\bchat\b/.test(p)) {
+        filtered.push(allActions[2]); // messages
+      }
+      if (/\bchannels?\b/.test(p)) {
+        filtered.push(allActions[1]); // channels
+      }
+      if (/\bteams?\b/.test(p)) {
+        filtered.push(allActions[0]); // joined teams
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    // Default: return discovery action (joined teams) so it works with zero params
+    return [allActions[0]];
+  }
+  if (integration === "outlook") {
+    return [
+      {
+        id: "outlook.listMessages",
+        name: "List messages",
+        description: "List Outlook email messages",
+        type: "READ",
+        integrationId: "outlook",
+        capabilityId: "outlook_messages_list",
+        inputSchema: buildDefaultInputForCapability("outlook_messages_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "outlook.listEvents",
+        name: "List events",
+        description: "List Outlook calendar events",
+        type: "READ",
+        integrationId: "outlook",
+        capabilityId: "outlook_events_list",
+        inputSchema: buildDefaultInputForCapability("outlook_events_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "stripe") {
+    const allActions: ActionSpec[] = [
+      {
+        id: "stripe.listCharges",
+        name: "List charges",
+        description: "List Stripe charges",
+        type: "READ",
+        integrationId: "stripe",
+        capabilityId: "stripe_charges_list",
+        inputSchema: buildDefaultInputForCapability("stripe_charges_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "stripe.listCustomers",
+        name: "List customers",
+        description: "List Stripe customers",
+        type: "READ",
+        integrationId: "stripe",
+        capabilityId: "stripe_customers_list",
+        inputSchema: buildDefaultInputForCapability("stripe_customers_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "stripe.listSubscriptions",
+        name: "List subscriptions",
+        description: "List Stripe subscriptions",
+        type: "READ",
+        integrationId: "stripe",
+        capabilityId: "stripe_subscriptions_list",
+        inputSchema: buildDefaultInputForCapability("stripe_subscriptions_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "stripe.listInvoices",
+        name: "List invoices",
+        description: "List Stripe invoices",
+        type: "READ",
+        integrationId: "stripe",
+        capabilityId: "stripe_invoices_list",
+        inputSchema: buildDefaultInputForCapability("stripe_invoices_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\bcharges?\b|\bpayments?\b/.test(p)) {
+        filtered.push(allActions[0]); // charges
+      }
+      if (/\bcustomers?\b/.test(p)) {
+        filtered.push(allActions[1]); // customers
+      }
+      if (/\bsubscriptions?\b/.test(p)) {
+        filtered.push(allActions[2]); // subscriptions
+      }
+      if (/\binvoices?\b|\bbilling\b/.test(p)) {
+        filtered.push(allActions[3]); // invoices
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allActions;
+  }
+  if (integration === "hubspot") {
+    const allActions: ActionSpec[] = [
+      {
+        id: "hubspot.listContacts",
+        name: "List contacts",
+        description: "List HubSpot contacts",
+        type: "READ",
+        integrationId: "hubspot",
+        capabilityId: "hubspot_contacts_list",
+        inputSchema: buildDefaultInputForCapability("hubspot_contacts_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "hubspot.listDeals",
+        name: "List deals",
+        description: "List HubSpot deals",
+        type: "READ",
+        integrationId: "hubspot",
+        capabilityId: "hubspot_deals_list",
+        inputSchema: buildDefaultInputForCapability("hubspot_deals_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "hubspot.listCompanies",
+        name: "List companies",
+        description: "List HubSpot companies",
+        type: "READ",
+        integrationId: "hubspot",
+        capabilityId: "hubspot_companies_list",
+        inputSchema: buildDefaultInputForCapability("hubspot_companies_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\bcontacts?\b/.test(p)) {
+        filtered.push(allActions[0]); // contacts
+      }
+      if (/\bdeals?\b|\bpipeline\b|\bsales\b/.test(p)) {
+        filtered.push(allActions[1]); // deals
+      }
+      if (/\bcompan(y|ies)\b|\baccounts?\b/.test(p)) {
+        filtered.push(allActions[2]); // companies
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allActions;
+  }
+  if (integration === "discord") {
+    return [
+      {
+        id: "discord.listGuilds",
+        name: "List guilds",
+        description: "List Discord guilds",
+        type: "READ",
+        integrationId: "discord",
+        capabilityId: "discord_guilds_list",
+        inputSchema: buildDefaultInputForCapability("discord_guilds_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "clickup") {
+    // Discovery action first — zero params, returns all teams/workspaces
+    const allActions: ActionSpec[] = [
+      {
+        id: "clickup.listTeams",
+        name: "List teams",
+        description: "List ClickUp teams/workspaces for the authenticated user",
+        type: "READ",
+        integrationId: "clickup",
+        capabilityId: "clickup_teams_list",
+        inputSchema: {},
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "high",
+      },
+      {
+        id: "clickup.listSpaces",
+        name: "List spaces",
+        description: "List ClickUp spaces in a team",
+        type: "READ",
+        integrationId: "clickup",
+        capabilityId: "clickup_spaces_list",
+        inputSchema: buildDefaultInputForCapability("clickup_spaces_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "clickup.listTasks",
+        name: "List tasks",
+        description: "List ClickUp tasks in a list",
+        type: "READ",
+        integrationId: "clickup",
+        capabilityId: "clickup_tasks_list",
+        inputSchema: buildDefaultInputForCapability("clickup_tasks_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: ActionSpec[] = [];
+      if (/\btasks?\b/.test(p)) {
+        filtered.push(allActions[2]); // tasks
+      }
+      if (/\bspaces?\b/.test(p)) {
+        filtered.push(allActions[1]); // spaces
+      }
+      if (/\bteams?\b|\bworkspaces?\b/.test(p)) {
+        filtered.push(allActions[0]); // teams
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    // Default: return discovery action (teams) so it works with zero params
+    return [allActions[0]];
+  }
+  if (integration === "quickbooks") {
+    return [
+      {
+        id: "quickbooks.queryAccounts",
+        name: "Query accounts",
+        description: "Query QuickBooks accounts",
+        type: "READ",
+        integrationId: "quickbooks",
+        capabilityId: "quickbooks_accounts_query",
+        inputSchema: buildDefaultInputForCapability("quickbooks_accounts_query"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "quickbooks.readCustomer",
+        name: "Read customer",
+        description: "Read QuickBooks customer data",
+        type: "READ",
+        integrationId: "quickbooks",
+        capabilityId: "quickbooks_customers_read",
+        inputSchema: buildDefaultInputForCapability("quickbooks_customers_read"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "quickbooks.balanceDetail",
+        name: "Customer balance detail",
+        description: "Get QuickBooks customer balance detail report",
+        type: "READ",
+        integrationId: "quickbooks",
+        capabilityId: "quickbooks_balance_detail",
+        inputSchema: buildDefaultInputForCapability("quickbooks_balance_detail"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "google_analytics") {
+    return [
+      {
+        id: "googleAnalytics.listAccounts",
+        name: "List accounts",
+        description: "List Google Analytics accounts",
+        type: "READ",
+        integrationId: "google_analytics",
+        capabilityId: "google_analytics_reports_run",
+        inputSchema: buildDefaultInputForCapability("google_analytics_reports_run"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+      {
+        id: "googleAnalytics.listAudiences",
+        name: "List audiences",
+        description: "List Google Analytics audiences",
+        type: "READ",
+        integrationId: "google_analytics",
+        capabilityId: "google_analytics_audiences_list",
+        inputSchema: buildDefaultInputForCapability("google_analytics_audiences_list"),
+        outputSchema: {},
+        writesToState: false,
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  // Default fallback for any unhandled integration
   return [
     {
-      id: "notion.listPages",
-      name: "List pages",
-      description: "List Notion pages",
+      id: `${integration}.list`,
+      name: "List data",
+      description: `List ${integration} data`,
       type: "READ",
-      integrationId: "notion",
-      capabilityId: "notion_pages_search",
-      inputSchema: buildDefaultInputForCapability("notion_pages_search"),
+      integrationId: integration,
+      capabilityId: `${integration}_list`,
+      inputSchema: {},
       outputSchema: {},
       writesToState: false,
       confidenceLevel: "medium",
@@ -842,9 +1544,9 @@ function buildFallbackEntity(integration: IntegrationId): EntitySpec {
   };
 }
 
-function buildFallbackEntitiesForIntegration(integration: IntegrationId): EntitySpec[] {
+function buildFallbackEntitiesForIntegration(integration: IntegrationId, prompt?: string): EntitySpec[] {
   if (integration === "github") {
-    return [
+    const allEntities: EntitySpec[] = [
       {
         name: "Issue",
         sourceIntegration: "github",
@@ -895,7 +1597,42 @@ function buildFallbackEntitiesForIntegration(integration: IntegrationId): Entity
         ],
         confidenceLevel: "medium",
       },
+      {
+        name: "Commit",
+        sourceIntegration: "github",
+        relations: [],
+        identifiers: ["sha"],
+        supportedActions: ["github.commits.list"],
+        fields: [
+          { name: "sha", type: "string", required: true },
+          { name: "message", type: "string" },
+          { name: "author", type: "string" },
+          { name: "date", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
     ];
+
+    // If we have a prompt, filter to only relevant entities
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: EntitySpec[] = [];
+      if (/\bcommits?\b|\bcommitted\b|\bpush(es|ed)?\b|\bchanges?\b/.test(p)) {
+        filtered.push(allEntities[3]); // Commit
+      }
+      if (/\bissues?\b|\bbugs?\b|\btickets?\b/.test(p)) {
+        filtered.push(allEntities[0]); // Issue
+      }
+      if (/\brepos?\b|\brepositories?\b/.test(p)) {
+        filtered.push(allEntities[2]); // Repository
+      }
+      if (/\bpull\s*requests?\b|\bPRs?\b|\bmerge\b/.test(p)) {
+        filtered.push(allEntities[1]); // PullRequest
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allEntities;
   }
   if (integration === "slack") {
     return [
@@ -966,6 +1703,560 @@ function buildFallbackEntitiesForIntegration(integration: IntegrationId): Entity
       },
     ];
   }
+  if (integration === "trello") {
+    return [
+      {
+        name: "Board",
+        sourceIntegration: "trello",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["trello.boards.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "description", type: "string" },
+          { name: "url", type: "string" },
+          { name: "dateLastActivity", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Card",
+        sourceIntegration: "trello",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["trello.cards.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "description", type: "string" },
+          { name: "due", type: "string" },
+          { name: "labels", type: "string" },
+          { name: "listName", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "airtable") {
+    return [
+      {
+        name: "Record",
+        sourceIntegration: "airtable",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["airtable.records.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "fields", type: "string" },
+          { name: "createdTime", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "intercom") {
+    return [
+      {
+        name: "Conversation",
+        sourceIntegration: "intercom",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["intercom.conversations.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "title", type: "string" },
+          { name: "state", type: "string" },
+          { name: "createdAt", type: "string" },
+          { name: "updatedAt", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Contact",
+        sourceIntegration: "intercom",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["intercom.contacts.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "email", type: "string" },
+          { name: "role", type: "string" },
+          { name: "createdAt", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "zoom") {
+    return [
+      {
+        name: "Meeting",
+        sourceIntegration: "zoom",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["zoom.meetings.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "topic", type: "string" },
+          { name: "startTime", type: "string" },
+          { name: "duration", type: "number" },
+          { name: "status", type: "string" },
+          { name: "joinUrl", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "gitlab") {
+    const allEntities: EntitySpec[] = [
+      {
+        name: "Project",
+        sourceIntegration: "gitlab",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["gitlab.projects.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "description", type: "string" },
+          { name: "webUrl", type: "string" },
+          { name: "lastActivityAt", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "MergeRequest",
+        sourceIntegration: "gitlab",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["gitlab.mergeRequests.list"],
+        fields: [
+          { name: "title", type: "string", required: true },
+          { name: "state", type: "string" },
+          { name: "author", type: "string" },
+          { name: "createdAt", type: "string" },
+          { name: "targetBranch", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Commit",
+        sourceIntegration: "gitlab",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["gitlab.commits.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "message", type: "string" },
+          { name: "authorName", type: "string" },
+          { name: "createdAt", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: EntitySpec[] = [];
+      if (/\bcommits?\b|\bcommitted\b|\bpush(es|ed)?\b/.test(p)) {
+        filtered.push(allEntities[2]); // Commit
+      }
+      if (/\bmerge\s*requests?\b|\bMRs?\b/.test(p)) {
+        filtered.push(allEntities[1]); // MergeRequest
+      }
+      if (/\bprojects?\b|\brepos?\b/.test(p)) {
+        filtered.push(allEntities[0]); // Project
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allEntities;
+  }
+  if (integration === "bitbucket") {
+    return [
+      {
+        name: "Repository",
+        sourceIntegration: "bitbucket",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["bitbucket.repos.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "fullName", type: "string" },
+          { name: "description", type: "string" },
+          { name: "language", type: "string" },
+          { name: "updatedOn", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "PullRequest",
+        sourceIntegration: "bitbucket",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["bitbucket.pullRequests.list"],
+        fields: [
+          { name: "title", type: "string", required: true },
+          { name: "state", type: "string" },
+          { name: "author", type: "string" },
+          { name: "createdOn", type: "string" },
+          { name: "destination", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "asana") {
+    return [
+      {
+        name: "Task",
+        sourceIntegration: "asana",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["asana.tasks.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "assignee", type: "string" },
+          { name: "dueOn", type: "string" },
+          { name: "completed", type: "boolean" },
+          { name: "section", type: "string" },
+          { name: "projects", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "microsoft_teams") {
+    return [
+      {
+        name: "Message",
+        sourceIntegration: "microsoft_teams",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["teams.messages.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "body", type: "string" },
+          { name: "from", type: "string" },
+          { name: "createdDateTime", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Channel",
+        sourceIntegration: "microsoft_teams",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["teams.channels.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "displayName", type: "string" },
+          { name: "description", type: "string" },
+          { name: "membershipType", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "outlook") {
+    return [
+      {
+        name: "Email",
+        sourceIntegration: "outlook",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["outlook.messages.list"],
+        fields: [
+          { name: "subject", type: "string", required: true },
+          { name: "from", type: "string" },
+          { name: "receivedDateTime", type: "string" },
+          { name: "bodyPreview", type: "string" },
+          { name: "isRead", type: "boolean" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Event",
+        sourceIntegration: "outlook",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["outlook.events.list"],
+        fields: [
+          { name: "subject", type: "string", required: true },
+          { name: "start", type: "string" },
+          { name: "end", type: "string" },
+          { name: "location", type: "string" },
+          { name: "organizer", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "stripe") {
+    const allEntities: EntitySpec[] = [
+      {
+        name: "Charge",
+        sourceIntegration: "stripe",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["stripe.charges.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "amount", type: "number" },
+          { name: "currency", type: "string" },
+          { name: "status", type: "string" },
+          { name: "created", type: "string" },
+          { name: "description", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Customer",
+        sourceIntegration: "stripe",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["stripe.customers.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "email", type: "string" },
+          { name: "created", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Subscription",
+        sourceIntegration: "stripe",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["stripe.subscriptions.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "status", type: "string" },
+          { name: "currentPeriodEnd", type: "string" },
+          { name: "plan", type: "string" },
+          { name: "customer", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Invoice",
+        sourceIntegration: "stripe",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["stripe.invoices.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "amountDue", type: "number" },
+          { name: "status", type: "string" },
+          { name: "dueDate", type: "string" },
+          { name: "customer", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: EntitySpec[] = [];
+      if (/\bcharges?\b|\bpayments?\b/.test(p)) {
+        filtered.push(allEntities[0]); // Charge
+      }
+      if (/\bcustomers?\b/.test(p)) {
+        filtered.push(allEntities[1]); // Customer
+      }
+      if (/\bsubscriptions?\b/.test(p)) {
+        filtered.push(allEntities[2]); // Subscription
+      }
+      if (/\binvoices?\b|\bbilling\b/.test(p)) {
+        filtered.push(allEntities[3]); // Invoice
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allEntities;
+  }
+  if (integration === "hubspot") {
+    const allEntities: EntitySpec[] = [
+      {
+        name: "Contact",
+        sourceIntegration: "hubspot",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["hubspot.contacts.list"],
+        fields: [
+          { name: "firstname", type: "string", required: true },
+          { name: "lastname", type: "string" },
+          { name: "email", type: "string" },
+          { name: "phone", type: "string" },
+          { name: "createdate", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Deal",
+        sourceIntegration: "hubspot",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["hubspot.deals.list"],
+        fields: [
+          { name: "dealname", type: "string", required: true },
+          { name: "amount", type: "number" },
+          { name: "dealstage", type: "string" },
+          { name: "closedate", type: "string" },
+          { name: "pipeline", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Company",
+        sourceIntegration: "hubspot",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["hubspot.companies.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "domain", type: "string" },
+          { name: "industry", type: "string" },
+          { name: "annualrevenue", type: "number" },
+          { name: "createdate", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+
+    if (prompt) {
+      const p = prompt.toLowerCase();
+      const filtered: EntitySpec[] = [];
+      if (/\bcontacts?\b/.test(p)) {
+        filtered.push(allEntities[0]); // Contact
+      }
+      if (/\bdeals?\b|\bpipeline\b|\bsales\b/.test(p)) {
+        filtered.push(allEntities[1]); // Deal
+      }
+      if (/\bcompan(y|ies)\b|\baccounts?\b/.test(p)) {
+        filtered.push(allEntities[2]); // Company
+      }
+      if (filtered.length > 0) return filtered;
+    }
+
+    return allEntities;
+  }
+  if (integration === "discord") {
+    return [
+      {
+        name: "Guild",
+        sourceIntegration: "discord",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["discord.guilds.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "icon", type: "string" },
+          { name: "memberCount", type: "number" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "clickup") {
+    return [
+      {
+        name: "Task",
+        sourceIntegration: "clickup",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["clickup.tasks.list"],
+        fields: [
+          { name: "name", type: "string", required: true },
+          { name: "status", type: "string" },
+          { name: "assignees", type: "string" },
+          { name: "dueDate", type: "string" },
+          { name: "priority", type: "string" },
+          { name: "list", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Space",
+        sourceIntegration: "clickup",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["clickup.spaces.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "private", type: "boolean" },
+          { name: "statuses", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "quickbooks") {
+    return [
+      {
+        name: "Account",
+        sourceIntegration: "quickbooks",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["quickbooks.queryAccounts"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "accountType", type: "string" },
+          { name: "currentBalance", type: "number" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Customer",
+        sourceIntegration: "quickbooks",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["quickbooks.readCustomer"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "displayName", type: "string" },
+          { name: "companyName", type: "string" },
+          { name: "balance", type: "number" },
+        ],
+        confidenceLevel: "medium",
+      },
+      {
+        name: "Balance",
+        sourceIntegration: "quickbooks",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["quickbooks.balanceDetail"],
+        fields: [
+          { name: "customerName", type: "string", required: true },
+          { name: "balance", type: "number" },
+          { name: "dueDate", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  if (integration === "google_analytics") {
+    return [
+      {
+        name: "Account",
+        sourceIntegration: "google_analytics",
+        relations: [],
+        identifiers: ["id"],
+        supportedActions: ["googleAnalytics.accounts.list"],
+        fields: [
+          { name: "id", type: "string", required: true },
+          { name: "name", type: "string" },
+          { name: "createTime", type: "string" },
+          { name: "updateTime", type: "string" },
+        ],
+        confidenceLevel: "medium",
+      },
+    ];
+  }
+  // Default fallback for google (email)
   return [
     {
       name: "Email",
@@ -1056,6 +2347,30 @@ function buildFallbackViewForEntity(
     if (lower === "email") return "emails";
     if (lower === "issue") return "issues";
     if (lower === "page") return "pages";
+    if (lower === "commit") return "commits";
+    if (lower === "board") return "boards";
+    if (lower === "card") return "cards";
+    if (lower === "record") return "records";
+    if (lower === "conversation") return "conversations";
+    if (lower === "contact") return "contacts";
+    if (lower === "meeting") return "meetings";
+    if (lower === "project") return "projects";
+    if (lower === "mergerequest") return "mergerequests";
+    if (lower === "task") return "tasks";
+    if (lower === "space") return "spaces";
+    if (lower === "event") return "events";
+    if (lower === "charge") return "charges";
+    if (lower === "customer") return "customers";
+    if (lower === "subscription") return "subscriptions";
+    if (lower === "invoice") return "invoices";
+    if (lower === "deal") return "deals";
+    if (lower === "company") return "companies";
+    if (lower === "guild") return "guilds";
+    if (lower === "account") return "accounts";
+    if (lower === "balance") return "balances";
+    if (lower === "audience") return "audiences";
+    if (lower === "recording") return "recordings";
+    if (lower === "pipeline") return "pipelines";
     return `${lower}s`;
   })();
   const statePath = `${entity.sourceIntegration}.${entityKey}`;

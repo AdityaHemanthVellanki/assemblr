@@ -250,7 +250,7 @@ export function ToolRenderer({
     let intervalId: number | null = null;
 
     const poll = async () => {
-      if (status === "CREATED" || status === "FAILED" || status === "MATERIALIZED" || status === "DRAFT" || status === "IDLE") {
+      if (status === "CREATED" || status === "FAILED" || status === "MATERIALIZED" || status === "READY" || status === "DRAFT" || status === "IDLE") {
         setPollingInterval(null);
         return;
       }

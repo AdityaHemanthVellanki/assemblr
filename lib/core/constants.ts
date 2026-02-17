@@ -1,10 +1,11 @@
 
 export const PROJECT_STATUSES = [
-  'DRAFT',
-  'BUILDING',
-  'READY',
-  'FAILED',
-  'CORRUPTED'
+  'CREATED',
+  'PLANNED',
+  'READY_TO_EXECUTE',
+  'EXECUTING',
+  'MATERIALIZED',
+  'FAILED'
 ] as const;
 
 export type ProjectStatus = typeof PROJECT_STATUSES[number];

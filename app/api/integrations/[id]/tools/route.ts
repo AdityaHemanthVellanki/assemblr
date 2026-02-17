@@ -28,8 +28,8 @@ function extractIntegrationIds(spec: unknown): string[] {
 }
 
 function mapProjectStatus(status: string | null | undefined): ToolUsageItem["status"] {
-  if (status === "READY") return "READY";
-  if (status === "FAILED" || status === "CORRUPTED") return "DEGRADED";
+  if (status === "MATERIALIZED" || status === "READY") return "READY";
+  if (status === "FAILED") return "DEGRADED";
   return "BLOCKED";
 }
 

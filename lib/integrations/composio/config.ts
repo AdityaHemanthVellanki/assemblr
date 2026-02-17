@@ -5,6 +5,11 @@ export interface ComposioIntegrationConfig {
     requiredParams?: string[];
     scopes?: string[];
     notes?: string;
+    /** When useComposioAuth is false, provide env var names for custom OAuth credentials */
+    customAuth?: {
+        clientIdEnv: string;
+        clientSecretEnv: string;
+    };
 }
 
 // Registry of supported integrations and their specific Composio configuration
@@ -35,12 +40,9 @@ export const INTEGRATION_AUTH_CONFIG: Record<string, ComposioIntegrationConfig> 
     // pipedrive: { appName: "pipedrive", useComposioAuth: true, requiredParams: ["COMPANYDOMAIN"] }, // DISABLED
     intercom: { appName: "intercom", useComposioAuth: true },
     linear: { appName: "linear", useComposioAuth: true },
-    slack: {
-        appName: "slack",
-        useComposioAuth: true,
-        // Minimal scopes to avoid invalid_scope error and force bot token
-        scopes: ["chat:write", "channels:read", "users:read", "bot"]
-    },
+    // Composio's "slack" app has a legacy "bot" scope that breaks modern OAuth v2.
+    // Use "slackbot" instead — same actions, proper modern scopes, no invalid_scope errors.
+    slack: { appName: "slackbot", useComposioAuth: true },
     slackbot: { appName: "slackbot", useComposioAuth: true },
 
     // Standard OAuth Group
@@ -98,4 +100,31 @@ export function getIntegrationConfig(assemblrId: string): ComposioIntegrationCon
     }
 
     return config;
+}
+
+/**
+ * Reverse-map a Composio app name back to Assemblr's internal integration ID.
+ *
+ * Composio returns `appName` values like "googlesheets" which may differ from
+ * Assemblr's internal IDs (e.g., "google"). This function resolves the mismatch.
+ */
+let _reverseMap: Map<string, string> | null = null;
+
+function getReverseAppNameMap(): Map<string, string> {
+    if (_reverseMap) return _reverseMap;
+    _reverseMap = new Map<string, string>();
+    for (const [assemblrId, config] of Object.entries(INTEGRATION_AUTH_CONFIG)) {
+        const appName = config.appName.toLowerCase();
+        // Only store the first match (Assemblr ID takes priority)
+        if (!_reverseMap.has(appName)) {
+            _reverseMap.set(appName, assemblrId);
+        }
+    }
+    return _reverseMap;
+}
+
+export function resolveAssemblrId(composioAppName: string): string {
+    const normalized = composioAppName.toLowerCase();
+    const reverseMap = getReverseAppNameMap();
+    return reverseMap.get(normalized) ?? normalized;
 }

@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { computeSpecHash } from "@/lib/spec/toolSpec";
 import { getCapability } from "@/lib/capabilities/registry";
+import { hasComposioMapping } from "@/lib/integrations/runtimes/composio";
 import {
   ToolSystemSpec,
   ActionSpec,
@@ -129,9 +130,11 @@ export function validateToolSystem(spec: ToolSystemSpec): ToolSystemValidation {
     }
     const cap = getCapability(action.capabilityId);
     if (!cap) {
-      // Accept synthesized Composio capabilities with format "integrationId:ACTION_NAME"
+      // Accept capabilities resolved at runtime by Composio:
+      // 1. Synthesized format: "integrationId:ACTION_NAME"
+      // 2. Static Composio mappings (e.g., "bitbucket_workspaces_list")
       const isSynthesized = action.capabilityId.startsWith(`${action.integrationId}:`);
-      if (!isSynthesized) {
+      if (!isSynthesized && !hasComposioMapping(action.capabilityId)) {
         actionsBound = false;
         errors.push(`Choose a valid capability for ${action.name}.`);
         continue;
@@ -203,14 +206,22 @@ export function compileToolSystem(spec: ToolSystemSpec): ExecutableTool {
       throw new Error(`Duplicate action id: ${action.id}`);
     }
     actionIds.add(action.id);
-    const cap = getCapability(action.capabilityId);
-    if (!cap) {
-      throw new Error(`Unknown capability ${action.capabilityId}`);
-    }
-    if (cap.integrationId !== action.integrationId) {
-      throw new Error(
-        `Capability ${action.capabilityId} does not match integration ${action.integrationId}`,
-      );
+
+    // Skip validation for capabilities resolved at runtime:
+    // 1. Composio-format (e.g., "slack:SLACKBOT_LIST_ALL_CHANNELS") — resolved by ComposioRuntime proxy
+    // 2. Static Composio mappings (e.g., "bitbucket_workspaces_list") — resolved via STATIC_TO_COMPOSIO
+    const isComposioFormat = action.capabilityId.includes(":");
+    const hasMapping = hasComposioMapping(action.capabilityId);
+    if (!isComposioFormat && !hasMapping) {
+      const cap = getCapability(action.capabilityId);
+      if (!cap) {
+        throw new Error(`Unknown capability ${action.capabilityId}`);
+      }
+      if (cap.integrationId !== action.integrationId) {
+        throw new Error(
+          `Capability ${action.capabilityId} does not match integration ${action.integrationId}`,
+        );
+      }
     }
   }
 

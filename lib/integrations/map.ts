@@ -21,6 +21,13 @@ export const RUNTIMES: Record<string, IntegrationRuntime> = {
   pipedrive: new ComposioRuntime(),
   zoom: new ComposioRuntime(),
   shopify: new ComposioRuntime(),
+  gitlab: new ComposioRuntime(),
+  bitbucket: new ComposioRuntime(),
+  clickup: new ComposioRuntime(),
+  outlook: new ComposioRuntime(),
+  google_analytics: new ComposioRuntime(),
+  microsoft_teams: new ComposioRuntime(),
+  quickbooks: new ComposioRuntime(),
 };
 
 export const EXECUTORS: Record<string, any> = {};

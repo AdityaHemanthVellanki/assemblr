@@ -24,7 +24,7 @@ import { materializeToolOutput, finalizeToolEnvironment, buildSnapshotRecords, c
 import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
-import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution, persistBuildSteps } from "@/lib/toolos/executions";
+import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution, persistBuildSteps, registerBuildExecution, clearBuildSteps } from "@/lib/toolos/executions";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
@@ -458,6 +458,7 @@ export async function runCompilerPipeline(
     const steps = createBuildSteps();
     _activeExecutionId = input.executionId ?? null;
     if (_activeExecutionId) {
+      registerBuildExecution(input.toolId, _activeExecutionId);
       persistBuildSteps(_activeExecutionId, steps);
     }
     try {
@@ -528,10 +529,9 @@ export async function runCompilerPipeline(
 
     // FIX 4: Tool State Guardrails
     // Prevent double compilation if tool is already in a post-creation state
-    // Valid statuses: DRAFT, BUILDING, READY, FAILED
-    // We allow compilation if DRAFT, BUILDING (retry), or FAILED (retry).
-    // If status is READY but no active_version_id (handled above), we recompile.
-    if (existingTool && existingTool.status !== "DRAFT" && existingTool.status !== "CREATED" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
+    // DB states: CREATED, PLANNED, READY_TO_EXECUTE, EXECUTING, MATERIALIZED, FAILED
+    // Allow compilation if: CREATED, PLANNED, EXECUTING (retry), or FAILED (retry).
+    if (existingTool && existingTool.status !== "CREATED" && existingTool.status !== "DRAFT" && existingTool.status !== "PLANNED" && existingTool.status !== "EXECUTING" && existingTool.status !== "BUILDING" && existingTool.status !== "FAILED") {
       // If we are here, status is READY (or similar) but active_version_id is missing (checked above).
       // So we should actually ALLOW compilation to fix the broken state.
       // But if status is READY and we HAVE active_version_id, we caught it above.
@@ -713,12 +713,12 @@ export async function runCompilerPipeline(
         }
       }
       const stageToStep: Record<string, string> = {
-        "understand-purpose": "intent",
-        "extract-entities": "entities",
-        "resolve-integrations": "integrations",
-        "define-actions": "actions",
-        "build-workflows": "workflows",
-        "design-views": "views",
+        "understand-purpose": "understand",
+        "extract-entities": "understand",
+        "resolve-integrations": "connect",
+        "define-actions": "connect",
+        "build-workflows": "connect",
+        "design-views": "compile",
         "validate-spec": "compile",
       };
       const enterpriseSpec = buildEnterpriseSpec(prompt);
@@ -742,6 +742,18 @@ export async function runCompilerPipeline(
             const stepId = stageToStep[event.stage];
             if (!stepId) return;
 
+            // User-friendly messages per stage
+            const friendlyMessages: Record<string, { started: string; completed: string }> = {
+              "understand-purpose": { started: "Analyzing what you need", completed: "Got it" },
+              "extract-entities": { started: "Identifying your data sources", completed: "Data sources identified" },
+              "resolve-integrations": { started: "Finding the right integrations", completed: "Integrations selected" },
+              "define-actions": { started: "Choosing the best API calls", completed: "Ready to fetch your data" },
+              "build-workflows": { started: "Defining data flow", completed: "Data flow ready" },
+              "design-views": { started: "Designing your output layout", completed: "Layout ready" },
+              "validate-spec": { started: "Validating everything", completed: "Validation passed" },
+            };
+            const msgs = friendlyMessages[event.stage];
+
             if (event.status === "completed") {
               if (event.stage === "extract-entities") void transition("ENTITIES_EXTRACTED", "Entities identified");
               if (event.stage === "resolve-integrations") void transition("INTEGRATIONS_RESOLVED", "Integrations selected");
@@ -751,11 +763,11 @@ export async function runCompilerPipeline(
             }
 
             if (event.status === "started") {
-              markStep(steps, stepId, "running", event.message);
+              markStep(steps, stepId, "running", msgs?.started || event.message);
               return;
             }
             if (event.status === "completed") {
-              markStep(steps, stepId, "success", event.message);
+              markStep(steps, stepId, "success", msgs?.completed || event.message);
               return;
             }
             markStep(steps, stepId, "error", event.message);
@@ -763,12 +775,9 @@ export async function runCompilerPipeline(
         });
 
       if (enterpriseSpec) {
-        markStep(steps, "intent", "success", "Enterprise prompt detected");
-        markStep(steps, "entities", "success", "Enterprise entities defined");
-        markStep(steps, "integrations", "success", "Enterprise integrations selected");
-        markStep(steps, "actions", "success", "Enterprise actions defined");
-        markStep(steps, "workflows", "success", "Enterprise workflows defined");
-        markStep(steps, "compile", "success", "Enterprise spec compiled");
+        markStep(steps, "understand", "success", "Recognized your request");
+        markStep(steps, "connect", "success", "Data sources identified");
+        markStep(steps, "compile", "success", "Tool configured");
         await transition("RUNTIME_READY", "Runtime compiled");
       }
 
@@ -837,7 +846,7 @@ export async function runCompilerPipeline(
         spec = { ...spec, clarifications: existing.concat(assumptions as any[]) };
       }
       transition("INTENT_PARSED", "ToolSpec generated");
-      markStep(steps, "compile", "running", "Validating spec and runtime wiring");
+      markStep(steps, "compile", "running", "Validating your configuration");
       const toolSystemValidation = validateToolSystem(spec);
       if (
         !toolSystemValidation.entitiesResolved ||
@@ -851,15 +860,15 @@ export async function runCompilerPipeline(
         toolSystemValidation.errors.forEach((error) => {
           if (compileStep) appendStep(compileStep, error);
         });
-        markStep(steps, "compile", "error", "Validation failed");
+        markStep(steps, "compile", "error", "Configuration issue found");
         throw new Error(errorMsg);
       }
       compiledTool = buildCompiledToolArtifact(spec);
       if (input.executionId) {
         await updateExecution(input.executionId as string, { status: "compiled" });
       }
-      markStep(steps, "compile", "success", "Runtime compiled");
-      markStep(steps, "views", "running", "Preparing runtime views");
+      markStep(steps, "compile", "success", "Configuration looks good");
+      markStep(steps, "compile", "running", "Setting up your views");
 
       const baseSpec = isToolSystemSpec(input.currentSpec) ? input.currentSpec : null;
       const normalizedSpecResult = normalizeToolSpec(spec, {
@@ -938,7 +947,7 @@ export async function runCompilerPipeline(
             try {
               const previousActiveVersionId = projectSnapshot?.active_version_id ?? null;
               const previousSpec = projectSnapshot?.spec ?? null;
-              const previousStatus = projectSnapshot?.status ?? "DRAFT";
+              const previousStatus = projectSnapshot?.status ?? "CREATED";
               const previousName = projectSnapshot?.name ?? "Tool";
               const previousCompiledAt = projectSnapshot?.compiled_at ?? null;
               if (previousActiveVersionId) {
@@ -976,7 +985,7 @@ export async function runCompilerPipeline(
       if (lowConfidenceEntities.length > 0) {
         lowConfidenceEntities.forEach((entity) => {
           appendStep(
-            stepsById.get("entities"),
+            stepsById.get("understand"),
             `Low confidence ${entity.name} (${(entity.confidence ?? 0).toFixed(2)})`,
           );
         });
@@ -984,7 +993,7 @@ export async function runCompilerPipeline(
       if (lowConfidenceActions.length > 0) {
         lowConfidenceActions.forEach((action) => {
           appendStep(
-            stepsById.get("actions"),
+            stepsById.get("connect"),
             `Low confidence ${action.name} (${(action.confidence ?? 0).toFixed(2)})`,
           );
         });
@@ -1003,10 +1012,10 @@ export async function runCompilerPipeline(
       );
       if (missingIntegrationIds.length > 0) {
         appendStep(
-          stepsById.get("readiness"),
+          stepsById.get("compile"),
           `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
         );
-        markStep(steps, "readiness", "error", "Integrations required");
+        markStep(steps, "compile", "error", `Need to connect ${missingIntegrationIds.join(", ")}`);
         if (input.executionId) {
           await updateExecution(input.executionId as string, {
             status: "awaiting_integration",
@@ -1033,7 +1042,7 @@ export async function runCompilerPipeline(
         };
       }
 
-      markStep(steps, "readiness", "running", "Validating data readiness");
+      markStep(steps, "compile", "running", "Checking integration connections");
 
       // FIX: Pre-runtime Integration Readiness Gate
       // Must run BEFORE runDataReadiness to avoid EncryptionKeyMismatchError
@@ -1044,7 +1053,7 @@ export async function runCompilerPipeline(
         });
       } catch (err: any) {
         if (isIntegrationNotConnectedError(err)) {
-          markStep(steps, "readiness", "error", "Integration authorization required");
+          markStep(steps, "compile", "error", `Need to connect ${err.integrationIds?.join(", ") || "integration"}`);
 
           const missingIntegrations = err.integrationIds;
           const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
@@ -1091,7 +1100,7 @@ export async function runCompilerPipeline(
         compiledTool: compiledTool!
       });
       if (readiness.authErrors.length > 0) {
-        markStep(steps, "readiness", "error", "Integration authorization required");
+        markStep(steps, "compile", "error", `Need to connect ${readiness.authErrors.join(", ")}`);
         if (input.executionId) {
           await updateExecution(input.executionId as string, {
             status: "awaiting_integration",
@@ -1119,13 +1128,13 @@ export async function runCompilerPipeline(
       }
       const readinessDuration = Date.now() - readinessStart;
       if (readinessDuration > TIME_BUDGETS.readinessMs) {
-        appendStep(stepsById.get("readiness"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
+        appendStep(stepsById.get("compile"), `Readiness exceeded ${TIME_BUDGETS.readinessMs}ms.`);
         await transition("DEGRADED", "Readiness budget exceeded", "warn");
       }
-      readiness.logs.forEach((log) => appendStep(stepsById.get("readiness"), log));
-      markStep(steps, "readiness", "success", "Data readiness checks complete");
+      readiness.logs.forEach((log) => appendStep(stepsById.get("compile"), log));
+      markStep(steps, "compile", "success", "All connections verified");
       console.log("[FINALIZE] All integrations completed for tool", input.toolId);
-      markStep(steps, "runtime", "running", "Finalizing tool");
+      markStep(steps, "fetch", "running", "Preparing to fetch your data");
 
       try {
         await saveMemory({
@@ -1218,7 +1227,8 @@ export async function runCompilerPipeline(
         goalEvidence = planResult.evidence;
       } else if (readActions.length > 0) {
         console.log(`[ToolRuntime] Executing ${readActions.length} read actions...`);
-        markStep(steps, "runtime", "running", "Executing actions...");
+        const integrationNames = [...new Set(readActions.map(a => a.integrationId))].map(id => id.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()));
+        markStep(steps, "fetch", "running", `Pulling data from ${integrationNames.join(", ")}`);
 
         // Sort GitHub actions: repos_list first so we can discover owner/repo for subsequent actions
         const sortedActions = [...readActions].sort((a, b) => {
@@ -1279,6 +1289,8 @@ export async function runCompilerPipeline(
                 continue;
               }
             }
+            const friendlyIntegration = action.integrationId.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+            markStep(steps, "fetch", "running", `Connecting to ${friendlyIntegration}...`);
             const result = await executeToolAction({
               orgId: buildContext.orgId,
               toolId,
@@ -1303,6 +1315,14 @@ export async function runCompilerPipeline(
               }
             }
             outputs.push({ action, output: result.output });
+            // Report per-action record count to the user
+            const actionRecords = result.output ? extractPayloadArray(result.output) : [];
+            const recordCount = actionRecords.length;
+            if (recordCount > 0) {
+              markStep(steps, "fetch", "running", `Got ${recordCount} records from ${friendlyIntegration}`);
+            } else {
+              markStep(steps, "fetch", "running", `No records found in ${friendlyIntegration}`);
+            }
 
             // Extract repo context from repos list for chaining to subsequent GitHub actions
             if (action.capabilityId === "github_repos_list" && !githubRepoContext && result.output) {
@@ -1432,7 +1452,15 @@ export async function runCompilerPipeline(
         p_finalized_at: finalizedAt,
       });
 
-      if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+      // Fallback: if RPC doesn't exist OR fails with constraint violation, use manual writes
+      if (finalizeError && (
+        finalizeError.message?.includes("finalize_tool_render_state") ||
+        finalizeError.message?.includes("does not exist") ||
+        finalizeError.message?.includes("Could not find the function") ||
+        finalizeError.message?.includes("projects_status_check") ||
+        finalizeError.message?.includes("violates check constraint")
+      )) {
+        console.log("[FINALIZE] RPC failed, using manual fallback:", finalizeError.message);
         const { error: upsertError } = await (statusSupabase as any)
           .from("tool_render_state")
           .upsert({
@@ -1453,7 +1481,6 @@ export async function runCompilerPipeline(
             data_ready: dataReady,
             view_spec: viewSpec,
             view_ready: viewReady,
-            // Lifecycle: tool is MATERIALIZED after successful execution with data/views
             status: (dataReady || viewReady) ? "MATERIALIZED" : "FAILED",
             finalized_at: finalizedAt,
             lifecycle_done: true,
@@ -1529,7 +1556,7 @@ export async function runCompilerPipeline(
         console.log("[Materialization] Runtime completed");
         let matResult;
         try {
-          markStep(steps, "runtime", "running", "Finalizing environment...");
+          markStep(steps, "render", "running", "Organizing your results");
           console.log("[Materialization] Writing result to DB");
           matResult = await finalizeToolEnvironment(
             toolId,
@@ -1546,22 +1573,23 @@ export async function runCompilerPipeline(
         console.log("[Materialization] Rows inserted:", matResult.recordCount, "resultId:", matResult.resultId);
         const success = matResult.status === "MATERIALIZED";
         if (success) {
-          markStep(steps, "runtime", "success", "Environment READY");
+          markStep(steps, "render", "success", "Your tool is ready");
           console.log(`[Materialization] Tool marked as materialized. toolId=${toolId}`);
         } else {
-          markStep(steps, "runtime", "error", "Environment Finalization Failed");
+          markStep(steps, "render", "error", "Something went wrong building your view");
           console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
           throw new Error("Materialization returned FAILED status");
         }
       }
 
       if (viewReady) {
-        markStep(steps, "views", "success", "Output ready");
+        markStep(steps, "render", "success", "Your tool is ready");
       }
 
       if (input.executionId) {
         await completeExecution(input.executionId as string);
       }
+      clearBuildSteps(input.toolId);
       const assistantSummary = buildAssistantSummary(spec);
       return {
         explanation: assistantSummary,
@@ -1625,11 +1653,14 @@ export async function runCompilerPipeline(
 
       // Atomic Failure Handling: Mark tool as error
       const message = err instanceof Error ? err.message : "Build failed";
-      markStep(steps, "compile", "error", message);
+      // Mark the first non-success step as error, or fall back to compile
+      const failedStep = steps.find(s => s.status === "running") || steps.find(s => s.status === "pending");
+      markStep(steps, failedStep?.id || "compile", "error", message);
       if (input.executionId) {
         await updateExecution(input.executionId, { status: "failed", error: message });
         await completeExecution(input.executionId);
       }
+      clearBuildSteps(input.toolId);
 
       const compilerFailure = isCompilerError(err);
       if (compilerFailure) {
@@ -2047,7 +2078,15 @@ export async function resumeToolExecution(params: {
     p_finalized_at: finalizedAt,
   });
 
-  if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+  // Fallback: if RPC doesn't exist OR fails with constraint violation, use manual writes
+  if (finalizeError && (
+    finalizeError.message?.includes("finalize_tool_render_state") ||
+    finalizeError.message?.includes("does not exist") ||
+    finalizeError.message?.includes("Could not find the function") ||
+    finalizeError.message?.includes("projects_status_check") ||
+    finalizeError.message?.includes("violates check constraint")
+  )) {
+    console.log("[FINALIZE] RPC failed, using manual fallback:", finalizeError.message);
     const { error: upsertError } = await (statusSupabase as any)
       .from("tool_render_state")
       .upsert({
@@ -3448,15 +3487,11 @@ function enforceRequiredIntegrations(
 
 function createBuildSteps(): BuildStep[] {
   return [
-    { id: "intent", title: "Understanding intent", status: "pending", logs: [] },
-    { id: "entities", title: "Identifying entities", status: "pending", logs: [] },
-    { id: "integrations", title: "Selecting integrations", status: "pending", logs: [] },
-    { id: "actions", title: "Defining actions", status: "pending", logs: [] },
-    { id: "workflows", title: "Assembling workflows", status: "pending", logs: [] },
-    { id: "compile", title: "Compiling runtime", status: "pending", logs: [] },
-    { id: "readiness", title: "Validating data readiness", status: "pending", logs: [] },
-    { id: "runtime", title: "Fetching data", status: "pending", logs: [] },
-    { id: "views", title: "Rendering output", status: "pending", logs: [] },
+    { id: "understand", title: "Understanding your request", status: "pending", logs: [] },
+    { id: "connect", title: "Connecting to your data", status: "pending", logs: [] },
+    { id: "compile", title: "Preparing your tool", status: "pending", logs: [] },
+    { id: "fetch", title: "Fetching your data", status: "pending", logs: [] },
+    { id: "render", title: "Building your view", status: "pending", logs: [] },
   ];
 }
 
@@ -3529,6 +3564,27 @@ async function runDataReadiness(
           plan && Object.keys(plan.query ?? {}).length > 0
             ? { ...plan.query }
             : buildDefaultInput(cap);
+
+        // GitHub uses per_page, not limit
+        if (action.integrationId === "github") {
+          if (!input.per_page) {
+            input.per_page = input.limit ?? 30;
+          }
+        }
+
+        // Inject temporal filters from prompt if not already present
+        const prompt = spec.source_prompt ?? spec.purpose ?? "";
+        if (prompt && !input.since && !input.oldest && !input.createdAfter && !input.timeMin && !input.query) {
+          const temporal = parseTemporalFromPrompt(prompt);
+          if (temporal) {
+            injectTemporalParams(input, action.integrationId, action.capabilityId, temporal);
+            if (!input.limit) input.limit = 100;
+            // Ensure per_page matches for GitHub
+            if (action.integrationId === "github") {
+              input.per_page = input.limit ?? 100;
+            }
+          }
+        }
 
         // Inject owner/repo for repo-scoped GitHub actions
         if (action.integrationId === "github" && githubRepoCtx && !input.owner && !input.repo) {
@@ -3648,13 +3704,41 @@ function buildReadActionInput(params: {
 }) {
   const query = params.plan?.query ?? {};
   const hasQueryPlan = Object.keys(query).length > 0;
+  const defaultLimit = params.spec.initialFetch?.limit ?? 30;
+
+  // Start with defaults from the action's inputSchema (e.g., { idMember: "me", userId: "me" })
+  const schemaDefaults = (params.action.inputSchema && typeof params.action.inputSchema === "object")
+    ? { ...params.action.inputSchema as Record<string, any> }
+    : {};
+
   const input: Record<string, any> = hasQueryPlan
-    ? { ...query }
-    : { limit: params.spec.initialFetch?.limit ?? 30 };
+    ? { ...schemaDefaults, ...query }
+    : { ...schemaDefaults, limit: defaultLimit };
 
   // If query plan already has a limit, use it; otherwise ensure a reasonable default
   if (hasQueryPlan && !input.limit) {
     input.limit = params.spec.initialFetch?.limit ?? 50;
+  }
+
+  // GitHub uses per_page, not limit
+  if (params.action.integrationId === "github") {
+    if (!input.per_page) {
+      input.per_page = input.limit ?? defaultLimit;
+    }
+  }
+
+  // FALLBACK: If no temporal filters from query plan, parse from the source prompt directly.
+  // This handles cases where the compiler stage was skipped or the plans were overwritten.
+  const prompt = params.spec.source_prompt ?? params.spec.purpose ?? "";
+  if (prompt && !input.since && !input.oldest && !input.createdAfter && !input.timeMin && !input.query) {
+    const temporal = parseTemporalFromPrompt(prompt);
+    if (temporal) {
+      injectTemporalParams(input, params.action.integrationId, params.action.capabilityId, temporal);
+      // Increase limit when we have date filters
+      if (!hasQueryPlan) {
+        input.limit = 100;
+      }
+    }
   }
 
   if (params.action.capabilityId === "google_gmail_list") {
@@ -3665,7 +3749,119 @@ function buildReadActionInput(params: {
       input.order_direction = params.spec.initialFetch?.order_direction ?? "desc";
     }
   }
+
+  console.log(`[buildReadActionInput] ${params.action.capabilityId}: ${JSON.stringify(input).slice(0, 400)}`);
   return input;
+}
+
+/**
+ * Parse temporal constraints directly from prompt text.
+ * This is the inline fallback for when the compiler stage doesn't run.
+ */
+function parseTemporalFromPrompt(prompt: string): { since: string; until: string } | null {
+  const lower = prompt.toLowerCase();
+  const now = new Date();
+
+  // "last N days/weeks/months"
+  const lastNMatch = lower.match(/(?:last|past|previous)\s+(\d+)\s+(day|week|month|hour)s?/);
+  if (lastNMatch) {
+    const n = parseInt(lastNMatch[1], 10);
+    const unit = lastNMatch[2];
+    const since = new Date(now);
+    if (unit === "day") since.setDate(since.getDate() - n);
+    else if (unit === "week") since.setDate(since.getDate() - n * 7);
+    else if (unit === "month") since.setMonth(since.getMonth() - n);
+    else if (unit === "hour") since.setHours(since.getHours() - n);
+    return { since: since.toISOString(), until: now.toISOString() };
+  }
+
+  // "this week/month/year"
+  const thisMatch = lower.match(/\bthis\s+(week|month|year)\b/);
+  if (thisMatch) {
+    const since = new Date(now);
+    if (thisMatch[1] === "week") { since.setDate(since.getDate() - since.getDay()); since.setHours(0, 0, 0, 0); }
+    else if (thisMatch[1] === "month") { since.setDate(1); since.setHours(0, 0, 0, 0); }
+    else { since.setMonth(0, 1); since.setHours(0, 0, 0, 0); }
+    return { since: since.toISOString(), until: now.toISOString() };
+  }
+
+  // "today"
+  if (/\btoday\b/.test(lower)) {
+    const since = new Date(now); since.setHours(0, 0, 0, 0);
+    return { since: since.toISOString(), until: now.toISOString() };
+  }
+
+  // "yesterday"
+  if (/\byesterday\b/.test(lower)) {
+    const since = new Date(now); since.setDate(since.getDate() - 1); since.setHours(0, 0, 0, 0);
+    const until = new Date(now); until.setHours(0, 0, 0, 0);
+    return { since: since.toISOString(), until: until.toISOString() };
+  }
+
+  // "in the last week/month"
+  const inTheLastMatch = lower.match(/\bin\s+the\s+(?:last|past)\s+(week|month|year|day)\b/);
+  if (inTheLastMatch) {
+    const since = new Date(now);
+    if (inTheLastMatch[1] === "day") since.setDate(since.getDate() - 1);
+    else if (inTheLastMatch[1] === "week") since.setDate(since.getDate() - 7);
+    else if (inTheLastMatch[1] === "month") since.setMonth(since.getMonth() - 1);
+    else since.setFullYear(since.getFullYear() - 1);
+    return { since: since.toISOString(), until: now.toISOString() };
+  }
+
+  // "recent" fallback
+  if (/\brecent\b/.test(lower)) {
+    const since = new Date(now); since.setDate(since.getDate() - 7);
+    return { since: since.toISOString(), until: now.toISOString() };
+  }
+
+  return null;
+}
+
+/**
+ * Inject temporal params into the input object based on integration type.
+ */
+function injectTemporalParams(
+  input: Record<string, any>,
+  integrationId: string,
+  capabilityId: string,
+  temporal: { since: string; until: string },
+) {
+  if (integrationId === "github") {
+    if (capabilityId.includes("repos")) return; // repos don't have temporal filters
+    input.since = temporal.since;
+    input.until = temporal.until;
+    // GitHub uses per_page, not limit
+    if (input.limit && !input.per_page) {
+      input.per_page = input.limit;
+    }
+    if (!input.per_page) {
+      input.per_page = 100;
+    }
+  } else if (integrationId === "slack") {
+    input.oldest = String(Math.floor(new Date(temporal.since).getTime() / 1000));
+    input.latest = String(Math.floor(new Date(temporal.until).getTime() / 1000));
+  } else if (integrationId === "linear") {
+    input.createdAfter = temporal.since;
+    input.createdBefore = temporal.until;
+  } else if (integrationId === "notion") {
+    input.filter = {
+      timestamp: "last_edited_time",
+      last_edited_time: { on_or_after: temporal.since },
+    };
+  } else if (integrationId === "google") {
+    if (capabilityId.includes("gmail")) {
+      const after = temporal.since.split("T")[0].replace(/-/g, "/");
+      const before = temporal.until.split("T")[0].replace(/-/g, "/");
+      input.query = `after:${after} before:${before}`;
+    } else if (capabilityId.includes("calendar")) {
+      input.timeMin = temporal.since;
+      input.timeMax = temporal.until;
+    }
+  } else if (integrationId === "gitlab" || integrationId === "jira") {
+    input.since = temporal.since;
+    input.until = temporal.until;
+  }
 }
 
 function applySchemaToViews(spec: ToolSystemSpec) {
@@ -4123,25 +4319,42 @@ async function applyAnswerContract(spec: ToolSystemSpec, prompt: string): Promis
 
 function buildQueryPlansForContract(spec: ToolSystemSpec, contract: AnswerContract): IntegrationQueryPlan[] {
   const constraint = contract.required_constraints[0];
-  if (!constraint) return [];
+  if (!constraint) {
+    // No constraints — preserve existing query plans if they have real queries
+    return spec.query_plans?.length > 0 ? spec.query_plans : [];
+  }
+
+  // Build a lookup of existing query plans (e.g. from generate-query-plans compiler stage)
+  const existingByAction = new Map(
+    (spec.query_plans ?? []).map((p) => [p.actionId, p])
+  );
+
   const queryPlans: IntegrationQueryPlan[] = [];
   for (const action of spec.actions) {
     if (action.type !== "READ") continue;
+
+    // Start with any existing query plan (which may have temporal filters, limits, etc.)
+    const existing = existingByAction.get(action.id);
+    const baseQuery = existing?.query && Object.keys(existing.query).length > 0
+      ? { ...existing.query }
+      : {};
+
     if (action.integrationId === "google") {
       queryPlans.push({
         integrationId: action.integrationId,
         actionId: action.id,
-        query: { q: constraint.value, maxResults: 50 },
+        query: { ...baseQuery, q: constraint.value, maxResults: baseQuery.maxResults ?? 50 },
         fields: ["from", "subject", "snippet", "date"],
         max_results: 50,
       });
       continue;
     }
+
     queryPlans.push({
       integrationId: action.integrationId,
       actionId: action.id,
-      query: {},
-      fields: [],
+      query: baseQuery,
+      fields: existing?.fields ?? [],
     });
   }
   return queryPlans;

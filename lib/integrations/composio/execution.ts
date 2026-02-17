@@ -48,10 +48,26 @@ function unwrapComposioResponse(raw: any, actionId: string): any {
 
     // Log the unwrapping for debugging
     const dataType = Array.isArray(data) ? `array[${data.length}]` : typeof data;
-    console.log(`[Composio] Unwrapped ${actionId} response. Data type: ${dataType}`);
+    console.log(`[Composio] Unwrapped ${actionId} response. Data type: ${dataType}. Preview: ${JSON.stringify(data).slice(0, 300)}`);
 
     return data;
 }
+
+/**
+ * Known required defaults for Composio actions.
+ * Some actions REQUIRE certain parameters (e.g., "idMember", "userId") but the AI
+ * may not include them in the generated spec. These are injected as fallback defaults
+ * when not already present in the input.
+ */
+const ACTION_REQUIRED_DEFAULTS: Record<string, Record<string, any>> = {
+    // Trello: boards endpoint requires idMember
+    TRELLO_GET_MEMBERS_BOARDS_BY_ID_MEMBER: { idMember: "me" },
+    // Zoom: meetings endpoint requires userId
+    ZOOM_LIST_MEETINGS: { userId: "me" },
+    ZOOM_LIST_ALL_RECORDINGS: { userId: "me" },
+    // Notion: search requires query to be a string (empty string works as "list all")
+    NOTION_SEARCH_NOTION_PAGE: { query: "" },
+};
 
 export const executeAction = async (
     entityId: string,
@@ -59,6 +75,21 @@ export const executeAction = async (
     input: Record<string, any>
 ) => {
     const client = getComposioClient();
+
+    // Inject required defaults that the AI may not have included
+    const requiredDefaults = ACTION_REQUIRED_DEFAULTS[actionId];
+    if (requiredDefaults) {
+        for (const [key, value] of Object.entries(requiredDefaults)) {
+            const current = input[key];
+            // Inject if missing, null, or wrong type (e.g., query must be string but got number/object)
+            const shouldInject = current === undefined || current === null || current === "" ||
+                (typeof value === "string" && typeof current !== "string");
+            if (shouldInject) {
+                input[key] = value;
+                console.log(`[Composio] Injected required default: ${key}=${value} for ${actionId} (was: ${JSON.stringify(current)})`);
+            }
+        }
+    }
 
     try {
         console.log(`[Composio] Executing action ${actionId} for entity ${entityId}. Params:`, JSON.stringify(input).slice(0, 500));
@@ -70,10 +101,43 @@ export const executeAction = async (
         // Unwrap SDK envelope to get clean data
         const output = unwrapComposioResponse(rawOutput, actionId);
 
-        const count = Array.isArray(output) ? output.length : (output ? 1 : 0);
-        console.log(`[Composio] Action ${actionId} completed. Records: ${count}. Output type: ${typeof output}`);
+        // Detailed response structure logging for debugging
+        if (output && typeof output === "object" && !Array.isArray(output)) {
+            const keys = Object.keys(output);
+            const arrayKeys = keys.filter(k => Array.isArray(output[k]));
+            const arrayLengths = arrayKeys.map(k => `${k}[${output[k].length}]`);
+            console.log(`[Composio] ${actionId} raw data: keys=[${keys.join(",")}], arrays=[${arrayLengths.join(",")}]`);
+        } else if (Array.isArray(output)) {
+            console.log(`[Composio] ${actionId} raw data: direct array with ${output.length} items`);
+        }
 
-        return output;
+        // Unwrap `response_data` wrapper (common in Notion, Outlook, etc.)
+        // Composio wraps some API responses in { response_data: { actual_data } }
+        let unwrappedOutput = output;
+        if (output && typeof output === "object" && !Array.isArray(output) && output.response_data && typeof output.response_data === "object") {
+            console.log(`[Composio] Unwrapping response_data for ${actionId}`);
+            unwrappedOutput = output.response_data;
+        }
+
+        // For non-array outputs, try to extract the payload array immediately
+        // GitHub API often returns { total_count, items, ... } or similar wrappers
+        let finalOutput = unwrappedOutput;
+        if (unwrappedOutput && typeof unwrappedOutput === "object" && !Array.isArray(unwrappedOutput)) {
+            const extracted = extractPayloadArray(unwrappedOutput);
+            // Only skip extraction if extractPayloadArray just wrapped the original object
+            const isJustWrapped = extracted.length === 1 && extracted[0] === unwrappedOutput;
+            if (extracted.length > 0 && !isJustWrapped) {
+                console.log(`[Composio] Auto-extracted array from ${actionId}: ${extracted.length} items`);
+                finalOutput = extracted;
+            } else {
+                console.log(`[Composio] ${actionId}: no nested array found, using object as-is (keys: ${Object.keys(unwrappedOutput).join(", ")})`);
+            }
+        }
+
+        const count = Array.isArray(finalOutput) ? finalOutput.length : (finalOutput ? 1 : 0);
+        console.log(`[Composio] Action ${actionId} completed. Records: ${count}. Output type: ${Array.isArray(finalOutput) ? `array[${count}]` : typeof finalOutput}`);
+
+        return finalOutput;
     } catch (error) {
         console.error(`[Composio] Failed to execute action ${actionId}:`, error);
         throw error;
@@ -110,7 +174,7 @@ export function extractPayloadArray(data: any): any[] {
 
     // Find the first array-valued property (common patterns: repositories, items, results, data, records, etc.)
     // Prioritize known keys first
-    const priorityKeys = ["repositories", "items", "results", "data", "records", "commits", "issues", "messages", "channels", "users", "pages", "teams", "projects", "cycles", "labels", "states"];
+    const priorityKeys = ["repositories", "items", "results", "data", "records", "commits", "issues", "messages", "channels", "users", "pages", "teams", "projects", "cycles", "labels", "states", "details", "value", "values", "meetings", "conversations", "contacts", "workspaces"];
     for (const key of priorityKeys) {
         if (Array.isArray(data[key])) {
             return data[key];

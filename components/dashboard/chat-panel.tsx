@@ -82,11 +82,13 @@ export function ChatPanel({
         const res = await fetch(`/api/tools/${toolId}/result`);
         if (!res.ok || cancelled) return;
         const json = await res.json();
-        if (json.build_steps && Array.isArray(json.build_steps) && json.build_steps.length > 0) {
-          setBuildSteps(json.build_steps.map((s: any) => ({
+        const rawSteps = json.data?.build_steps;
+        if (Array.isArray(rawSteps) && rawSteps.length > 0) {
+          setBuildSteps(rawSteps.map((s: any) => ({
             id: s.id,
             label: s.title || s.label || s.id,
             status: s.status === "running" ? "running" : s.status,
+            narrative: Array.isArray(s.logs) && s.logs.length > 0 ? s.logs[s.logs.length - 1] : undefined,
           })));
         }
       } catch { /* ignore polling errors */ }
@@ -392,7 +394,7 @@ function ChatMessage({ message, onAction }: { message: Message, onAction: (cta: 
       {/* Metadata Footer */}
       {!isUser && !isError && (
         <div className="flex items-center gap-2 px-1">
-          {message.metadata?.executionId && (
+          {message.metadata?.executionId && message.metadata?.durationMs != null && !isNaN(message.metadata.durationMs) && (
             <div className="text-[10px] text-muted-foreground flex items-center gap-1 opacity-70">
               Built in {(message.metadata.durationMs / 1000).toFixed(1)}s
             </div>

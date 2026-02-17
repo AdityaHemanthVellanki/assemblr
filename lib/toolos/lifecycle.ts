@@ -60,7 +60,7 @@ export async function finalizeToolExecution(input: FinalizeToolExecutionInput): 
     updated_at: new Date().toISOString(),
   };
 
-  // Map legacy 'READY' to 'MATERIALIZED' for DB constraint compliance
+  // DB constraint allows: CREATED, PLANNED, READY_TO_EXECUTE, EXECUTING, MATERIALIZED, FAILED
   const dbStatus = status === "READY" ? "MATERIALIZED" : status;
 
   if (dbStatus === "MATERIALIZED") {

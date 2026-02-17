@@ -1,4 +1,3 @@
-
 import { createClient } from "@supabase/supabase-js";
 import { getServerEnv } from "@/lib/env";
 import { assertNoMocks, ensureRuntimeOrThrow } from "@/lib/core/guard";

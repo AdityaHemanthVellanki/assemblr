@@ -1,7 +1,62 @@
 
 import { getComposioClient } from "./client";
 import { ComposioConnection } from "./types";
-import { getIntegrationConfig } from "./config";
+import { getIntegrationConfig, resolveAssemblrId, INTEGRATION_AUTH_CONFIG } from "./config";
+import { getServerEnv } from "@/lib/env/server";
+
+// Cache custom integration IDs to avoid re-creating on every connection attempt
+const _customIntegrationCache = new Map<string, string>();
+
+/**
+ * Create or retrieve a custom Composio integration with Assemblr's own OAuth credentials.
+ * Uses raw API because the SDK's getOrCreateIntegration has a bug.
+ */
+async function ensureCustomIntegration(appName: string, clientId: string, clientSecret: string): Promise<string> {
+    const cached = _customIntegrationCache.get(appName);
+    if (cached) return cached;
+
+    const env = getServerEnv();
+    const apiKey = env.COMPOSIO_API_KEY as string;
+
+    // First, look up the app's UUID from Composio
+    const appsRes = await fetch(`https://backend.composio.dev/api/v1/apps?name=${appName}`, {
+        headers: { "x-api-key": apiKey },
+    });
+    const appsData = await appsRes.json();
+    const app = Array.isArray(appsData)
+        ? appsData.find((a: any) => a.key === appName)
+        : appsData?.items?.find((a: any) => a.key === appName);
+
+    if (!app?.appId) {
+        throw new Error(`[Composio] Could not find appId for ${appName}`);
+    }
+
+    // Create integration with our own OAuth credentials
+    const createRes = await fetch("https://backend.composio.dev/api/v1/integrations", {
+        method: "POST",
+        headers: {
+            "x-api-key": apiKey,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            name: `assemblr_${appName}_${Date.now()}`,
+            appId: app.appId,
+            authScheme: "OAUTH2",
+            useComposioAuth: false,
+            authConfig: { client_id: clientId, client_secret: clientSecret },
+        }),
+    });
+
+    const integration = await createRes.json();
+
+    if (!integration.id) {
+        throw new Error(`[Composio] Failed to create integration: ${JSON.stringify(integration)}`);
+    }
+
+    console.log(`[Composio] Custom integration created: ${integration.id} (redirect: ${integration.authConfig?.oauth_redirect_uri})`);
+    _customIntegrationCache.set(appName, integration.id);
+    return integration.id;
+}
 
 export const getComposioEntityId = (orgId: string) => {
     if (!orgId) throw new Error("Org ID is required for Entity ID");
@@ -54,14 +109,34 @@ export const createConnection = async (
             redirectUri,
         };
 
-        if (config.useComposioAuth) {
+        if (!config.useComposioAuth && config.customAuth) {
+            // Use Assemblr's own OAuth credentials instead of Composio's managed app.
+            // Composio's managed Slack app has the legacy "bot" scope which breaks modern OAuth v2.
+            // We register our own integration with Composio using our client_id/secret.
+            const clientId = process.env[config.customAuth.clientIdEnv];
+            const clientSecret = process.env[config.customAuth.clientSecretEnv];
+
+            if (!clientId || !clientSecret) {
+                throw new Error(
+                    `[Composio] Custom auth requires ${config.customAuth.clientIdEnv} and ${config.customAuth.clientSecretEnv} env vars`
+                );
+            }
+
+            console.log(`[Composio] Using custom OAuth credentials for ${appName}`);
+
+            const customIntegrationId = await ensureCustomIntegration(appName, clientId, clientSecret);
+
+            // Use the custom integration ID — this ensures Composio uses OUR OAuth app
+            payload.integrationId = customIntegrationId;
+            delete payload.appName; // Don't pass appName when using integrationId
+        } else if (config.useComposioAuth) {
             payload.authMode = "OAUTH2";
             payload.authConfig = {};
 
             // Critical Branding Overrides
             // @ts-ignore - SDK types might be outdated but API accepts these for UI branding
             payload.displayName = "Assemblr";
-            // @ts-ignore 
+            // @ts-ignore
             payload.appLogo = `${baseUrl}/images/logo-full.png`;
         }
 
@@ -123,8 +198,8 @@ export const getConnectionStatus = async (connectionId: string): Promise<Composi
         const connection = await client.connectedAccounts.get({ connectedAccountId: connectionId });
         return {
             id: connection.id,
-            // Map appName to integrationId if available (preferred for Assemblr mapping)
-            integrationId: connection.appName ? connection.appName.toLowerCase() : connection.integrationId,
+            // Reverse-map Composio appName → Assemblr integration ID (e.g., "googlesheets" → "google")
+            integrationId: connection.appName ? resolveAssemblrId(connection.appName) : connection.integrationId,
             status: connection.status as any,
             connectedAt: connection.createdAt,
             appName: connection.appName,
@@ -142,8 +217,8 @@ export const listConnections = async (orgId: string): Promise<ComposioConnection
         const response = await client.connectedAccounts.list({ entityId });
         return response.items.map((conn: any) => ({
             id: conn.id,
-            // Map appName to integrationId if available (preferred for Assemblr mapping)
-            integrationId: conn.appName ? conn.appName.toLowerCase() : conn.integrationId,
+            // Reverse-map Composio appName → Assemblr integration ID (e.g., "googlesheets" → "google")
+            integrationId: conn.appName ? resolveAssemblrId(conn.appName) : conn.integrationId,
             status: conn.status as any,
             connectedAt: conn.createdAt,
             appName: conn.appName,
@@ -156,6 +231,13 @@ export const listConnections = async (orgId: string): Promise<ComposioConnection
     }
 }
 
+// Known app name aliases — when an integration's appName changed (e.g., slack → slackbot),
+// we still need to clean up connections under the old name.
+const APP_NAME_ALIASES: Record<string, string[]> = {
+    slackbot: ["slack"],
+    googlesheets: ["google"],
+};
+
 export const removeConnection = async (orgId: string, integrationId: string, connectionId?: string): Promise<void> => {
     const client = getComposioClient();
     const entityId = getComposioEntityId(orgId);
@@ -166,12 +248,16 @@ export const removeConnection = async (orgId: string, integrationId: string, con
             console.log(`[Composio] Explicitly removing connectionId: ${connectionId}`);
             await client.connectedAccounts.delete({ connectedAccountId: connectionId });
         } else {
-            console.log(`[Composio] Removing all connections for app: ${config.appName} in org: ${orgId}`);
-            // Use appName for filtering
-            // @ts-ignore - SDK types might be stricter but appNames accepts string
-            const connections = await client.connectedAccounts.list({ entityId, appNames: config.appName });
-            for (const conn of connections.items) {
-                await client.connectedAccounts.delete({ connectedAccountId: conn.id });
+            // Search current appName + any known aliases
+            const appNames = [config.appName, ...(APP_NAME_ALIASES[config.appName] || [])];
+            console.log(`[Composio] Removing all connections for apps: ${appNames.join(", ")} in org: ${orgId}`);
+
+            for (const app of appNames) {
+                // @ts-ignore - SDK types might be stricter but appNames accepts string
+                const connections = await client.connectedAccounts.list({ entityId, appNames: app });
+                for (const conn of connections.items) {
+                    await client.connectedAccounts.delete({ connectedAccountId: conn.id });
+                }
             }
         }
     } catch (e) {

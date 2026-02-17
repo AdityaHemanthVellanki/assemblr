@@ -186,12 +186,111 @@ function resolveFieldSmart(row: any, field: string): any {
   if (field === "name" && row.properties?.Name?.title?.[0]?.plain_text) return row.properties.Name.title[0].plain_text;
   if (field === "name" && row.properties?.title?.title?.[0]?.plain_text) return row.properties.title.title[0].plain_text;
 
+  // Stripe patterns
+  if (field === "amount" && row.amount != null) return (row.amount / 100).toFixed(2);
+  if (field === "amountdue" && row.amount_due != null) return (row.amount_due / 100).toFixed(2);
+  if (field === "currency" && row.currency) return row.currency.toUpperCase();
+  if (field === "customer" && row.customer) return typeof row.customer === "string" ? row.customer : row.customer?.email ?? row.customer?.id;
+  if (field === "plan" && row.plan?.nickname) return row.plan.nickname;
+  if (field === "plan" && row.items?.data?.[0]?.price?.nickname) return row.items.data[0].price.nickname;
+  if (field === "currentperiodend" && row.current_period_end) return formatDate(new Date(row.current_period_end * 1000).toISOString());
+  if (field === "duedate" && row.due_date) return formatDate(new Date(row.due_date * 1000).toISOString());
+
+  // HubSpot patterns
+  if (field === "firstname" && row.properties?.firstname) return row.properties.firstname;
+  if (field === "lastname" && row.properties?.lastname) return row.properties.lastname;
+  if (field === "email" && row.properties?.email) return row.properties.email;
+  if (field === "phone" && row.properties?.phone) return row.properties.phone;
+  if (field === "dealname" && row.properties?.dealname) return row.properties.dealname;
+  if (field === "dealstage" && row.properties?.dealstage) return row.properties.dealstage;
+  if (field === "pipeline" && row.properties?.pipeline) return row.properties.pipeline;
+  if (field === "closedate" && row.properties?.closedate) return formatDate(row.properties.closedate);
+  if (field === "createdate" && row.properties?.createdate) return formatDate(row.properties.createdate);
+  if (field === "domain" && row.properties?.domain) return row.properties.domain;
+  if (field === "industry" && row.properties?.industry) return row.properties.industry;
+  if (field === "annualrevenue" && row.properties?.annualrevenue) return row.properties.annualrevenue;
+
+  // Outlook patterns
+  if (field === "subject" && row.subject) return row.subject;
+  if (field === "from" && row.from?.emailAddress?.address) return row.from.emailAddress.address;
+  if (field === "from" && row.from?.emailAddress?.name) return row.from.emailAddress.name;
+  if (field === "receiveddatetime" && row.receivedDateTime) return formatDate(row.receivedDateTime);
+  if (field === "bodypreview" && row.bodyPreview) return row.bodyPreview;
+  if (field === "isread" && typeof row.isRead === "boolean") return row.isRead ? "Read" : "Unread";
+  if (field === "organizer" && row.organizer?.emailAddress?.name) return row.organizer.emailAddress.name;
+  if (field === "location" && row.location?.displayName) return row.location.displayName;
+  if (field === "start" && row.start?.dateTime) return formatDate(row.start.dateTime);
+  if (field === "end" && row.end?.dateTime) return formatDate(row.end.dateTime);
+
+  // Zoom patterns
+  if (field === "topic" && row.topic) return row.topic;
+  if (field === "starttime" && row.start_time) return formatDate(row.start_time);
+  if (field === "duration" && row.duration) return `${row.duration} min`;
+  if (field === "joinurl" && row.join_url) return row.join_url;
+
+  // Trello patterns
+  if (field === "listname" && row.list?.name) return row.list.name;
+  if (field === "due" && row.due) return formatDate(row.due);
+  if (field === "datelastactivity" && row.dateLastActivity) return formatDate(row.dateLastActivity);
+
+  // Asana patterns
+  if (field === "assignee" && row.assignee?.name) return row.assignee.name;
+  if (field === "dueon" && row.due_on) return formatDate(row.due_on);
+  if (field === "completed" && typeof row.completed === "boolean") return row.completed ? "Done" : "In Progress";
+  if (field === "section" && row.memberships?.[0]?.section?.name) return row.memberships[0].section.name;
+  if (field === "projects" && Array.isArray(row.projects)) return row.projects.map((p: any) => p.name).join(", ");
+
+  // GitLab patterns
+  if (field === "weburl" && row.web_url) return row.web_url;
+  if (field === "lastactivityat" && row.last_activity_at) return formatDate(row.last_activity_at);
+  if (field === "authorname" && row.author_name) return row.author_name;
+  if (field === "targetbranch" && row.target_branch) return row.target_branch;
+  if (field === "createdat" && row.created_at) return formatDate(row.created_at);
+  if (field === "updatedat" && row.updated_at) return formatDate(row.updated_at);
+
+  // Intercom patterns
+  if (field === "state" && row.state) return row.state;
+  if (field === "role" && row.role) return row.role;
+
+  // ClickUp patterns
+  if (field === "priority" && row.priority?.priority) return row.priority.priority;
+  if (field === "list" && row.list?.name) return row.list.name;
+  if (field === "assignees" && Array.isArray(row.assignees)) return row.assignees.map((a: any) => a.username ?? a.email).join(", ");
+  if (field === "duedate" && row.due_date) return formatDate(new Date(Number(row.due_date)).toISOString());
+
+  // Microsoft Teams patterns
+  if (field === "body" && row.body?.content) return row.body.content.replace(/<[^>]*>/g, "").substring(0, 200);
+  if (field === "from" && row.from?.user?.displayName) return row.from.user.displayName;
+  if (field === "createddatetime" && row.createdDateTime) return formatDate(row.createdDateTime);
+  if (field === "displayname" && row.displayName) return row.displayName;
+  if (field === "membershiptype" && row.membershipType) return row.membershipType;
+
+  // Airtable patterns
+  if (field === "name" && row.fields?.Name) return row.fields.Name;
+  if (field === "notes" && row.fields?.Notes) return row.fields.Notes;
+
+  // Bitbucket patterns
+  if (field === "fullname" && row.full_name) return row.full_name;
+  if (field === "slug" && row.slug) return row.slug;
+  if (field === "sourcebranch" && row.source?.branch?.name) return row.source.branch.name;
+  if (field === "destinationbranch" && row.destination?.branch?.name) return row.destination.branch.name;
+
+  // QuickBooks patterns
+  if (field === "accounttype" && row.AccountType) return row.AccountType;
+  if (field === "currentbalance" && row.CurrentBalance != null) return row.CurrentBalance.toFixed(2);
+  if (field === "displayname" && row.DisplayName) return row.DisplayName;
+  if (field === "companyname" && row.CompanyName) return row.CompanyName;
+  if (field === "balance" && row.Balance != null) return row.Balance.toFixed(2);
+
   // Generic patterns
   if (field === "name" && row.name) return row.name;
   if (field === "description" && row.description) return row.description;
   if (field === "url" && row.html_url) return row.html_url;
   if (field === "url" && row.url) return row.url;
   if (field === "id" && row.id) return row.id;
+  if (field === "email" && row.email) return row.email;
+  if (field === "status" && row.status) return row.status;
+  if (field === "created" && row.created) return formatDate(typeof row.created === "number" ? new Date(row.created * 1000).toISOString() : row.created);
 
   return undefined;
 }

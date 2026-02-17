@@ -213,14 +213,14 @@ export default function IntegrationsPage() {
     const current = integrations.find((i) => i.id === integrationId);
     if (!current) return;
 
-    // CRITICAL FIX: Direct OAuth Redirect
-    // CRITICAL FIX: Direct OAuth Redirect
+    // Direct OAuth Redirect
     // If it's an OAuth integration, skip the modal and redirect immediately
-    // UNLESS it requires parameters (like Jira/Salesforce) OR it is already connected.
+    // UNLESS it requires parameters (like Jira/Salesforce) OR it is already healthy.
+    // Expired/error connections should re-auth directly (not show manage modal).
     const requiresParams = current.requiredParams && current.requiredParams.length > 0;
-    const isConnected = current.connected;
+    const isHealthy = current.connected && current.status !== "expired" && current.status !== "error" && current.status !== "failed";
 
-    if ((current.connectionMode === "hosted_oauth" as any || current.auth.type === "oauth") && !requiresParams && !isConnected) {
+    if ((current.connectionMode === "hosted_oauth" as any || current.auth.type === "oauth") && !requiresParams && !isHealthy) {
       try {
         // Set local loading state (optimistic)
         setIntegrations(prev => prev.map(p => p.id === integrationId ? { ...p, status: "connecting" } : p));
@@ -263,7 +263,7 @@ export default function IntegrationsPage() {
         ...current.auth,
         fields: [
           // Inject Connection Label if it's an OAuth flow or already has accounts
-          ...(current.auth.type === "oauth" || current.connectionMode === "hosted_oauth" as any || isConnected ? [{
+          ...(current.auth.type === "oauth" || current.connectionMode === "hosted_oauth" as any || isHealthy ? [{
             kind: "string" as const,
             id: "connectionLabel",
             label: "Connection Label",
@@ -660,7 +660,7 @@ export default function IntegrationsPage() {
                             <Button
                               type="button"
                               variant="destructive"
-                              onClick={() => void disconnect()}
+                              onClick={() => void disconnect(activeStatus?.connectionId ?? undefined)}
                               disabled={submitting}
                               className="w-full"
                             >

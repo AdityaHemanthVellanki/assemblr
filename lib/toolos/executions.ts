@@ -250,24 +250,72 @@ export async function completeExecution(executionId: string) {
 }
 
 /**
- * Fire-and-forget persist build steps to prompt_executions.
- * Used for real-time build progress tracking.
+ * In-memory build steps store — keyed by toolId for fast polling lookups.
+ * Works even when the DB column doesn't exist yet.
+ * Entries auto-expire after 5 minutes to prevent memory leaks.
  */
+const _inMemoryBuildSteps = new Map<string, { steps: any[]; executionId: string; updatedAt: number }>();
+const BUILD_STEPS_TTL_MS = 5 * 60 * 1000;
+
+function cleanExpiredBuildSteps() {
+  const now = Date.now();
+  for (const [key, value] of _inMemoryBuildSteps) {
+    if (now - value.updatedAt > BUILD_STEPS_TTL_MS) {
+      _inMemoryBuildSteps.delete(key);
+    }
+  }
+}
+
+/**
+ * Associate an execution with a toolId for in-memory lookups.
+ */
+export function registerBuildExecution(toolId: string, executionId: string) {
+  _inMemoryBuildSteps.set(toolId, { steps: [], executionId, updatedAt: Date.now() });
+}
+
+/**
+ * Fire-and-forget persist build steps.
+ * Always writes to in-memory store; also attempts DB persist if column exists.
+ */
+let _buildStepsColumnExists = true;
+
 export function persistBuildSteps(executionId: string, steps: any[]) {
   if (!executionId) return;
-  const supabase = createSupabaseAdminClient();
-  (supabase.from("prompt_executions") as any)
-    .update({ build_steps: steps, updated_at: new Date().toISOString() })
-    .eq("id", executionId)
-    .then(({ error }: any) => {
-      if (error) console.warn("[BuildSteps] Failed to persist:", error.message);
-    });
+
+  // Always update in-memory store (keyed by toolId via executionId lookup)
+  for (const [toolId, entry] of _inMemoryBuildSteps) {
+    if (entry.executionId === executionId) {
+      entry.steps = steps;
+      entry.updatedAt = Date.now();
+      break;
+    }
+  }
+
+  // Also try DB persist if column exists
+  if (_buildStepsColumnExists) {
+    const supabase = createSupabaseAdminClient();
+    (supabase.from("prompt_executions") as any)
+      .update({ build_steps: steps, updated_at: new Date().toISOString() })
+      .eq("id", executionId)
+      .then(({ error }: any) => {
+        if (error?.message?.includes("build_steps")) {
+          _buildStepsColumnExists = false;
+        }
+      });
+  }
 }
 
 /**
  * Get current build steps for an execution.
  */
 export async function getBuildSteps(executionId: string): Promise<any[]> {
+  // Check in-memory first
+  for (const entry of _inMemoryBuildSteps.values()) {
+    if (entry.executionId === executionId && entry.steps.length > 0) {
+      return entry.steps;
+    }
+  }
+  if (!_buildStepsColumnExists) return [];
   const supabase = createSupabaseAdminClient();
   const { data, error } = await (supabase.from("prompt_executions") as any)
     .select("build_steps")
@@ -278,12 +326,32 @@ export async function getBuildSteps(executionId: string): Promise<any[]> {
 }
 
 /**
+ * Clear build steps for a tool (call when execution completes).
+ */
+export function clearBuildSteps(toolId: string) {
+  _inMemoryBuildSteps.delete(toolId);
+  cleanExpiredBuildSteps();
+}
+
+/**
  * Get the latest active execution for a tool (for polling build progress).
  */
 export async function getActiveExecution(toolId: string): Promise<{ id: string; status: string; buildSteps: any[] } | null> {
+  // Check in-memory store first
+  const memEntry = _inMemoryBuildSteps.get(toolId);
+  if (memEntry && memEntry.steps.length > 0 && (Date.now() - memEntry.updatedAt < BUILD_STEPS_TTL_MS)) {
+    return {
+      id: memEntry.executionId,
+      status: "compiling",
+      buildSteps: memEntry.steps,
+    };
+  }
+
+  // Fall back to DB
   const supabase = createSupabaseAdminClient();
+  const selectCols = _buildStepsColumnExists ? "id, status, build_steps" : "id, status";
   const { data, error } = await (supabase.from("prompt_executions") as any)
-    .select("id, status, build_steps")
+    .select(selectCols)
     .eq("tool_id", toolId)
     .in("status", ["compiling", "executing", "created"])
     .order("created_at", { ascending: false })

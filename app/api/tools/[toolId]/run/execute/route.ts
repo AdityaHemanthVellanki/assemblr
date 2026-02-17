@@ -60,7 +60,7 @@ export async function POST(
     const input = body?.input && typeof body.input === "object" ? body.input : {};
 
     const latestResult = await getLatestToolResult(toolId, ctx.orgId);
-    if (!latestResult && (project.status === "READY" || (spec as any)?.status === "active")) {
+    if (!latestResult && (project.status === "MATERIALIZED" || project.status === "READY" || (spec as any)?.status === "active")) {
       // Allow execution if we are running an action (bootstrapping)
       if (!actionId) {
          throw new FatalInvariantViolation("READY tool without materialized result");
@@ -199,7 +199,8 @@ export async function POST(
               schema: "public",
               client: "server",
             });
-            let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state", {
+            // Use _v2 RPC (writes MATERIALIZED). Falls back to manual code if RPC doesn't exist.
+            let { error: finalizeError } = await (statusSupabase as any).rpc("finalize_tool_render_state_v2", {
               p_tool_id: toolId,
               p_org_id: ctx.orgId,
               p_integration_data: integrationData,
@@ -210,7 +211,14 @@ export async function POST(
               p_finalized_at: finalizedAt,
             });
 
-            if (finalizeError?.message?.includes("finalize_tool_render_state") && (finalizeError?.message?.includes("does not exist") || finalizeError?.message?.includes("Could not find the function"))) {
+            // Fallback: if RPC doesn't exist OR fails with constraint violation, use manual writes
+            if (finalizeError && (
+              finalizeError.message?.includes("finalize_tool_render_state") ||
+              finalizeError.message?.includes("does not exist") ||
+              finalizeError.message?.includes("Could not find the function") ||
+              finalizeError.message?.includes("projects_status_check") ||
+              finalizeError.message?.includes("violates check constraint")
+            )) {
               const { error: upsertError } = await (statusSupabase as any)
                 .from("tool_render_state")
                 .upsert({

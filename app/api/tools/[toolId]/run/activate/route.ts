@@ -13,7 +13,7 @@ export async function POST(
     const { ctx } = await requireOrgMember();
     await requireProjectOrgAccess(ctx, toolId);
     const result = await getLatestToolResult(toolId, ctx.orgId);
-    if (result && result.status === "MATERIALIZED") {
+    if (result && (result.status === "MATERIALIZED" || (result.status as string) === "READY")) {
       return jsonResponse({ activated: true });
     }
     return errorResponse("Tool not materialized", 409, {

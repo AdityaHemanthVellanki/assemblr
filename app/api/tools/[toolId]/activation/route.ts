@@ -26,7 +26,7 @@ export async function GET(
     }
 
     const result = await getLatestToolResult(toolId, ctx.orgId);
-    return jsonResponse({ activated: result?.status === "MATERIALIZED" });
+    return jsonResponse({ activated: result?.status === "MATERIALIZED" || (result?.status as string) === "READY" });
   } catch (e) {
     return handleApiError(e);
   }

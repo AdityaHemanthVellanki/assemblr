@@ -1,6 +1,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getComposioClient } from "@/lib/integrations/composio/client";
+import { resolveAssemblrId } from "@/lib/integrations/composio/config";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,8 @@ export async function GET(req: NextRequest) {
                         const { createSupabaseServerClient } = await import("@/lib/supabase/server");
                         const supabase = await createSupabaseServerClient();
 
-                        const integrationId = connection.appName ? connection.appName.toLowerCase() : connection.integrationId;
+                        // Reverse-map Composio appName → Assemblr integration ID (e.g., "googlesheets" → "google")
+                        const integrationId = connection.appName ? resolveAssemblrId(connection.appName) : connection.integrationId;
 
                         console.log(`[Composio Callback] Persisting connection for ${integrationId} in Org ${context.orgId}`);
 

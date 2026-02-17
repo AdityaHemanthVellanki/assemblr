@@ -13,6 +13,8 @@ async function applyMigration() {
     process.exit(1);
   }
 
+  //async part of this 
+
   const migrationPath = path.join(
     process.cwd(),
     "supabase/migrations/20260123043000_add_tool_render_state.sql"
