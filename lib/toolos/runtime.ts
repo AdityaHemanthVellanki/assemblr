@@ -8,6 +8,7 @@ import { loadToolState, saveToolState } from "@/lib/toolos/state-store";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createExecutionRun, updateExecutionRun } from "@/lib/toolos/execution-runs";
 import { requestCoordinator } from "@/lib/security/rate-limit";
+import { recordMetric } from "@/lib/observability/metrics";
 
 export type ToolExecutionResult = {
   state: Record<string, any>;
@@ -146,6 +147,8 @@ export async function executeToolAction(params: {
           output: sanitizeLogData(output),
         });
         await updateExecutionRun({ runId: run.id, status: "completed", logs: runLogs });
+        recordMetric({ orgId, toolId, metricName: "action.completed", metricValue: 1, dimensions: { actionId: action.id, integrationId: action.integrationId } });
+        recordMetric({ orgId, toolId, metricName: "action.duration_ms", metricValue: durationMs, dimensions: { actionId: action.id, integrationId: action.integrationId } });
       }
 
       // Apply reducer if configured
@@ -168,6 +171,7 @@ export async function executeToolAction(params: {
           error: err instanceof Error ? err.message : String(err),
         });
         await updateExecutionRun({ runId: run.id, status: "failed", logs: runLogs });
+        recordMetric({ orgId, toolId, metricName: "action.failed", metricValue: 1, dimensions: { actionId: action.id, integrationId: action.integrationId, error: err instanceof Error ? err.message : String(err) } });
       }
       throw err;
     }

@@ -7,7 +7,7 @@ export type CapabilityActionType =
     | "search"
     | "other";
 
-export type CapabilityOperation = "read" | "aggregate" | "filter" | "group";
+export type CapabilityOperation = "read" | "write" | "aggregate" | "filter" | "group";
 
 export interface Capability {
     id: string; // Unique ID (e.g. "github_issues_list")

@@ -281,13 +281,9 @@ export class ToolCompiler {
     // Stage 7: fetch-data
     await runStage("fetch-data", budgets.fetchDataMs, runFetchData);
 
-    // Stage 8: build-workflows (skip for read-only tools — saves ~2s)
-    const allActionsReadOnly = spec.actions.length > 0 && spec.actions.every((a) => a.type === "READ");
-    if (!allActionsReadOnly) {
-      await runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows);
-    } else {
-      emitProgress({ stage: "build-workflows", status: "completed", message: "Skipped (read-only)" });
-    }
+    // Stage 8: build-workflows — always run to generate workflows and triggers
+    // Even read-only tools may benefit from workflow structure if the prompt implies automation
+    await runStage("build-workflows", budgets.buildWorkflowsMs, runBuildWorkflows);
 
     // Stage 9+10: design-views + validate-spec (can run in parallel)
     await Promise.all([

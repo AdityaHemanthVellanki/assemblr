@@ -25,6 +25,8 @@ import { validateFetchedData } from "@/lib/toolos/answer-contract";
 import { evaluateGoalSatisfaction, decideRendering, buildEvidenceFromDerivedIncidents, evaluateRelevanceGate, type GoalEvidence, type RelevanceGateResult } from "@/lib/toolos/goal-validation";
 import { PROJECT_STATUSES } from "@/lib/core/constants";
 import { acquireExecutionLock, completeExecution, getExecutionById, updateExecution, persistBuildSteps, registerBuildExecution, clearBuildSteps } from "@/lib/toolos/executions";
+import { runActionGraph } from "@/lib/toolos/action-graph-engine";
+import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { getConnectedIntegrations } from "@/lib/integrations/store";
 import { detectIntegrationsFromText } from "@/lib/integrations/detection";
 import { canExecuteTool, ensureToolIdentity, finalizeToolExecution } from "@/lib/toolos/lifecycle";
@@ -48,6 +50,17 @@ export interface ToolChatRequest {
   requiredIntegrationIds?: string[];
   executionId?: string;
   supabaseClient?: any;
+  approvedActionIds?: string[];
+}
+
+export interface PendingWriteAction {
+  id: string;
+  name: string;
+  description: string;
+  type: "WRITE" | "MUTATE" | "NOTIFY";
+  integrationId: string;
+  inputSchema: Record<string, any>;
+  requiresApproval: boolean;
 }
 
 export interface ToolChatResponse {
@@ -58,6 +71,7 @@ export interface ToolChatResponse {
   requiresIntegrations?: boolean;
   missingIntegrations?: string[];
   requiredIntegrations?: string[];
+  pendingWriteActions?: PendingWriteAction[];
 }
 
 function runtimeGuardResponse(): ToolChatResponse | null {
@@ -1669,12 +1683,102 @@ export async function runCompilerPipeline(
         markStep(steps, "render", "success", "Your tool is ready");
       }
 
+      // Execute workflows via the workflow engine if spec has them
+      if (compiledTool && spec.workflows && spec.workflows.length > 0) {
+        for (const workflow of spec.workflows) {
+          try {
+            markStep(steps, "fetch", "running", `Running workflow: ${workflow.name}`);
+            await runWorkflow({
+              orgId: buildContext.orgId,
+              toolId,
+              compiledTool,
+              workflowId: workflow.id,
+              input: {},
+            });
+            markStep(steps, "fetch", "success", `Workflow ${workflow.name} completed`);
+          } catch (err) {
+            console.warn(`[WorkflowExecution] Workflow ${workflow.id} failed:`, err);
+          }
+        }
+      }
+
+      // Execute action graph if spec has one with edges
+      if (compiledTool && spec.actionGraph?.edges && spec.actionGraph.edges.length > 0) {
+        try {
+          markStep(steps, "fetch", "running", "Executing action graph...");
+          await runActionGraph({
+            orgId: buildContext.orgId,
+            toolId,
+            compiledTool,
+            graph: spec.actionGraph,
+            input: {},
+          });
+          markStep(steps, "fetch", "success", "Action graph completed");
+        } catch (err) {
+          console.warn("[ActionGraphExecution] Failed:", err);
+        }
+      }
+
+      // Collect pending write actions (WRITE/MUTATE/NOTIFY) that require approval
+      const approvedIds = new Set(input.approvedActionIds ?? []);
+      const writeActions = (spec.actions || []).filter(
+        (a) => a.type !== "READ" && (a.type === "WRITE" || a.type === "MUTATE" || a.type === "NOTIFY"),
+      );
+      const pendingWriteActions: PendingWriteAction[] = [];
+      const executedWriteOutputs: Array<{ actionId: string; output: any }> = [];
+
+      for (const action of writeActions) {
+        if (approvedIds.has(action.id)) {
+          // Execute approved write actions
+          try {
+            markStep(steps, "fetch", "running", `Executing ${action.name}...`);
+            const writeResult = await executeToolAction({
+              orgId: buildContext.orgId,
+              toolId,
+              compiledTool: compiledTool!,
+              actionId: action.id,
+              input: {},
+            });
+            executedWriteOutputs.push({ actionId: action.id, output: writeResult.output });
+            markStep(steps, "fetch", "success", `${action.name} completed`);
+
+            // Audit log
+            const { logWriteAction } = await import("@/lib/toolos/write-audit");
+            void logWriteAction({
+              orgId: buildContext.orgId,
+              userId: input.userId ?? "system",
+              toolId,
+              actionId: action.id,
+              actionType: action.type as "WRITE" | "MUTATE" | "NOTIFY",
+              integrationId: action.integrationId,
+              input: {},
+              output: writeResult.output,
+              status: "success",
+              durationMs: 0,
+            });
+          } catch (err) {
+            console.error(`[WriteAction] Failed to execute ${action.id}:`, err);
+          }
+        } else if (action.requiresApproval !== false) {
+          // Collect as pending for approval
+          pendingWriteActions.push({
+            id: action.id,
+            name: action.name,
+            description: action.description,
+            type: action.type as "WRITE" | "MUTATE" | "NOTIFY",
+            integrationId: action.integrationId,
+            inputSchema: action.inputSchema,
+            requiresApproval: true,
+          });
+        }
+      }
+
       if (input.executionId) {
         await completeExecution(input.executionId as string);
       }
       clearBuildSteps(input.toolId);
       const assistantSummary = buildAssistantSummary(spec);
-      return {
+      const response: ToolChatResponse = {
         explanation: assistantSummary,
         message: { type: "text", content: assistantSummary },
         spec: { ...spec, lifecycle_state: machine.state },
@@ -1688,8 +1792,13 @@ export async function runCompilerPipeline(
           assumptions,
           completenessScore,
           executionId: input.executionId,
+          executedWriteActions: executedWriteOutputs.length > 0 ? executedWriteOutputs : undefined,
         },
       };
+      if (pendingWriteActions.length > 0) {
+        response.pendingWriteActions = pendingWriteActions;
+      }
+      return response;
     } catch (err) {
       if (isIntegrationNotConnectedError(err)) {
         console.warn(`[Compiler] Integrations missing: ${err.integrationIds.join(", ")}`);

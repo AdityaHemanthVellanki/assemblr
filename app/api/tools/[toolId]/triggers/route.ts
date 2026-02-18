@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireOrgMember, requireProjectOrgAccess, requireRole } from "@/lib/permissions";
-// import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadMemory, MemoryScope } from "@/lib/toolos/memory-store";
 import { createToolVersion, promoteToolVersion } from "@/lib/toolos/versioning";
 import { buildCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { ToolSystemSpec } from "@/lib/toolos/spec";
+import { createWebhookEndpoint, getWebhookEndpointByTool } from "@/lib/toolos/webhook-store";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export const dynamic = "force-dynamic";
@@ -87,12 +87,30 @@ export async function GET(
         const intervalMinutes = resolveIntervalMinutes(trigger.condition ?? {});
         const lastTs = typeof lastRun === "number" ? lastRun : null;
         const nextRunAt = lastTs ? new Date(lastTs + intervalMinutes * 60000).toISOString() : null;
+
+        // For webhook triggers, ensure an endpoint exists and return the URL
+        let webhookUrl: string | null = null;
+        if (trigger.type === "webhook") {
+          let endpoint = await getWebhookEndpointByTool(toolId, trigger.id);
+          if (!endpoint) {
+            endpoint = await createWebhookEndpoint({
+              orgId: ctx.orgId,
+              toolId,
+              triggerId: trigger.id,
+            });
+          }
+          const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.VERCEL_URL ?? "http://localhost:3000";
+          const host = baseUrl.startsWith("http") ? baseUrl : `https://${baseUrl}`;
+          webhookUrl = `${host}/api/webhooks/${endpoint.id}`;
+        }
+
         return {
           id: trigger.id,
           name: trigger.name,
           type: trigger.type,
           enabled: trigger.enabled,
           config: trigger.condition,
+          webhookUrl,
           stats: {
             lastRunAt: lastTs ? new Date(lastTs).toISOString() : null,
             nextRunAt,

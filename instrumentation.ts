@@ -14,10 +14,17 @@ export async function register() {
       }
       if (runtimeResult.runtimeEnv === "DEV_WITH_REAL_CREDS") {
         console.warn("Skipping infra boot checks in DEV_WITH_REAL_CREDS. Memory tables will be validated at runtime.");
+        // Start event loop even in dev mode for trigger testing
+        const { globalEventLoop } = await import("@/lib/scheduler/loop");
+        globalEventLoop.start(60000);
         return;
       }
       const { ensureSupabaseMemoryTables } = await import("@/lib/toolos/memory/supabase-memory");
       await ensureSupabaseMemoryTables();
+
+      // Start the event loop for trigger/cron dispatch
+      const { globalEventLoop } = await import("@/lib/scheduler/loop");
+      globalEventLoop.start(60000);
     } catch (err) {
       console.error("Critical error during instrumentation register:", err);
       // Do not rethrow in production to avoid crashing the entire app

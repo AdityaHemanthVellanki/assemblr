@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { ToolSystemSpec, ActionSpec } from "./spec";
+import { saveMemory, MemoryScope } from "./memory-store";
 
 export type SnapshotRecords = {
   state: Record<string, any>;
@@ -106,6 +107,23 @@ export async function finalizeToolEnvironment(
   });
 
   const recordCount = countSnapshotRecords(records);
+
+  // Zero-row materialization warning: log to tool memory so it can be surfaced in UI
+  if (recordCount === 0 && successfulOutputs.length > 0) {
+    console.warn(`[Materialization] Zero rows materialized for tool ${toolId} despite ${successfulOutputs.length} successful action(s)`);
+    const scope: MemoryScope = { type: "tool_org", toolId, orgId };
+    void saveMemory({
+      scope,
+      namespace: "tool_builder",
+      key: "zero_row_warning",
+      value: {
+        timestamp: new Date().toISOString(),
+        actionCount: successfulOutputs.length,
+        actions: successfulOutputs.map((o) => o.action?.id ?? "unknown"),
+        message: "All actions succeeded but returned zero data rows. The API may have returned empty results, or filtering may be too restrictive.",
+      },
+    });
+  }
 
   // Rule: Only FAIL if ALL actions explicitly errored.
   // If actions succeeded with 0 records (empty list, no matching data), that's still MATERIALIZED.

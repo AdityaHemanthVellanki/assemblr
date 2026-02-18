@@ -5,8 +5,12 @@ import { ToolSpec } from "@/lib/spec/toolSpec";
 import { isToolSystemSpec, type ViewSpec, type ActionSpec, type TimelineEvent } from "@/lib/toolos/spec";
 import { safeFetch, ApiError } from "@/lib/api/client";
 import { RealDashboard } from "@/components/dashboard/real-dashboard";
+import { WorkflowView } from "@/components/dashboard/workflow-view";
+import { ExecutionLog } from "@/components/dashboard/execution-log";
+import { TriggerPanel } from "@/components/dashboard/trigger-panel";
+import { HealthDashboard } from "@/components/dashboard/health-dashboard";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, AlertTriangle, Download, Filter, RefreshCw, ChevronDown } from "lucide-react";
+import { Sparkles, AlertTriangle, Download, Filter, RefreshCw, ChevronDown, GitBranch, Play, Zap, Activity } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface DataEvidence {
@@ -46,6 +50,14 @@ export function ToolRenderer({
   const [toolState, setToolState] = React.useState<Record<string, any> | null>(null);
   const [evidenceMap, setEvidenceMap] = React.useState<Record<string, DataEvidence> | null>(null);
   const [allowWrites, setAllowWrites] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState<"data" | "workflows" | "runs" | "triggers" | "health">("data");
+  const [pendingAction, setPendingAction] = React.useState<{
+    actionId: string;
+    actionName: string;
+    actionType: string;
+    description: string;
+    input: Record<string, any>;
+  } | null>(null);
   const autoFetchedRef = React.useRef<string | null>(null);
 
   // Result state
@@ -129,7 +141,7 @@ export function ToolRenderer({
     }
   }, [toolId, materialized]);
 
-  const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>) => {
+  const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>, forceAllow?: boolean) => {
     if (!toolId || materialized === false) {
       setError("Tool not materialized.");
       return;
@@ -140,11 +152,34 @@ export function ToolRenderer({
       const payload = await safeFetch<{
         view?: ViewProjection;
         state?: Record<string, any>;
+        status?: string;
+        actionId?: string;
+        actionName?: string;
+        actionType?: string;
+        description?: string;
+        output?: any;
       }>(`/api/tools/${toolId}/run/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actionId, viewId: activeViewId, input }),
+        body: JSON.stringify({
+          actionId,
+          viewId: activeViewId,
+          input,
+          allowWrites: allowWrites || forceAllow,
+        }),
       });
+
+      // Handle write action approval gate
+      if (payload.status === "requires_approval") {
+        setPendingAction({
+          actionId: payload.actionId ?? actionId,
+          actionName: payload.actionName ?? actionId,
+          actionType: payload.actionType ?? "WRITE",
+          description: payload.description ?? "",
+          input: input ?? {},
+        });
+        return;
+      }
 
       if (payload.view) setProjection(payload.view);
       if (payload.state) setToolState(payload.state);
@@ -158,7 +193,17 @@ export function ToolRenderer({
     } finally {
       setIsLoading(false);
     }
-  }, [activeViewId, toolId, materialized]);
+  }, [activeViewId, toolId, materialized, allowWrites]);
+
+  const approveAction = React.useCallback(async () => {
+    if (!pendingAction) return;
+    setPendingAction(null);
+    await runAction(pendingAction.actionId, pendingAction.input, true);
+  }, [pendingAction, runAction]);
+
+  const dismissAction = React.useCallback(() => {
+    setPendingAction(null);
+  }, []);
 
   const fetchResult = React.useCallback(async () => {
     if (!toolId) return;
@@ -360,6 +405,59 @@ export function ToolRenderer({
   // ─── Render: Result-Driven UI (MATERIALIZED) ──────────────────
   return (
     <div className="flex h-full flex-col bg-[#09090b] overflow-hidden">
+      {/* Write Action Confirmation Dialog */}
+      <AnimatePresence>
+        {pendingAction && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={dismissAction}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md mx-4 bg-[#18181b] border border-white/10 rounded-2xl shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 pt-6 pb-4">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-10 w-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                    <AlertTriangle className="h-5 w-5 text-amber-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-white">Confirm Action</h3>
+                    <p className="text-xs text-muted-foreground">{pendingAction.actionType} action requires approval</p>
+                  </div>
+                </div>
+                <div className="rounded-xl bg-white/5 border border-white/10 p-4 mb-4">
+                  <p className="text-sm font-medium text-white mb-1">{pendingAction.actionName}</p>
+                  <p className="text-xs text-muted-foreground">{pendingAction.description}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 px-6 pb-6">
+                <button
+                  className="flex-1 h-9 rounded-lg text-sm font-medium bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-white transition-colors"
+                  onClick={dismissAction}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="flex-1 h-9 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                  onClick={approveAction}
+                  type="button"
+                >
+                  Approve & Execute
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
@@ -378,42 +476,75 @@ export function ToolRenderer({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* View Tabs */}
-          {systemSpec.views.length > 1 && systemSpec.views.map((view) => (
+        {activeTab === "data" && (
+          <div className="flex items-center gap-2">
+            {/* View Tabs */}
+            {systemSpec.views.length > 1 && systemSpec.views.map((view) => (
+              <button
+                key={view.id}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeViewId === view.id
+                  ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                  }`}
+                onClick={() => setActiveViewId(view.id)}
+                type="button"
+              >
+                {view.name}
+              </button>
+            ))}
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-1.5 ml-3 pl-3 border-l border-white/10">
+              <button
+                className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                onClick={() => activeViewId && fetchView(activeViewId)}
+                type="button"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Refresh
+              </button>
+              <button
+                className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                type="button"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export
+              </button>
+            </div>
+          </div>
+        )}
+      </motion.div>
+
+      {/* Section Tabs */}
+      {materialized && (
+        <div className="flex items-center gap-1 px-6 py-2 border-b border-white/10 bg-[#09090b]/90">
+          {[
+            { key: "data" as const, label: "Data", icon: <Sparkles className="w-3.5 h-3.5" /> },
+            ...((systemSpec.workflows?.length ?? 0) > 0
+              ? [{ key: "workflows" as const, label: "Workflows", icon: <GitBranch className="w-3.5 h-3.5" /> }]
+              : []),
+            { key: "runs" as const, label: "Runs", icon: <Play className="w-3.5 h-3.5" /> },
+            ...((systemSpec.triggers?.length ?? 0) > 0
+              ? [{ key: "triggers" as const, label: "Triggers", icon: <Zap className="w-3.5 h-3.5" /> }]
+              : []),
+            { key: "health" as const, label: "Health", icon: <Activity className="w-3.5 h-3.5" /> },
+          ].map((tab) => (
             <button
-              key={view.id}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeViewId === view.id
-                ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
-                : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-                }`}
-              onClick={() => setActiveViewId(view.id)}
+              key={tab.key}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                activeTab === tab.key
+                  ? "bg-white/10 text-white"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              }`}
+              onClick={() => setActiveTab(tab.key)}
               type="button"
             >
-              {view.name}
+              {tab.icon}
+              {tab.label}
             </button>
           ))}
-
-          {/* Action Buttons */}
-          <div className="flex items-center gap-1.5 ml-3 pl-3 border-l border-white/10">
-            <button
-              className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
-              onClick={() => activeViewId && fetchView(activeViewId)}
-              type="button"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
-            </button>
-            <button
-              className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
-              type="button"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Export
-            </button>
-          </div>
         </div>
-      </motion.div>
+      )}
 
       {/* Error Banner */}
       <AnimatePresence>
@@ -432,80 +563,95 @@ export function ToolRenderer({
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
-        {resultStatus === "pending" || resultStatus === "loading" ? (
-          <div className="flex items-center justify-center h-full">
-            <GeneratingAnimation stage="fetching" purpose={systemSpec.purpose} />
-          </div>
-        ) : resultStatus === "empty" ? (
-          <EmptyDataState />
-        ) : activeView ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.3 }}
-            className="h-full"
-          >
-            <div className="flex h-full">
-              <div className="flex-1 overflow-auto p-6">
-                {isLoading && (
-                  <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
-                    <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                    Loading data…
-                  </div>
-                )}
-                <ViewSurface
-                  view={activeView}
-                  projection={projection}
-                  onSelectRow={setSelectedRow}
-                />
-                {rows.length === 0 && !isLoading && materialized && (
-                  <EmptyDataState />
-                )}
-              </div>
-
-              {/* Detail Sidebar */}
-              <AnimatePresence>
-                {selectedRow && (
-                  <motion.div
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 20 }}
-                    className="w-80 shrink-0 border-l border-white/10 bg-[#0a0a0c] overflow-auto"
-                  >
-                    <div className="p-4">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Details</span>
-                        <button
-                          onClick={() => setSelectedRow(null)}
-                          className="text-muted-foreground hover:text-foreground text-xs"
-                          type="button"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                      <div className="space-y-2.5">
-                        {Object.entries(selectedRow).map(([key, value]) => (
-                          <div key={key} className="flex flex-col gap-0.5 border-b border-white/5 pb-2.5 last:border-b-0">
-                            <span className="text-[11px] text-muted-foreground/60 uppercase tracking-wider">{key}</span>
-                            <span className="text-sm text-foreground break-all">{String(value ?? "—")}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+        {activeTab === "data" ? (
+          /* ── Data Tab ── */
+          resultStatus === "pending" || resultStatus === "loading" ? (
+            <div className="flex items-center justify-center h-full">
+              <GeneratingAnimation stage="fetching" purpose={systemSpec.purpose} />
             </div>
-          </motion.div>
-        ) : (
-          <div className="flex items-center justify-center h-full">
+          ) : resultStatus === "empty" ? (
             <EmptyDataState />
-          </div>
-        )}
+          ) : activeView ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+              className="h-full"
+            >
+              <div className="flex h-full">
+                <div className="flex-1 overflow-auto p-6">
+                  {isLoading && (
+                    <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+                      <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                      Loading data…
+                    </div>
+                  )}
+                  <ViewSurface
+                    view={activeView}
+                    projection={projection}
+                    onSelectRow={setSelectedRow}
+                  />
+                  {rows.length === 0 && !isLoading && materialized && (
+                    <EmptyDataState />
+                  )}
+                </div>
+
+                {/* Detail Sidebar */}
+                <AnimatePresence>
+                  {selectedRow && (
+                    <motion.div
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20 }}
+                      className="w-80 shrink-0 border-l border-white/10 bg-[#0a0a0c] overflow-auto"
+                    >
+                      <div className="p-4">
+                        <div className="flex items-center justify-between mb-4">
+                          <span className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Details</span>
+                          <button
+                            onClick={() => setSelectedRow(null)}
+                            className="text-muted-foreground hover:text-foreground text-xs"
+                            type="button"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="space-y-2.5">
+                          {Object.entries(selectedRow).map(([key, value]) => (
+                            <div key={key} className="flex flex-col gap-0.5 border-b border-white/5 pb-2.5 last:border-b-0">
+                              <span className="text-[11px] text-muted-foreground/60 uppercase tracking-wider">{key}</span>
+                              <span className="text-sm text-foreground break-all">{String(value ?? "—")}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          ) : (
+            <div className="flex items-center justify-center h-full">
+              <EmptyDataState />
+            </div>
+          )
+        ) : activeTab === "workflows" ? (
+          /* ── Workflows Tab ── */
+          <WorkflowView workflows={systemSpec.workflows ?? []} toolId={toolId} />
+        ) : activeTab === "runs" ? (
+          /* ── Runs Tab ── */
+          <ExecutionLog toolId={toolId} />
+        ) : activeTab === "triggers" ? (
+          /* ── Triggers Tab ── */
+          <TriggerPanel toolId={toolId} />
+        ) : activeTab === "health" ? (
+          /* ── Health Tab ── */
+          <HealthDashboard toolId={toolId} />
+        ) : null}
       </div>
 
-      {/* Bottom Action Bar — only show when materialized with actions */}
-      {materialized && actionSpecs.length > 0 && (
+      {/* Bottom Action Bar — only show when materialized with actions on data tab */}
+      {activeTab === "data" && materialized && actionSpecs.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}

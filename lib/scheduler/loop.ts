@@ -6,6 +6,7 @@ import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { executeToolAction } from "@/lib/toolos/runtime";
 import { runWorkflow } from "@/lib/toolos/workflow-engine";
 import { loadMemory, saveMemory, MemoryScope } from "@/lib/toolos/memory-store";
+import { recordMetric } from "@/lib/observability/metrics";
 
 export class EventLoop {
   private isRunning = false;
@@ -14,10 +15,15 @@ export class EventLoop {
   start(intervalMs: number = 60000) {
     if (this.isRunning) return;
     this.isRunning = true;
-    console.log("[EventLoop] Started");
-    
-    // Initial Run
-    this.tick();
+    console.log(`[EventLoop] Started with interval ${intervalMs}ms`);
+
+    // Initial run
+    void this.tick();
+
+    // Schedule recurring ticks
+    this.interval = setInterval(() => {
+      void this.tick();
+    }, intervalMs);
   }
 
   stop() {
@@ -54,6 +60,31 @@ export class EventLoop {
       if (paused === true) continue;
       for (const trigger of compiledTool.triggers) {
         if (!trigger.enabled) continue;
+
+        // State condition triggers: evaluate condition and dispatch if met
+        if (trigger.type === "state_condition") {
+          const state = await loadMemory({
+            scope,
+            namespace: compiledTool.memory.tool.namespace,
+            key: "state",
+          }) ?? {};
+          const condPath = String(trigger.condition?.path ?? "");
+          const condValue = trigger.condition?.value;
+          if (condPath) {
+            const parts = condPath.split(".");
+            let current: any = state;
+            for (const part of parts) {
+              if (current == null) break;
+              current = current[part];
+            }
+            if (current !== undefined && (condValue === undefined || current === condValue)) {
+              await this.dispatch({ orgId: project.org_id, toolId: project.id, compiledTool, trigger });
+            }
+          }
+          continue;
+        }
+
+        // Skip non-cron triggers (webhooks and integration_events are handled externally)
         if (trigger.type !== "cron") continue;
         const intervalMinutes = resolveIntervalMinutes(trigger.condition ?? {});
         const lastKey = `trigger.${trigger.id}.last_run_at`;
@@ -151,10 +182,12 @@ export class EventLoop {
         });
       }
       tracer.finish("success");
+      recordMetric({ orgId, toolId, metricName: "trigger.invoked", metricValue: 1, dimensions: { triggerId: trigger.id, type: trigger.type, status: "success" } });
       return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unknown";
       tracer.finish("failure", msg);
+      recordMetric({ orgId, toolId, metricName: "trigger.invoked", metricValue: 1, dimensions: { triggerId: trigger.id, type: trigger.type, status: "failure", error: msg } });
       console.error(`[EventLoop] Trigger ${trigger.id} failed`, e);
       return false;
     }

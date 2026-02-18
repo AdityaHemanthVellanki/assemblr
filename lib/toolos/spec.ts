@@ -121,6 +121,7 @@ export const WorkflowSpecSchema = z.object({
   edges: z.array(WorkflowEdgeSchema),
   retryPolicy: z.object({ maxRetries: z.number().min(0), backoffMs: z.number().min(0) }),
   timeoutMs: z.number().min(0),
+  maxConcurrency: z.number().min(1).default(5),
 });
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 

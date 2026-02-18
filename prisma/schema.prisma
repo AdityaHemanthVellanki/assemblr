@@ -226,17 +226,39 @@ model BrokerSchema {
 }
 
 model BrokerCapability {
-  id             String   @id @default(cuid())
-  integrationId  String   @map("integration_id")
-  capabilityId   String   @map("capability_id")
-  displayName    String   @map("display_name")
-  description    String?
-  requiredScopes String[] @map("required_scopes")
-  inputSchema    Json     @map("input_schema")
-  outputSchema   Json     @map("output_schema")
+  id                 String   @id @default(cuid())
+  integrationId      String   @map("integration_id")
+  capabilityId       String   @map("capability_id")
+  displayName        String   @map("display_name")
+  description        String?
+  actionType         String   @default("READ") @map("action_type")
+  composioActionName String?  @map("composio_action_name")
+  resource           String?
+  requiredScopes     String[] @map("required_scopes")
+  inputSchema        Json     @map("input_schema")
+  outputSchema       Json     @map("output_schema")
+  discoveredAt       DateTime @default(now()) @map("discovered_at")
+  ttlHours           Int      @default(24) @map("ttl_hours")
 
   @@unique([integrationId, capabilityId])
+  @@index([integrationId])
   @@map("broker_capabilities")
+}
+
+model WebhookEndpoint {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  toolId          String    @map("tool_id")
+  triggerId       String    @map("trigger_id")
+  secret          String
+  enabled         Boolean   @default(true)
+  lastInvokedAt   DateTime? @map("last_invoked_at")
+  invocationCount Int       @default(0) @map("invocation_count")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([toolId, triggerId])
+  @@index([orgId])
+  @@map("webhook_endpoints")
 }
 
 model BrokerActionLog {

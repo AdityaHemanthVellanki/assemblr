@@ -58,6 +58,8 @@ export async function POST(
     const actionId = typeof body?.actionId === "string" ? body.actionId : null;
     const viewId = typeof body?.viewId === "string" ? body.viewId : null;
     const input = body?.input && typeof body.input === "object" ? body.input : {};
+    const allowWrites = body?.allowWrites === true;
+    const dryRun = body?.dryRun === true;
 
     const latestResult = await getLatestToolResult(toolId, ctx.orgId);
     if (!latestResult && (project.status === "MATERIALIZED" || project.status === "READY" || (spec as any)?.status === "active")) {
@@ -90,22 +92,66 @@ export async function POST(
             throw new Error(`Action ${actionId} not found in spec`);
         }
 
+        const isRead = action.type === "READ";
+        const isWriteAction = action.type === "WRITE" || action.type === "MUTATE" || action.type === "NOTIFY";
+
+        // Gate: non-READ actions require explicit allowWrites flag
+        if (isWriteAction && !allowWrites && !dryRun) {
+          return jsonResponse({
+            status: "requires_approval",
+            actionId: action.id,
+            actionName: action.name,
+            actionType: action.type,
+            description: action.description,
+            requiresApproval: action.requiresApproval ?? true,
+            input,
+          });
+        }
+
+        const startMs = Date.now();
         const result = await executeToolAction({
           orgId: ctx.orgId,
           toolId,
           compiledTool: compiledArtifact,
           actionId,
-          input,
+          input: isWriteAction ? { ...input, approved: allowWrites } : input,
           userId: ctx.userId,
+          dryRun,
         });
-        
+        const durationMs = Date.now() - startMs;
+
+        // Audit log for write actions
+        if (isWriteAction) {
+          const { logWriteAction } = await import("@/lib/toolos/write-audit");
+          void logWriteAction({
+            orgId: ctx.orgId,
+            userId: ctx.userId,
+            toolId,
+            actionId,
+            actionType: action.type,
+            integrationId: action.integrationId,
+            input,
+            output: result.output,
+            status: dryRun ? "dry_run" : "success",
+            durationMs,
+          });
+        }
+
+        // For write actions, return the result directly (no materialization needed)
+        if (isWriteAction) {
+          return jsonResponse({
+            status: dryRun ? "dry_run" : "executed",
+            actionId: action.id,
+            actionType: action.type,
+            output: result.output,
+            events: result.events,
+            durationMs,
+          });
+        }
+
         let recordsToUse = latestResult?.records_json as any ?? null;
         let stateToUse = recordsToUse?.state ?? {};
 
-        // Only materialize and finalize on READ (Integration Fetch) actions
-        // or if it's the first run (no records yet)
-        const isRead = action.type === "READ";
-        
         if (isRead) {
           const matResult = await materializeToolOutput({
              toolId,

@@ -35,6 +35,10 @@ const determineAllowedOperations = (type: CapabilityActionType): CapabilityOpera
             return ["read", "filter"];
         case "get":
             return ["read"];
+        case "create":
+        case "update":
+        case "delete":
+            return ["write"];
         default:
             return [];
     }

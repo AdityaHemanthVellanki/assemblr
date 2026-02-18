@@ -18,6 +18,7 @@ const chatSchema = z.object({
   mode: z.enum(["create", "modify", "chat"]).default("chat"),
   integrationMode: z.enum(["auto", "manual"]).optional(),
   selectedIntegrationIds: z.array(z.string()).optional(),
+  approvedActionIds: z.array(z.string()).optional(),
 }).refine((data) => Boolean(data.message || data.resumeId), {
   message: "Message or resumeId is required",
 });
@@ -42,7 +43,7 @@ export async function POST(
     if (!parsed.success) {
       return errorResponse("Invalid body", 400);
     }
-    const { message: userMessage, mode, integrationMode, selectedIntegrationIds, resumeId } = parsed.data;
+    const { message: userMessage, mode, integrationMode, selectedIntegrationIds, resumeId, approvedActionIds } = parsed.data;
 
     if (!resumeId && (!userMessage || userMessage.trim().length === 0)) {
       return errorResponse("Prompt is required to generate a tool.", 400);
@@ -300,6 +301,7 @@ export async function POST(
       integrationMode,
       selectedIntegrationIds,
       executionId: execution.id,
+      approvedActionIds,
     });
 
     if (chatTitle) {

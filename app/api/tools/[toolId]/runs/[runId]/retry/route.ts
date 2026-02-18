@@ -1,11 +1,11 @@
 import { requireOrgMember } from "@/lib/permissions";
-// import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { executeToolAction } from "@/lib/toolos/runtime";
-import { runWorkflow } from "@/lib/toolos/workflow-engine";
+import { runWorkflow, resumeWorkflow } from "@/lib/toolos/workflow-engine";
 import { isCompiledToolArtifact } from "@/lib/toolos/compiler";
 import { isToolSystemSpec } from "@/lib/toolos/spec";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
+import { getIncompleteSteps } from "@/lib/toolos/workflow-steps";
 import { jsonResponse, errorResponse, handleApiError } from "@/lib/api/response";
 
 export const dynamic = "force-dynamic";
@@ -92,6 +92,20 @@ export async function POST(
           { action: "Recompile the tool to generate a CompiledTool artifact" }
         );
       }
+
+      // Check if there are persisted incomplete steps — if so, resume from where it left off
+      const incompleteSteps = await getIncompleteSteps(runId);
+      if (incompleteSteps.length > 0) {
+        await resumeWorkflow({
+          runId,
+          orgId: ctx.orgId,
+          toolId,
+          compiledTool,
+        });
+        return jsonResponse({ status: "resume_started", resumedSteps: incompleteSteps.length });
+      }
+
+      // No persisted steps — re-run the full workflow
       await runWorkflow({
         orgId: ctx.orgId,
         toolId,
