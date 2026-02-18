@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Loader2, AlertCircle } from "lucide-react";
+import { Check, Loader2, AlertCircle, Circle } from "lucide-react";
 
 export interface TimelineStep {
   id: string;
@@ -11,8 +11,14 @@ export interface TimelineStep {
 }
 
 export function ExecutionTimeline({ steps }: { steps: TimelineStep[] }) {
-  // Progressive reveal: only show steps that are running or completed
-  const visibleSteps = steps.filter(s => s.status !== "pending");
+  // Progressive reveal: show all active/completed steps plus the next pending step
+  const firstPendingIdx = steps.findIndex(s => s.status === "pending");
+  const hasActiveStep = steps.some(s => s.status !== "pending");
+
+  // Show steps up to and including the first pending step after active ones
+  const visibleSteps = hasActiveStep
+    ? steps.filter((s, i) => s.status !== "pending" || i === firstPendingIdx)
+    : steps.slice(0, 1); // Fallback: show at least the first step
 
   if (visibleSteps.length === 0) return null;
 
@@ -32,9 +38,10 @@ export function ExecutionTimeline({ steps }: { steps: TimelineStep[] }) {
               </div>
             )}
             {step.status === "error" && <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />}
+            {step.status === "pending" && <Circle className="h-3.5 w-3.5 text-neutral-600 shrink-0" />}
 
             <div className="flex flex-col min-w-0">
-              <span className="text-xs text-neutral-300 leading-tight">{step.label}</span>
+              <span className={`text-xs leading-tight ${step.status === "pending" ? "text-neutral-500" : "text-neutral-300"}`}>{step.label}</span>
               {step.narrative && (
                 <span className="text-[11px] text-neutral-500 leading-tight mt-0.5 truncate">
                   {step.narrative}

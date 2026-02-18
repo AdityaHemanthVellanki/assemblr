@@ -79,7 +79,7 @@ export function ChatPanel({
     let cancelled = false;
     const poll = async () => {
       try {
-        const res = await fetch(`/api/tools/${toolId}/result`);
+        const res = await fetch(`/api/tools/${toolId}/result`, { cache: "no-store" });
         if (!res.ok || cancelled) return;
         const json = await res.json();
         const rawSteps = json.data?.build_steps;

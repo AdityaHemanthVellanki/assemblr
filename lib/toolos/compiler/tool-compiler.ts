@@ -244,12 +244,35 @@ export class ToolCompiler {
     await runStage("generate-query-plans", 500, runGenerateQueryPlans);
 
     // Stage 6: Integration Readiness Gate
+    // Instead of throwing when some integrations are missing, strip them and continue
+    // with the connected ones. Only throw if ALL integrations are missing.
     await (async () => {
       try {
         return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
       } catch (error: any) {
         if (error.constructor.name === "IntegrationNotConnectedError" || error.type === "INTEGRATION_NOT_CONNECTED") {
-          throw error; // Propagate up to tool-chat.ts to handle UI modal
+          const missingIds: string[] = error.integrationIds ?? [];
+          // Check if any integrations remain after stripping
+          const allRequired = Array.from(new Set([
+            ...(spec.integrations ?? []).map((i: any) => i.id),
+            ...(spec.actions ?? []).map((a: any) => a.integrationId).filter(Boolean),
+          ]));
+          const connected = allRequired.filter((id: string) => !missingIds.includes(id));
+
+          if (connected.length === 0) {
+            throw error; // ALL missing — propagate to UI
+          }
+
+          // Strip unconnected integrations from spec and continue
+          console.log(`[Compiler] Stripping unconnected integrations: ${missingIds.join(", ")}. Continuing with: ${connected.join(", ")}`);
+          spec.integrations = spec.integrations.filter((i: any) => !missingIds.includes(i.id));
+          spec.actions = spec.actions.filter((a: any) => !missingIds.includes(a.integrationId));
+          spec.entities = spec.entities.filter((e: any) => !missingIds.includes(e.sourceIntegration));
+          const remainingActionIds = new Set(spec.actions.map((a: any) => a.id));
+          spec.views = spec.views
+            .map((v: any) => ({ ...v, actions: v.actions.filter((id: string) => remainingActionIds.has(id)) }))
+            .filter((v: any) => v.actions.length > 0);
+          return { status: "completed" };
         }
         throw error;
       }
@@ -535,6 +558,22 @@ function ensureMinimumSpec(
     entities = integrationIds.flatMap((integration) => buildFallbackEntitiesForIntegration(integration, prompt));
   }
 
+  // Sanitize entity relations: LLM sometimes generates invalid relation objects
+  // with missing target or invalid type. Filter them out to prevent validation failures.
+  const validRelationTypes = new Set(["one_to_one", "one_to_many", "many_to_many"]);
+  entities = entities.map((entity) => ({
+    ...entity,
+    relations: Array.isArray(entity.relations)
+      ? entity.relations.filter(
+          (rel) =>
+            rel &&
+            typeof rel.name === "string" && rel.name.length > 0 &&
+            typeof rel.target === "string" && rel.target.length > 0 &&
+            validRelationTypes.has(rel.type)
+        )
+      : entity.relations,
+  }));
+
   let views = spec.views;
   if (views.length === 0) {
     views = entities.map((entity, index) =>
@@ -656,15 +695,15 @@ function buildFallbackActionsForIntegration(integration: IntegrationId, prompt?:
       },
       {
         id: "github.listIssues",
-        name: "List issues",
-        description: "List GitHub issues",
+        name: "Search issues",
+        description: "Search GitHub issues",
         type: "READ",
         integrationId: "github",
-        capabilityId: "github_issues_list",
-        inputSchema: buildDefaultInputForCapability("github_issues_list"),
+        capabilityId: "github_issues_search",
+        inputSchema: { q: "is:issue is:open" },
         outputSchema: {},
         writesToState: false,
-        confidenceLevel: "medium",
+        confidenceLevel: "high",
       },
       {
         id: "github.listCommits",
@@ -824,16 +863,16 @@ function buildFallbackActionsForIntegration(integration: IntegrationId, prompt?:
   if (integration === "airtable") {
     return [
       {
-        id: "airtable.listRecords",
-        name: "List records",
-        description: "List Airtable records",
+        id: "airtable.listBases",
+        name: "List bases",
+        description: "List Airtable bases",
         type: "READ",
         integrationId: "airtable",
-        capabilityId: "airtable_records_list",
-        inputSchema: buildDefaultInputForCapability("airtable_records_list"),
+        capabilityId: "airtable_bases_list",
+        inputSchema: {},
         outputSchema: {},
         writesToState: false,
-        confidenceLevel: "medium",
+        confidenceLevel: "high",
       },
     ];
   }
@@ -911,7 +950,7 @@ function buildFallbackActionsForIntegration(integration: IntegrationId, prompt?:
         type: "READ",
         integrationId: "zoom",
         capabilityId: "zoom_meetings_list",
-        inputSchema: { userId: "me" },
+        inputSchema: { userId: "me", type: "upcoming" },
         outputSchema: {},
         writesToState: false,
         confidenceLevel: "high",
@@ -1079,13 +1118,16 @@ function buildFallbackActionsForIntegration(integration: IntegrationId, prompt?:
       const p = prompt.toLowerCase();
       const filtered: ActionSpec[] = [];
       if (/\btasks?\b/.test(p)) {
+        // Always include workspaces first (zero params) as a reliable fallback
+        filtered.push(allActions[0]); // workspaces
         filtered.push(allActions[1]); // tasks
       }
       if (/\bprojects?\b/.test(p)) {
+        if (!filtered.some((a) => a.id === allActions[0].id)) filtered.push(allActions[0]); // workspaces
         filtered.push(allActions[2]); // projects
       }
       if (/\bworkspaces?\b/.test(p)) {
-        filtered.push(allActions[0]); // workspaces
+        if (!filtered.some((a) => a.id === allActions[0].id)) filtered.push(allActions[0]); // workspaces
       }
       if (filtered.length > 0) return filtered;
     }
@@ -1739,17 +1781,17 @@ function buildFallbackEntitiesForIntegration(integration: IntegrationId, prompt?
   if (integration === "airtable") {
     return [
       {
-        name: "Record",
+        name: "Base",
         sourceIntegration: "airtable",
         relations: [],
         identifiers: ["id"],
-        supportedActions: ["airtable.records.list"],
+        supportedActions: ["airtable.bases.list"],
         fields: [
           { name: "id", type: "string", required: true },
-          { name: "fields", type: "string" },
-          { name: "createdTime", type: "string" },
+          { name: "name", type: "string" },
+          { name: "permissionLevel", type: "string" },
         ],
-        confidenceLevel: "medium",
+        confidenceLevel: "high",
       },
     ];
   }

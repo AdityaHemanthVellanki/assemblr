@@ -107,20 +107,14 @@ export async function finalizeToolEnvironment(
 
   const recordCount = countSnapshotRecords(records);
 
-  // Rule: If >= 1 integration returns data -> materialize tool.
-  // Even if recordCount is 0, if we executed successfully (e.g. empty list), we should materialize.
-  // But if ALL failed, then FAILED.
-  const hasSuccess = successfulOutputs.length > 0;
+  // Rule: Only FAIL if ALL actions explicitly errored.
+  // If actions succeeded with 0 records (empty list, no matching data), that's still MATERIALIZED.
+  // Alert/notification tools and zero-result queries should show "no results" in UI, not error.
   const allFailed = actionOutputs.length > 0 && successfulOutputs.length === 0;
 
   let finalStatus: "MATERIALIZED" | "FAILED" = "MATERIALIZED";
 
   if (allFailed) {
-    finalStatus = "FAILED";
-  } else if (recordCount === 0 && !hasSuccess) {
-    // Only fail if no actions succeeded at all.
-    // If execution succeeded but returned 0 records (e.g. no commits in date range),
-    // materialize normally and let the UI show "no results" gracefully.
     finalStatus = "FAILED";
   }
 

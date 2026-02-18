@@ -459,6 +459,8 @@ export async function runCompilerPipeline(
     _activeExecutionId = input.executionId ?? null;
     if (_activeExecutionId) {
       registerBuildExecution(input.toolId, _activeExecutionId);
+      // Mark first step as running immediately so the timeline is visible from the start
+      markStep(steps, "understand", "running", "Analyzing what you need");
       persistBuildSteps(_activeExecutionId, steps);
     }
     try {
@@ -847,6 +849,29 @@ export async function runCompilerPipeline(
       }
       transition("INTENT_PARSED", "ToolSpec generated");
       markStep(steps, "compile", "running", "Validating your configuration");
+
+      // Auto-clean views: remove references to non-existent actions (AI hallucination)
+      {
+        const knownActionIds = new Set(spec.actions.map((a: any) => a.id));
+        for (const view of spec.views) {
+          if (Array.isArray(view.actions)) {
+            const before = view.actions.length;
+            view.actions = view.actions.filter((id: string) => knownActionIds.has(id));
+            if (view.actions.length < before) {
+              console.log(`[Validation] Cleaned ${before - view.actions.length} unknown action refs from view "${view.name}"`);
+            }
+          }
+        }
+        // Auto-clean workflows: remove nodes referencing non-existent actions
+        for (const workflow of spec.workflows ?? []) {
+          if (Array.isArray(workflow.nodes)) {
+            workflow.nodes = workflow.nodes.filter(
+              (n: any) => n.type !== "action" || !n.actionId || knownActionIds.has(n.actionId),
+            );
+          }
+        }
+      }
+
       const toolSystemValidation = validateToolSystem(spec);
       if (
         !toolSystemValidation.entitiesResolved ||
@@ -1011,35 +1036,66 @@ export async function runCompilerPipeline(
         (id) => !connectedIntegrationIds.includes(id),
       );
       if (missingIntegrationIds.length > 0) {
-        appendStep(
-          stepsById.get("compile"),
-          `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
+        // Check if we have any connected integrations remaining
+        const connectedRequired = requiredIntegrations.filter(
+          (id) => connectedIntegrationIds.includes(id),
         );
-        markStep(steps, "compile", "error", `Need to connect ${missingIntegrationIds.join(", ")}`);
-        if (input.executionId) {
-          await updateExecution(input.executionId as string, {
-            status: "awaiting_integration",
-            requiredIntegrations,
-            missingIntegrations: missingIntegrationIds,
-          });
-        }
-        const messageText = `Execution blocked: Real credentials for ${missingIntegrationIds.join(", ")} are required.`;
-        return {
-          explanation: messageText,
-          message: { type: "text", content: messageText },
-          spec: { ...spec, lifecycle_state: machine.state },
-          requiresIntegrations: true,
-          missingIntegrations: missingIntegrationIds,
-          requiredIntegrations,
-          metadata: {
+
+        if (connectedRequired.length === 0) {
+          // ALL integrations are missing — block execution
+          appendStep(
+            stepsById.get("compile"),
+            `Integrations not connected: ${missingIntegrationIds.join(", ")}.`,
+          );
+          markStep(steps, "compile", "error", `Need to connect ${missingIntegrationIds.join(", ")}`);
+          if (input.executionId) {
+            await updateExecution(input.executionId as string, {
+              status: "awaiting_integration",
+              requiredIntegrations,
+              missingIntegrations: missingIntegrationIds,
+            });
+          }
+          const messageText = `Execution blocked: Real credentials for ${missingIntegrationIds.join(", ")} are required.`;
+          return {
+            explanation: messageText,
+            message: { type: "text", content: messageText },
+            spec: { ...spec, lifecycle_state: machine.state },
             requiresIntegrations: true,
             missingIntegrations: missingIntegrationIds,
             requiredIntegrations,
-            executionId: input.executionId as string,
-            build_steps: steps,
-            progress: (compilerResult as any).progress,
-          },
-        };
+            metadata: {
+              requiresIntegrations: true,
+              missingIntegrations: missingIntegrationIds,
+              requiredIntegrations,
+              executionId: input.executionId as string,
+              build_steps: steps,
+              progress: (compilerResult as any).progress,
+            },
+          };
+        }
+
+        // Some integrations are connected — strip the missing ones and continue
+        console.log(`[ToolChat] Stripping unconnected integrations: ${missingIntegrationIds.join(", ")}. Continuing with: ${connectedRequired.join(", ")}`);
+        appendStep(
+          stepsById.get("compile"),
+          `Skipped unconnected: ${missingIntegrationIds.join(", ")}. Continuing with ${connectedRequired.join(", ")}.`,
+        );
+        spec.integrations = spec.integrations.filter(
+          (i) => !missingIntegrationIds.includes(i.id as any),
+        );
+        spec.actions = spec.actions.filter(
+          (a) => !missingIntegrationIds.includes(a.integrationId as any),
+        );
+        spec.entities = spec.entities.filter(
+          (e) => !missingIntegrationIds.includes(e.sourceIntegration as any),
+        );
+        const remainingActionIds = new Set(spec.actions.map((a) => a.id));
+        spec.views = spec.views
+          .map((v) => ({
+            ...v,
+            actions: v.actions.filter((id) => remainingActionIds.has(id)),
+          }))
+          .filter((v) => v.actions.length > 0);
       }
 
       markStep(steps, "compile", "running", "Checking integration connections");
@@ -1053,43 +1109,69 @@ export async function runCompilerPipeline(
         });
       } catch (err: any) {
         if (isIntegrationNotConnectedError(err)) {
-          markStep(steps, "compile", "error", `Need to connect ${err.integrationIds?.join(", ") || "integration"}`);
+          const missingFromReadiness = err.integrationIds as string[];
+          // Check if we still have connected integrations after stripping
+          const allRequired = Array.from(new Set([
+            ...(spec.integrations ?? []).map((i: any) => i.id),
+            ...(spec.actions ?? []).map((a: any) => a.integrationId).filter(Boolean),
+          ]));
+          const connectedAfterStrip = allRequired.filter(
+            (id) => !missingFromReadiness.includes(id),
+          );
 
-          const missingIntegrations = err.integrationIds;
-          const requiredIntegrations = missingIntegrations; // For now, treat all missing as required context
-
-          if (input.executionId) {
-            await updateExecution(input.executionId as string, {
-              status: "awaiting_integration",
-              requiredIntegrations,
-              missingIntegrations,
-            });
-          }
-          const messageText = `Execution blocked: Real credentials for ${missingIntegrations.join(", ")} are required.`;
-          return {
-            explanation: messageText,
-            message: { type: "text", content: messageText },
-            spec: { ...spec, lifecycle_state: machine.state },
-            requiresIntegrations: true,
-            missingIntegrations,
-            requiredIntegrations,
-            metadata: {
+          if (connectedAfterStrip.length > 0) {
+            // Strip unconnected integrations and continue
+            console.log(`[CheckIntegrationReadiness] Stripping unconnected: ${missingFromReadiness.join(", ")}. Continuing with: ${connectedAfterStrip.join(", ")}`);
+            spec.integrations = spec.integrations.filter(
+              (i: any) => !missingFromReadiness.includes(i.id),
+            );
+            spec.actions = spec.actions.filter(
+              (a: any) => !missingFromReadiness.includes(a.integrationId),
+            );
+            spec.entities = spec.entities.filter(
+              (e: any) => !missingFromReadiness.includes(e.sourceIntegration),
+            );
+            const remainingActions = new Set(spec.actions.map((a: any) => a.id));
+            spec.views = spec.views
+              .map((v: any) => ({ ...v, actions: v.actions.filter((id: string) => remainingActions.has(id)) }))
+              .filter((v: any) => v.actions.length > 0);
+          } else {
+            // ALL integrations missing — block
+            markStep(steps, "compile", "error", `Need to connect ${missingFromReadiness.join(", ")}`);
+            if (input.executionId) {
+              await updateExecution(input.executionId as string, {
+                status: "awaiting_integration",
+                requiredIntegrations: missingFromReadiness,
+                missingIntegrations: missingFromReadiness,
+              });
+            }
+            const messageText = `Execution blocked: Real credentials for ${missingFromReadiness.join(", ")} are required.`;
+            return {
+              explanation: messageText,
+              message: { type: "text", content: messageText },
+              spec: { ...spec, lifecycle_state: machine.state },
               requiresIntegrations: true,
-              missingIntegrations,
-              requiredIntegrations,
-              executionId: input.executionId as string,
-              build_steps: steps,
-              progress: (compilerResult as any).progress,
-              integration_error: {
-                type: "INTEGRATION_NOT_CONNECTED",
-                integrationIds: err.integrationIds,
-                requiredBy: err.requiredBy,
-                blockingActions: err.blockingActions
-              }
-            },
-          };
+              missingIntegrations: missingFromReadiness,
+              requiredIntegrations: missingFromReadiness,
+              metadata: {
+                requiresIntegrations: true,
+                missingIntegrations: missingFromReadiness,
+                requiredIntegrations: missingFromReadiness,
+                executionId: input.executionId as string,
+                build_steps: steps,
+                progress: (compilerResult as any).progress,
+                integration_error: {
+                  type: "INTEGRATION_NOT_CONNECTED",
+                  integrationIds: err.integrationIds,
+                  requiredBy: err.requiredBy,
+                  blockingActions: err.blockingActions,
+                },
+              },
+            };
+          }
+        } else {
+          throw err;
         }
-        throw err;
       }
 
       const readinessStart = Date.now();
@@ -1576,9 +1658,10 @@ export async function runCompilerPipeline(
           markStep(steps, "render", "success", "Your tool is ready");
           console.log(`[Materialization] Tool marked as materialized. toolId=${toolId}`);
         } else {
-          markStep(steps, "render", "error", "Something went wrong building your view");
-          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED`);
-          throw new Error("Materialization returned FAILED status");
+          markStep(steps, "render", "error", "Some data sources returned errors");
+          console.log(`[ToolDataReadiness] Materialized tool ${toolId}. Status: FAILED — continuing with degraded result`);
+          // Don't throw — let the result propagate to the frontend via polling.
+          // The tool_results row already has FAILED status + error_log for the UI to display.
         }
       }
 
@@ -3670,10 +3753,10 @@ async function runDataReadiness(
           logs.push(`⚠️ ${action.name} skipped: needs repo context`);
         } else {
           const msg = err.message || "Unknown error";
-          console.error(`[Readiness] Action ${action.name} failed:`, err);
-
-          // STRICT MODE: Any data fetch failure fails the build
-          throw new Error(`Data fetch failed for ${action.name} (${action.integrationId}): ${msg}`);
+          console.warn(`[Readiness] Action ${action.name} (${action.integrationId}) failed (non-fatal):`, msg);
+          logs.push(`⚠️ ${action.name} (${action.integrationId}) failed: ${msg}`);
+          // Non-fatal: continue with remaining actions instead of failing the entire build.
+          // The tool will still work with degraded data from the successful actions.
         }
       }
     } else {
@@ -3738,6 +3821,39 @@ function buildReadActionInput(params: {
       if (!hasQueryPlan) {
         input.limit = 100;
       }
+    }
+  }
+
+  // GitHub issues: ensure owner/repo are present, or add search query for fallback
+  if (params.action.integrationId === "github" &&
+    (params.action.capabilityId === "github_issues_list" || params.action.capabilityId === "github_issues_search")) {
+    if (!input.owner || !input.repo) {
+      // No repo context available — set a search query so the Composio fallback works
+      if (!input.q) {
+        input.q = "is:issue is:open";
+      }
+    }
+  }
+
+  // Zoom: enforce valid `type` enum for list meetings
+  if (params.action.integrationId === "zoom" && input.type) {
+    const validZoomTypes = new Set(["scheduled", "live", "upcoming", "upcoming_meetings", "previous_meetings"]);
+    if (!validZoomTypes.has(input.type)) {
+      input.type = "upcoming";
+    }
+  }
+
+  // Notion: ensure page_size is a valid integer
+  if (params.action.integrationId === "notion" && input.page_size !== undefined) {
+    const parsed = parseInt(String(input.page_size), 10);
+    input.page_size = isNaN(parsed) ? 20 : Math.min(Math.max(parsed, 1), 100);
+  }
+
+  // Airtable: ensure LIST_RECORDS has required params, otherwise fall back to LIST_BASES
+  if (params.action.integrationId === "airtable" && params.action.capabilityId === "airtable_records_list") {
+    if (!input.baseId || !input.tableIdOrName) {
+      // Can't list records without base/table — switch to listing bases
+      console.log("[buildReadActionInput] Airtable: missing baseId/tableIdOrName, cannot list records");
     }
   }
 

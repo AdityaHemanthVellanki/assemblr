@@ -218,6 +218,14 @@ const ACTION_EXACT_REMAP: Record<string, string> = {
     // Asana
     "ASANA_LIST_WORKSPACES": "ASANA_GET_MULTIPLE_WORKSPACES",
     "ASANA_GET_WORKSPACES": "ASANA_GET_MULTIPLE_WORKSPACES",
+    // HubSpot — AI generates search action that needs specific filter params; remap to list
+    "HUBSPOT_SEARCH_DEALS_BY_CRITERIA": "HUBSPOT_HUBSPOT_LIST_DEALS",
+    "HUBSPOT_SEARCH_DEALS": "HUBSPOT_HUBSPOT_LIST_DEALS",
+    "HUBSPOT_GET_DEALS": "HUBSPOT_HUBSPOT_LIST_DEALS",
+    // Intercom — AI generates activity logs action that needs created_at_after; remap to conversations
+    "INTERCOM_LIST_ALL_ACTIVITY_LOGS": "INTERCOM_LIST_CONVERSATIONS",
+    "INTERCOM_LIST_ACTIVITY_LOGS": "INTERCOM_LIST_CONVERSATIONS",
+    "INTERCOM_GET_ACTIVITY_LOGS": "INTERCOM_LIST_CONVERSATIONS",
 };
 
 function normalizeActionId(actionId: string): string {
@@ -275,7 +283,28 @@ export class ComposioRuntime implements IntegrationRuntime {
                         }
                         // Convert raw orgId to Composio entity ID (assemblr_org_<orgId>)
                         const entityId = getComposioEntityId(orgId);
-                        return await executeAction(entityId, actionId, input);
+
+                        // Smart fallbacks for actions that need context params we may not have
+                        let resolvedActionId = actionId;
+                        let resolvedInput = input;
+
+                        // GitHub: LIST_REPOSITORY_ISSUES needs owner/repo — fall back to search
+                        if (resolvedActionId === "GITHUB_LIST_REPOSITORY_ISSUES" && (!resolvedInput?.owner || !resolvedInput?.repo)) {
+                            console.log("[Composio] GitHub issues: missing owner/repo, falling back to SEARCH_ISSUES_AND_PULL_REQUESTS");
+                            resolvedActionId = "GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS";
+                            const { owner, repo, ...rest } = resolvedInput || {};
+                            resolvedInput = { ...rest, q: resolvedInput?.q || "is:issue is:open" };
+                        }
+
+                        // Asana: GET_TASKS_FROM_A_PROJECT needs project_gid — fall back to workspaces
+                        if (resolvedActionId === "ASANA_GET_TASKS_FROM_A_PROJECT" && !resolvedInput?.project_gid) {
+                            console.log("[Composio] Asana tasks: missing project_gid, falling back to GET_MULTIPLE_WORKSPACES");
+                            resolvedActionId = "ASANA_GET_MULTIPLE_WORKSPACES";
+                            const { project_gid, ...rest } = resolvedInput || {};
+                            resolvedInput = rest;
+                        }
+
+                        return await executeAction(entityId, resolvedActionId, resolvedInput);
                     }
                 }
             }
