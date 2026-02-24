@@ -298,13 +298,86 @@
   }
 
   @keyframes pulse-glow {
-    0%, 100% { 
+    0%, 100% {
       opacity: 0.4;
       box-shadow: 0 0 8px rgba(96, 165, 250, 0.6);
     }
-    50% { 
+    50% {
       opacity: 1;
       box-shadow: 0 0 12px rgba(96, 165, 250, 0.9);
     }
+  }
+
+  /* Shimmer loading effect — premium skeleton replacement for animate-pulse */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+    background: oklch(0.269 0 0 / 40%);
+    border-radius: 0.5rem;
+  }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 25%,
+      oklch(1 0 0 / 0.05) 50%,
+      transparent 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-sweep 1.5s ease-in-out infinite;
+  }
+  @keyframes shimmer-sweep {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Animated gradient text — slow shifting gradient for hero text */
+  .animated-gradient-text {
+    background-size: 200% 200%;
+    animation: gradient-shift 4s ease-in-out infinite;
+  }
+  @keyframes gradient-shift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  /* Gradient border on focus — appears via ::before pseudo-element */
+  .gradient-border-focus {
+    position: relative;
+  }
+  .gradient-border-focus::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      oklch(0.65 0.2 260),
+      oklch(0.6 0.22 290),
+      oklch(0.55 0.24 310)
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+  }
+  .gradient-border-focus:focus-within::before {
+    opacity: 1;
+  }
+
+  /* Breathing background animation for auth pages */
+  .breathing-bg {
+    animation: breathe 4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.6; }
   }
 }

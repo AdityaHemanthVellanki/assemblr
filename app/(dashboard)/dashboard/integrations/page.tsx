@@ -4,6 +4,7 @@ import * as React from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +12,12 @@ import { Input } from "@/components/ui/input";
 import { safeFetch } from "@/lib/api/client";
 import { startOAuthFlow } from "@/app/actions/oauth";
 import { INTEGRATION_ICONS } from "@/components/use-cases/integration-badge";
+import {
+  fadeUp,
+  staggerContainer,
+  staggerItem,
+  slideInRight,
+} from "@/lib/ui/motion";
 
 // --- Types mirroring backend types ---
 
@@ -377,10 +384,16 @@ export default function IntegrationsPage() {
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-6 py-8">
       {/* Page Header */}
-      <div className="space-y-2">
+      <motion.div
+        variants={fadeUp}
+        initial="hidden"
+        animate="visible"
+        custom={0}
+        className="space-y-2"
+      >
         <h1 className="text-3xl font-semibold tracking-tight">Integrations</h1>
         <p className="text-muted-foreground">Connect your tools to power real, live dashboards</p>
-      </div>
+      </motion.div>
 
       {isConnecting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
@@ -406,12 +419,19 @@ export default function IntegrationsPage() {
               key={m}
               type="button"
               onClick={() => setFilter(m as FilterMode)}
-              className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors capitalize ${filter === m
-                ? "bg-foreground text-background"
-                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={`relative shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors capitalize ${filter === m
+                ? "text-background"
+                : "text-muted-foreground hover:text-foreground"
                 }`}
             >
-              {m.replace("_", " ")}
+              {filter === m && (
+                <motion.span
+                  layoutId="filter-pill"
+                  className="absolute inset-0 rounded-full bg-foreground"
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                />
+              )}
+              <span className="relative z-10">{m.replace("_", " ")}</span>
             </button>
           ))}
         </div>
@@ -423,11 +443,17 @@ export default function IntegrationsPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <motion.div
+        variants={staggerContainer}
+        initial="hidden"
+        animate="visible"
+        key={`${filter}-${search}`}
+        className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"
+      >
         {(loading ? Array.from({ length: 6 }) : visible).map((item, idx) => {
           if (loading) {
             return (
-              <div key={`skeleton-${idx}`} className="h-[140px] rounded-2xl border border-border/60 bg-muted/20 animate-pulse" />
+              <div key={`skeleton-${idx}`} className="h-[140px] rounded-2xl border border-border/60 shimmer" />
             );
           }
 
@@ -435,9 +461,11 @@ export default function IntegrationsPage() {
           const localIcon = INTEGRATION_ICONS[i.id];
 
           return (
-            <div
+            <motion.div
               key={i.id}
-              className="flex flex-col rounded-2xl border border-border/60 bg-background/40 p-5 backdrop-blur-sm transition-all duration-200 hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.25)]"
+              variants={staggerItem}
+              whileHover={{ y: -2, transition: { duration: 0.2 } }}
+              className="flex flex-col rounded-2xl border border-border/60 bg-background/40 p-5 backdrop-blur-sm transition-colors duration-200 hover:border-primary/40 hover:shadow-[0_16px_40px_rgba(8,10,25,0.25)]"
             >
               <div className="space-y-4">
                 <div className="flex items-start justify-between gap-4">
@@ -465,7 +493,7 @@ export default function IntegrationsPage() {
                   </div>
 
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className={`h-2 w-2 rounded-full ${statusDotClass(i.status)}`} />
+                    <span className={`h-2 w-2 rounded-full ${statusDotClass(i.status)} ${(i.status === "active" || i.status === "connected") ? "live-indicator" : ""}`} />
                     {statusLabel(i.status, i.connected)}
                   </div>
                 </div>
@@ -485,22 +513,32 @@ export default function IntegrationsPage() {
                   </Button>
                 </div>
               </div>
-            </div>
+            </motion.div>
           );
         })}
-      </div>
+      </motion.div>
 
-      {
-        active ? (
-          <div
-            className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity"
+      <AnimatePresence>
+        {active ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm"
             onMouseDown={(e) => {
               if (e.target === e.currentTarget) closeModal();
             }}
             role="dialog"
             aria-modal="true"
           >
-            <div className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl animate-in slide-in-from-right duration-300 overflow-y-auto">
+            <motion.div
+              variants={slideInRight}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="h-full w-full max-w-md border-l border-border bg-background p-6 shadow-2xl overflow-y-auto"
+            >
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
                   <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -689,9 +727,10 @@ export default function IntegrationsPage() {
                 </div>
 
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
         ) : null}
+      </AnimatePresence>
     </div>
   );
 }

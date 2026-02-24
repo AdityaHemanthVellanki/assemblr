@@ -15,9 +15,9 @@ async function run() {
         orgId = orgs[0].id; // Org from 'orgs'
     }
 
-    const { data: organizations } = await supabase.from('organizations').select('id').limit(1);
+    const { data: organizations } = await supabase.from('organizations' as any).select('id').limit(1);
     if (organizations && organizations.length > 0) {
-        organizationId = organizations[0].id;
+        organizationId = (organizations[0] as any).id;
     }
 
     console.log(`Using Org ID (orgs): ${orgId}`);
@@ -25,9 +25,9 @@ async function run() {
 
     // Fetch valid Version ID
     let versionId: string | null = null;
-    const { data: versions } = await supabase.from('tool_versions').select('id').limit(1);
+    const { data: versions } = await supabase.from('tool_versions' as any).select('id').limit(1);
     if (versions && versions.length > 0) {
-        versionId = versions[0].id;
+        versionId = (versions[0] as any).id;
     }
 
     console.log("Attempting CREATED -> MATERIALIZED transition test...");

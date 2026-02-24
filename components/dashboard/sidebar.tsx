@@ -5,8 +5,10 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { motion } from "framer-motion";
 
 import { cn } from "@/lib/ui/cn";
+import { staggerContainer, staggerItem, fadeIn } from "@/lib/ui/motion";
 import { APP_NAME } from "@/lib/branding";
 import { type OrgRole, canManageIntegrations } from "@/lib/permissions-shared";
 import { Input } from "@/components/ui/input";
@@ -214,7 +216,7 @@ export function Sidebar({
 
         {/* Persistent Navigation */}
         <div className="flex flex-col gap-0.5 mt-2 pb-2">
-          <div className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Platform</div>
+          <motion.div variants={fadeIn} initial="hidden" animate="visible" custom={0.1} className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Platform</motion.div>
           <Link
             href={useCasesHref}
             className={cn(
@@ -260,18 +262,23 @@ export function Sidebar({
               />
             </div>
 
-            <div className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            <motion.div variants={fadeIn} initial="hidden" animate="visible" custom={0.15} className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
               Recent Chats
-            </div>
+            </motion.div>
 
             {projectsLoading && projects.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">Loading chats…</div>
+              <div className="space-y-2 px-1">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="shimmer h-8 rounded-lg" />
+                ))}
+              </div>
             ) : projectsError ? (
               <div className="px-3 py-2 text-xs text-red-600">{projectsError}</div>
             ) : visibleProjects.length === 0 ? (
               <div className="px-3 py-2 text-xs text-muted-foreground">No chats yet.</div>
             ) : (
-              visibleProjects.map((project) => {
+              <motion.div variants={staggerContainer} initial="hidden" animate="visible">
+              {visibleProjects.map((project) => {
                 const active = pathname?.includes(`/dashboard/projects/${project.id}`);
                 const isInvalid = !project.isValidSpec;
                 const isEditing = editingId === project.id;
@@ -295,10 +302,13 @@ export function Sidebar({
                 }
 
                 return (
-                  <div
+                  <motion.div
                     key={project.id}
+                    variants={staggerItem}
+                    whileHover={{ x: 2 }}
+                    transition={{ duration: 0.15 }}
                     className={cn(
-                      "group relative rounded-lg transition-all duration-200 w-full overflow-hidden mb-0.5",
+                      "group relative rounded-lg transition-colors duration-200 w-full overflow-hidden mb-0.5",
                       active
                         ? "bg-white/10 text-white font-medium"
                         : "text-muted-foreground hover:bg-white/5 hover:text-white",
@@ -354,9 +364,10 @@ export function Sidebar({
                         </Button>
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
                 );
-              })
+              })}
+              </motion.div>
             )}
           </div>
         )}

@@ -1,28 +1,28 @@
-
-import dotenv from "dotenv";
-dotenv.config({ path: ".env.local" });
-import { getComposioClient } from "@/lib/integrations/composio/client";
+import { getServerEnv } from "@/lib/env/server";
 
 async function main() {
-    const client = getComposioClient();
-    const accounts = await client.connectedAccounts.list({ user_uuid: "assemblr-e2e-test" });
+  const env = getServerEnv();
+  const apiKey = env.COMPOSIO_API_KEY as string;
 
-    console.log("Checking connections for user: assemblr-e2e-test");
-    const connectedApps = accounts.items.map((a: any) => a.appUniqueId);
-    console.log("Connected Apps:", connectedApps);
+  // List only ACTIVE accounts
+  const res = await fetch("https://backend.composio.dev/api/v1/connectedAccounts?limit=200&status=ACTIVE", {
+    headers: { "x-api-key": apiKey },
+  });
+  const data = await res.json();
+  const items: any[] = data.items || [];
+  console.log(`Total ACTIVE accounts: ${items.length}`);
 
-    const hasGithub = connectedApps.includes("github");
-    const hasSlack = connectedApps.includes("slack");
+  // Show unique entity IDs
+  const entities = new Set<string>();
+  for (const item of items) {
+    entities.add(item.entityId ?? "(null)");
+  }
+  console.log(`\nUnique entity IDs: ${Array.from(entities).join(", ")}`);
 
-    if (hasGithub && hasSlack) {
-        console.log("✅ GitHub and Slack are connected!");
-        process.exit(0);
-    } else {
-        console.log("❌ Missing connections.");
-        if (!hasGithub) console.log("- GitHub missing");
-        if (!hasSlack) console.log("- Slack missing");
-        process.exit(1);
-    }
+  // Show each active connection with its entity
+  for (const item of items) {
+    console.log(`  ${item.appName} | entity=${item.entityId} | id=${item.id}`);
+  }
 }
 
 main().catch(console.error);

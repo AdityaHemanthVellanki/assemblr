@@ -69,6 +69,36 @@ const ACTION_REQUIRED_DEFAULTS: Record<string, Record<string, any>> = {
     NOTION_SEARCH_NOTION_PAGE: { query: "" },
 };
 
+/**
+ * Cached GitHub username per entity ID.
+ * Used to scope all GitHub search queries to the authenticated user's repos.
+ */
+const githubUserCache = new Map<string, string>();
+
+export async function getGitHubUsername(entityId: string): Promise<string | null> {
+    if (githubUserCache.has(entityId)) {
+        return githubUserCache.get(entityId)!;
+    }
+    try {
+        const client = getComposioClient();
+        const rawOutput = await client.getEntity(entityId).execute({
+            actionName: "GITHUB_GET_THE_AUTHENTICATED_USER",
+            params: {},
+        });
+        // Unwrap SDK envelope
+        const data = rawOutput?.data ?? rawOutput;
+        const login = data?.login;
+        if (login && typeof login === "string") {
+            githubUserCache.set(entityId, login);
+            console.log(`[Composio] Cached GitHub username for ${entityId}: ${login}`);
+            return login;
+        }
+    } catch (e: any) {
+        console.warn(`[Composio] Failed to get GitHub username for ${entityId}:`, e?.message);
+    }
+    return null;
+}
+
 export const executeAction = async (
     entityId: string,
     actionId: string,

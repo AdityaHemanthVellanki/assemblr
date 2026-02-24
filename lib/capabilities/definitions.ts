@@ -464,6 +464,13 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read", "filter"],
     supportedFields: ["limit", "after", "properties", "associations", "archived"],
   },
+  {
+    id: "hubspot_tickets_list",
+    integrationId: "hubspot",
+    resource: "tickets",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "after", "properties", "associations", "archived"],
+  },
 
   // Stripe
   {
@@ -487,6 +494,13 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read", "filter"],
     supportedFields: ["limit", "status", "price"],
   },
+  {
+    id: "stripe_invoices_list",
+    integrationId: "stripe",
+    resource: "invoices",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["limit", "status", "customer"],
+  },
 
   // Intercom
   {
@@ -503,6 +517,20 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read", "filter"],
     supportedFields: ["per_page", "page", "role"],
   },
+  {
+    id: "intercom_companies_list",
+    integrationId: "intercom",
+    resource: "companies",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["per_page", "page", "order"],
+  },
+  {
+    id: "intercom_search_conversations",
+    integrationId: "intercom",
+    resource: "conversations",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["query"],
+  },
 
   // Airtable
   {
@@ -513,6 +541,13 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     supportedFields: ["baseId", "tableId", "view", "maxRecords"],
     constraints: { requiredFilters: ["baseId", "tableId"] },
   },
+  {
+    id: "airtable_bases_list",
+    integrationId: "airtable",
+    resource: "bases",
+    allowedOperations: ["read"],
+    supportedFields: [],
+  },
 
   // Asana
   {
@@ -521,6 +556,13 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     resource: "tasks",
     allowedOperations: ["read", "filter"],
     supportedFields: ["project", "section", "completed_since"],
+  },
+  {
+    id: "asana_workspace_projects_list",
+    integrationId: "asana",
+    resource: "projects",
+    allowedOperations: ["read"],
+    supportedFields: ["workspace"],
   },
 
   // ClickUp
@@ -571,12 +613,47 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     supportedFields: ["query"],
     constraints: { requiredFilters: ["query"] },
   },
+  {
+    id: "quickbooks_accounts_query",
+    integrationId: "quickbooks",
+    resource: "accounts",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["query"],
+  },
+  {
+    id: "quickbooks_balance_report",
+    integrationId: "quickbooks",
+    resource: "balance",
+    allowedOperations: ["read"],
+    supportedFields: [],
+  },
+  {
+    id: "quickbooks_vendors_read",
+    integrationId: "quickbooks",
+    resource: "vendors",
+    allowedOperations: ["read"],
+    supportedFields: [],
+  },
 
   // Microsoft Graph (Outlook/Teams)
   {
     id: "outlook_messages_list",
     integrationId: "outlook",
     resource: "messages",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["$top", "$skip", "$filter", "$select"],
+  },
+  {
+    id: "outlook_events_list",
+    integrationId: "outlook",
+    resource: "events",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["$top", "$skip", "$filter", "$select", "$orderby"],
+  },
+  {
+    id: "outlook_contacts_list",
+    integrationId: "outlook",
+    resource: "contacts",
     allowedOperations: ["read", "filter"],
     supportedFields: ["$top", "$skip", "$filter", "$select"],
   },
@@ -598,12 +675,33 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     supportedFields: ["membership", "simple", "order_by"],
   },
   {
+    id: "gitlab_merge_requests_list",
+    integrationId: "gitlab",
+    resource: "merge_requests",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["state", "order_by", "sort", "scope"],
+  },
+  {
+    id: "gitlab_pipelines_list",
+    integrationId: "gitlab",
+    resource: "pipelines",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["scope", "status", "ref", "order_by"],
+  },
+  {
     id: "bitbucket_repos_list",
     integrationId: "bitbucket",
     resource: "repos",
     allowedOperations: ["read"],
     supportedFields: ["workspace"],
     constraints: { requiredFilters: ["workspace"] },
+  },
+  {
+    id: "bitbucket_pull_requests_list",
+    integrationId: "bitbucket",
+    resource: "pull_requests",
+    allowedOperations: ["read", "filter"],
+    supportedFields: ["state"],
   },
 
   // Google Analytics
@@ -614,6 +712,20 @@ export const CAPABILITY_REGISTRY: Capability[] = [
     allowedOperations: ["read", "filter"],
     supportedFields: ["propertyId", "dateRanges", "dimensions", "metrics"],
     constraints: { requiredFilters: ["propertyId", "dateRanges"] },
+  },
+  {
+    id: "google_analytics_accounts_list",
+    integrationId: "google_analytics",
+    resource: "accounts",
+    allowedOperations: ["read"],
+    supportedFields: [],
+  },
+  {
+    id: "google_analytics_audiences_list",
+    integrationId: "google_analytics",
+    resource: "audiences",
+    allowedOperations: ["read"],
+    supportedFields: ["propertyId"],
   },
 
   // Discord

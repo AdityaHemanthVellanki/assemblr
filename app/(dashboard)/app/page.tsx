@@ -3,8 +3,15 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, ArrowUp, Zap, Calendar, Mail } from "lucide-react";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  fadeUp,
+  staggerContainer,
+  staggerItem,
+  hoverLiftScale,
+} from "@/lib/ui/motion";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +22,6 @@ export default function AppHomePage() {
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (!prompt.trim()) return;
-
-        // Navigate to chat with the prompt
         router.push(`/app/chat?prompt=${encodeURIComponent(prompt)}`);
     };
 
@@ -60,22 +65,40 @@ export default function AppHomePage() {
 
                 {/* Headings */}
                 <div className="space-y-4">
-                    <h1 className="text-5xl font-bold tracking-tight sm:text-6xl md:text-7xl">
+                    <motion.h1
+                        variants={fadeUp}
+                        initial="hidden"
+                        animate="visible"
+                        custom={0}
+                        className="text-5xl font-bold tracking-tight sm:text-6xl md:text-7xl"
+                    >
                         Words to tools in{" "}
-                        <span className="bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">
+                        <span className="animated-gradient-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">
                             seconds
                         </span>
-                    </h1>
-                    <p className="mx-auto max-w-2xl text-lg text-muted-foreground/80 sm:text-xl">
+                    </motion.h1>
+                    <motion.p
+                        variants={fadeUp}
+                        initial="hidden"
+                        animate="visible"
+                        custom={0.1}
+                        className="mx-auto max-w-2xl text-lg text-muted-foreground/80 sm:text-xl"
+                    >
                         Assemblr is your AI agent to build fully functional tools and apps on top of your tech stack
-                    </p>
+                    </motion.p>
                 </div>
 
                 {/* Input Area */}
-                <div className="mx-auto w-full max-w-2xl">
+                <motion.div
+                    variants={fadeUp}
+                    initial="hidden"
+                    animate="visible"
+                    custom={0.2}
+                    className="mx-auto w-full max-w-2xl"
+                >
                     <form
                         onSubmit={handleSubmit}
-                        className="relative flex items-center rounded-2xl border border-border/40 bg-card/30 p-2 shadow-lg transition-all focus-within:border-primary/50 focus-within:bg-card/50 focus-within:shadow-primary/5 focus-within:ring-1 focus-within:ring-primary/50"
+                        className="gradient-border-focus relative flex items-center rounded-2xl border border-border/40 bg-card/30 p-2 shadow-lg transition-all focus-within:border-primary/50 focus-within:bg-card/50 focus-within:shadow-primary/5 focus-within:ring-1 focus-within:ring-primary/50"
                     >
                         {/* Add Integration Button */}
                         <Button
@@ -101,32 +124,47 @@ export default function AppHomePage() {
                         />
 
                         {/* Send Button */}
-                        <Button
-                            type="submit"
-                            size="icon"
-                            disabled={!prompt.trim()}
-                            className={cn(
-                                "h-9 w-9 rounded-xl transition-all",
-                                prompt.trim()
-                                    ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
-                                    : "bg-muted text-muted-foreground opacity-50"
-                            )}
+                        <motion.div
+                            animate={{
+                                scale: prompt.trim() ? 1 : 0.9,
+                                opacity: prompt.trim() ? 1 : 0.5,
+                            }}
+                            transition={{ duration: 0.15 }}
                         >
-                            <ArrowUp className="h-4 w-4" />
-                            <span className="sr-only">Send</span>
-                        </Button>
+                            <Button
+                                type="submit"
+                                size="icon"
+                                disabled={!prompt.trim()}
+                                className={cn(
+                                    "h-9 w-9 rounded-xl transition-all",
+                                    prompt.trim()
+                                        ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+                                        : "bg-muted text-muted-foreground"
+                                )}
+                            >
+                                <ArrowUp className="h-4 w-4" />
+                                <span className="sr-only">Send</span>
+                            </Button>
+                        </motion.div>
                     </form>
-                </div>
+                </motion.div>
 
                 {/* Example Cards */}
-                <div className="grid gap-4 sm:grid-cols-3">
+                <motion.div
+                    variants={staggerContainer}
+                    initial="hidden"
+                    animate="visible"
+                    className="grid gap-4 sm:grid-cols-3"
+                >
                     {EXAMPLE_CARDS.map((card) => (
-                        <div
+                        <motion.div
                             key={card.title}
+                            variants={staggerItem}
+                            {...hoverLiftScale}
                             onClick={() => router.push(`/app/chat?prompt=${encodeURIComponent(card.prompt)}`)}
-                            className="group cursor-pointer rounded-2xl border border-border/40 bg-card/20 p-6 text-left transition-all hover:border-primary/30 hover:bg-card/40 hover:shadow-lg"
+                            className="group cursor-pointer rounded-2xl border border-border/40 bg-card/20 p-6 text-left transition-colors hover:border-primary/30 hover:bg-card/40 hover:shadow-lg"
                         >
-                            <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg ${card.bg} ${card.color}`}>
+                            <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg transition-transform group-hover:scale-110 ${card.bg} ${card.color}`}>
                                 <card.icon className="h-5 w-5" />
                             </div>
                             <h3 className="mb-2 font-semibold text-foreground group-hover:text-primary transition-colors">
@@ -135,9 +173,9 @@ export default function AppHomePage() {
                             <p className="text-xs text-muted-foreground line-clamp-3">
                                 {card.description}
                             </p>
-                        </div>
+                        </motion.div>
                     ))}
-                </div>
+                </motion.div>
 
             </div>
         </div>

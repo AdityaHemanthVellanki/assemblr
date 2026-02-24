@@ -1,5 +1,5 @@
 
-import { executeAction } from "@/lib/integrations/composio/execution";
+import { executeAction, getGitHubUsername } from "@/lib/integrations/composio/execution";
 import { getComposioEntityId } from "@/lib/integrations/composio/connection";
 import { IntegrationRuntime } from "@/lib/execution/types";
 import { resolveComposioActionName } from "@/lib/actionkit/registry";
@@ -361,6 +361,37 @@ export class ComposioRuntime implements IntegrationRuntime {
                             resolvedActionId = "GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS";
                             const { owner, repo, ...rest } = resolvedInput || {};
                             resolvedInput = { ...rest, q: resolvedInput?.q || "is:issue is:open" };
+                        }
+
+                        // GitHub: SEARCH_ISSUES_AND_PULL_REQUESTS always requires `q`
+                        if (resolvedActionId === "GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS" && !resolvedInput?.q) {
+                            console.log("[Composio] GitHub search: missing q param, adding default");
+                            resolvedInput = { ...resolvedInput, q: "is:issue is:open" };
+                        }
+
+                        // CRITICAL: Scope ALL GitHub search queries to the user's own repos.
+                        // Without this, GitHub's search API returns results from ALL of GitHub.
+                        const GITHUB_SEARCH_ACTIONS = new Set([
+                            "GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS",
+                            "GITHUB_SEARCH_CODE",
+                            "GITHUB_SEARCH_REPOSITORIES",
+                            "GITHUB_SEARCH_USERS",
+                            "GITHUB_SEARCH_TOPICS",
+                            "GITHUB_SEARCH_COMMITS",
+                            "GITHUB_SEARCH_LABELS",
+                        ]);
+                        if (GITHUB_SEARCH_ACTIONS.has(resolvedActionId) && resolvedInput?.q) {
+                            const q = String(resolvedInput.q);
+                            // Only scope if the query doesn't already have a user/repo/org scope
+                            if (!q.includes("user:") && !q.includes("repo:") && !q.includes("org:")) {
+                                const ghUsername = await getGitHubUsername(entityId);
+                                if (ghUsername) {
+                                    resolvedInput = { ...resolvedInput, q: `${q} user:${ghUsername}` };
+                                    console.log(`[Composio] Scoped GitHub search to user:${ghUsername}`);
+                                } else {
+                                    console.warn("[Composio] Could not scope GitHub search — username unavailable");
+                                }
+                            }
                         }
 
                         // Asana: GET_TASKS_FROM_A_PROJECT needs project_gid — fall back to workspaces

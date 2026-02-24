@@ -244,8 +244,8 @@ export class ToolCompiler {
     await runStage("generate-query-plans", 500, runGenerateQueryPlans);
 
     // Stage 6: Integration Readiness Gate
-    // Instead of throwing when some integrations are missing, strip them and continue
-    // with the connected ones. Only throw if ALL integrations are missing.
+    // Since resolve-integrations now filters by connection status, this should
+    // rarely fire. But it serves as a safety net for race conditions (token expiry, etc.)
     await (async () => {
       try {
         return await runCheckIntegrationReadiness({ spec, orgId: input.orgId });
@@ -264,7 +264,8 @@ export class ToolCompiler {
           }
 
           // Strip unconnected integrations from spec and continue
-          console.log(`[Compiler] Stripping unconnected integrations: ${missingIds.join(", ")}. Continuing with: ${connected.join(", ")}`);
+          console.warn(`[Compiler] Stripping disconnected integrations: ${missingIds.join(", ")}. Continuing with: ${connected.join(", ")}`);
+          degraded = true;
           spec.integrations = spec.integrations.filter((i: any) => !missingIds.includes(i.id));
           spec.actions = spec.actions.filter((a: any) => !missingIds.includes(a.integrationId));
           spec.entities = spec.entities.filter((e: any) => !missingIds.includes(e.sourceIntegration));
@@ -272,6 +273,7 @@ export class ToolCompiler {
           spec.views = spec.views
             .map((v: any) => ({ ...v, actions: v.actions.filter((id: string) => remainingActionIds.has(id)) }))
             .filter((v: any) => v.actions.length > 0);
+          emitProgress({ stage: "define-actions", status: "completed", message: `Some integrations unavailable: ${missingIds.join(", ")}` });
           return { status: "completed" };
         }
         throw error;
@@ -489,8 +491,18 @@ function ensureMinimumSpec(
   // Intent → Domain Lock: STRICT FILTERING
   // If the prompt clearly implies specific integrations, we MUST filter out everything else.
   // This prevents "Schema Bleeding" where previous/hallucinated entities (like Repos) appear in Email tools.
-  if (detectedIntegrations.length > 0) {
-    const allowed = new Set(detectedIntegrations);
+  // BUT: Only use detected integrations that are actually connected. If NLP detects "slack" but
+  // slack is expired, don't use it to filter out the connected integrations the compiler selected.
+  const connectedSet = new Set(connectedIntegrations);
+  const connectedDetected = detectedIntegrations.filter(id => connectedSet.has(id));
+
+  if (connectedDetected.length > 0) {
+    const allowed = new Set(connectedDetected);
+    // Also allow any integration that the compiler already placed in the spec
+    // (the compiler already verified connection status)
+    for (const i of spec.integrations) {
+      allowed.add(i.id);
+    }
 
     // Filter existing spec elements to match allowed domain
     if (spec.integrations.length > 0) {
@@ -502,17 +514,15 @@ function ensureMinimumSpec(
     if (spec.actions.length > 0) {
       spec.actions = spec.actions.filter(a => allowed.has(a.integrationId));
     }
-    // Note: Workflows/Views might need filtering too, but they usually depend on actions/entities.
   }
 
-  const integrationIds: IntegrationId[] =
-    spec.integrations.length > 0
-      ? spec.integrations.map((i) => i.id)
-      : detectedIntegrations.length > 0
-        ? detectedIntegrations
-        : connectedIntegrations.length > 0
-          ? connectedIntegrations
-          : ["google"];
+  const integrationIds: IntegrationId[] = (() => {
+    if (spec.integrations.length > 0) return spec.integrations.map((i) => i.id);
+    if (connectedDetected.length > 0) return connectedDetected;
+    // Only use first 4 connected integrations as fallback, never all
+    if (connectedIntegrations.length > 0) return connectedIntegrations.slice(0, 4);
+    return ["github", "linear"];
+  })();
 
   const integrations =
     spec.integrations.length > 0
@@ -530,6 +540,10 @@ function ensureMinimumSpec(
     actions = integrationIds.flatMap((integration) =>
       buildFallbackActionsForIntegration(integration, prompt),
     );
+  }
+  // Cap actions to prevent over-execution
+  if (actions.length > 8) {
+    actions = actions.slice(0, 8);
   }
 
   let reducers = spec.state.reducers;
@@ -553,6 +567,10 @@ function ensureMinimumSpec(
   if (entities.length === 0) {
     entities = integrationIds.flatMap((integration) => buildFallbackEntitiesForIntegration(integration, prompt));
   }
+  // Cap entities to prevent cascading over-generation
+  if (entities.length > 5) {
+    entities = entities.slice(0, 5);
+  }
 
   // Sanitize entity relations: LLM sometimes generates invalid relation objects
   // with missing target or invalid type. Filter them out to prevent validation failures.
@@ -572,9 +590,15 @@ function ensureMinimumSpec(
 
   let views = spec.views;
   if (views.length === 0) {
-    views = entities.map((entity, index) =>
+    // Create views for the most important entities (max 4), not every entity
+    const viewEntities = entities.slice(0, 4);
+    views = viewEntities.map((entity, index) =>
       buildFallbackViewForEntity(entity, actions, index),
     );
+  }
+  // Hard cap on views
+  if (views.length > 4) {
+    views = views.slice(0, 4);
   }
 
   const graphNodes = [

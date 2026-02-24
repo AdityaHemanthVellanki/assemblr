@@ -3,6 +3,9 @@ import { getServerEnv } from "@/lib/env";
 import { ActionSpec, IntegrationId, IntegrationIdSchema } from "@/lib/toolos/spec";
 import type { ToolCompilerStageContext, ToolCompilerStageResult } from "@/lib/toolos/compiler/tool-compiler";
 
+/** Maximum actions to define per tool */
+const MAX_ACTIONS = 8;
+
 export async function runDefineActions(
   ctx: ToolCompilerStageContext,
 ): Promise<ToolCompilerStageResult> {
@@ -18,13 +21,22 @@ export async function runDefineActions(
       return `${id}:\n${lines.join("\n")}`;
     })
     .join("\n");
+  // Leverage goal_plan and entities for better action targeting
+  const goalContext = ctx.spec.goal_plan
+    ? `\nGoal: ${ctx.spec.goal_plan.primary_goal}\nGoal type: ${ctx.spec.goal_plan.kind}`
+    : "";
+
+  const entityContext = ctx.spec.entities?.length > 0
+    ? `\nEntities to populate: ${ctx.spec.entities.map((e) => `${e.name} (${e.sourceIntegration})`).join(", ")}`
+    : "";
+
   const response = await getAzureOpenAIClient().chat.completions.create({
     model: getServerEnv().AZURE_OPENAI_DEPLOYMENT_NAME!,
     messages: [
       {
         role: "system",
         content:
-          `Return JSON: {"actions":[{"id":string,"name":string,"description":string,"type":"READ"|"WRITE"|"MUTATE"|"NOTIFY","integrationId":"google"|"slack"|"github"|"linear"|"notion","capabilityId":string,"inputSchema":object,"outputSchema":object,"requiresApproval":boolean}]}.
+          `Return JSON: {"actions":[{"id":string,"name":string,"description":string,"type":"READ"|"WRITE"|"MUTATE"|"NOTIFY","integrationId":string,"capabilityId":string,"inputSchema":object,"outputSchema":object,"requiresApproval":boolean}]}.
 
 Action types:
 - READ: Fetches/queries data (list, get, search)
@@ -32,15 +44,24 @@ Action types:
 - MUTATE: Updates/deletes existing resources (update issue, close PR, archive)
 - NOTIFY: Sends notifications (post to Slack, send email)
 
-Rules:
-- Include ALL actions needed to fulfill the user's request, both read AND write
-- Set requiresApproval=true for WRITE/MUTATE/NOTIFY actions (destructive or visible side effects)
+CRITICAL RULES:
+- Include ONLY the 2-6 most relevant actions to answer the user's specific request
+- Do NOT generate an action for every integration — only for integrations that directly serve the request
+- For READ-heavy requests (dashboards, monitoring), focus on 2-4 READ actions that fetch the most useful data
+- For action-heavy requests (automation, workflows), include both READ and WRITE/MUTATE actions
+- Set requiresApproval=true for WRITE/MUTATE/NOTIFY actions
 - Set requiresApproval=false for READ actions
 - Only use capabilities from the catalog below
+- Fewer, more targeted actions produce better results than many unfocused ones
+
+ACTION NAMING:
+- Use clear, descriptive names: "List open issues" not just "List"
+- Include the integration in the description: "Fetch GitHub pull requests" not just "Fetch data"
+- The "id" should follow the pattern: "integrationId.actionVerb" (e.g. "github.listIssues")
 
 ${capabilityCatalog}`,
       },
-      { role: "user", content: ctx.prompt },
+      { role: "user", content: ctx.prompt + goalContext + entityContext },
     ],
     temperature: 0,
     max_tokens: 800,
@@ -97,7 +118,8 @@ ${capabilityCatalog}`,
     if (actions.length === 0) {
       return { specPatch: { actions: buildFallbackActions(integrations, ctx.prompt) } };
     }
-    return { specPatch: { actions } };
+    // Hard cap on actions — prevent over-generation
+    return { specPatch: { actions: actions.slice(0, MAX_ACTIONS) } };
   } catch {
     return { specPatch: { actions: buildFallbackActions(integrations, ctx.prompt) } };
   }
@@ -172,7 +194,7 @@ function buildFallbackActions(integrations: IntegrationId[], prompt: string): Ac
   const p = prompt.toLowerCase();
   const wantWrite = WRITE_INTENT_RE.test(p);
 
-  return integrations.flatMap((integration) => {
+  const allActions = integrations.flatMap((integration) => {
     const actions: ActionSpec[] = [];
 
     switch (integration) {
@@ -557,4 +579,7 @@ function buildFallbackActions(integrations: IntegrationId[], prompt: string): Ac
 
     return actions;
   });
+
+  // Hard cap on fallback actions — prevent cascading over-generation
+  return allActions.slice(0, MAX_ACTIONS);
 }

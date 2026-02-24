@@ -203,6 +203,10 @@ export function ChatPanel({
       // so the compiler pipeline generates the spec and executes actions.
       // Use "chat" mode for subsequent messages on an existing tool.
       const chatMode = !toolId ? "create" : "chat";
+
+      // Signal that the pipeline is running so ToolRenderer shows progress
+      onStatusUpdate?.("EXECUTING");
+
       const data = await safeFetch<any>(url, {
         method: "POST",
         body: JSON.stringify({ message: content, mode: chatMode })
@@ -230,6 +234,8 @@ export function ChatPanel({
 
     } catch (err) {
       console.error(err);
+      // Signal failure so ToolRenderer exits the generating animation
+      onStatusUpdate?.("FAILED");
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(),
         role: "assistant",

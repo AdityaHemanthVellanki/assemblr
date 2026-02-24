@@ -827,23 +827,31 @@ export async function runCompilerPipeline(
       let intentPlanError: Error | null = null;
       spec = canonicalizeToolSpec(compilerResult.spec);
       spec = enforceViewSpecForPrompt(spec, resolvedPrompt);
+      // Skip intent/goal/semantic plan generation if compiler already produced them
+      const hasCompilerIntent = spec.intent_contract && spec.intent_contract.userGoal && spec.intent_contract.successCriteria?.length > 0;
+      const hasCompilerGoal = spec.goal_plan && spec.goal_plan.primary_goal && spec.goal_plan.kind;
       if (enterpriseSpec) {
-        spec = {
-          ...spec,
-          intent_contract: buildFallbackIntentContract(resolvedPrompt),
-          goal_plan: buildFallbackGoalPlan(resolvedPrompt),
-        };
+        if (!hasCompilerIntent) {
+          spec = { ...spec, intent_contract: buildFallbackIntentContract(resolvedPrompt) };
+        }
+        if (!hasCompilerGoal) {
+          spec = { ...spec, goal_plan: buildFallbackGoalPlan(resolvedPrompt) };
+        }
       } else {
-        try {
-          spec = await applyIntentContract(spec, resolvedPrompt);
-          spec = await applySemanticPlan(spec, resolvedPrompt);
-        } catch (err: any) {
-          const compileStep = stepsById.get("compile");
-          if (compileStep) {
-            appendStep(compileStep, `Semantic planning unavailable: ${err?.message || String(err)}`);
+        if (!hasCompilerIntent) {
+          try {
+            spec = await applyIntentContract(spec, resolvedPrompt);
+            spec = await applySemanticPlan(spec, resolvedPrompt);
+          } catch (err: any) {
+            const compileStep = stepsById.get("compile");
+            if (compileStep) {
+              appendStep(compileStep, `Semantic planning unavailable: ${err?.message || String(err)}`);
+            }
           }
         }
-        spec = await applyGoalPlan(spec, resolvedPrompt);
+        if (!hasCompilerGoal) {
+          spec = await applyGoalPlan(spec, resolvedPrompt);
+        }
         if (!intentPlanError) {
           try {
             spec = await applyAnswerContract(spec, resolvedPrompt);
@@ -3933,13 +3941,16 @@ function buildReadActionInput(params: {
     }
   }
 
-  // GitHub issues: ensure owner/repo are present, or add search query for fallback
-  if (params.action.integrationId === "github" &&
-    (params.action.capabilityId === "github_issues_list" || params.action.capabilityId === "github_issues_search")) {
+  // GitHub issues/PRs: ensure search query `q` is present for search-based actions
+  const githubSearchCapabilities = [
+    "github_issues_list", "github_issues_search",
+    "github_pull_requests_search", "github_pull_requests_list",
+  ];
+  if (params.action.integrationId === "github" && githubSearchCapabilities.includes(params.action.capabilityId)) {
     if (!input.owner || !input.repo) {
       // No repo context available — set a search query so the Composio fallback works
       if (!input.q) {
-        input.q = "is:issue is:open";
+        input.q = buildGitHubSearchQuery(params.action.capabilityId, params.spec);
       }
     }
   }
@@ -3977,6 +3988,62 @@ function buildReadActionInput(params: {
 
   console.log(`[buildReadActionInput] ${params.action.capabilityId}: ${JSON.stringify(input).slice(0, 400)}`);
   return input;
+}
+
+/**
+ * Build a GitHub search query string from the tool spec's purpose/prompt.
+ * Maps user intent keywords to GitHub search qualifiers.
+ */
+function buildGitHubSearchQuery(capabilityId: string, spec: ToolSystemSpec): string {
+  const prompt = (spec.source_prompt ?? spec.purpose ?? "").toLowerCase();
+  const parts: string[] = [];
+
+  // Determine issue vs PR type
+  const isPR = capabilityId.includes("pull_request") || prompt.includes("pull request") || prompt.includes(" pr ") || prompt.includes(" prs ");
+  parts.push(isPR ? "is:pr" : "is:issue");
+
+  // State detection
+  if (prompt.includes("closed") || prompt.includes("merged") || prompt.includes("resolved")) {
+    parts.push(isPR ? "is:merged" : "is:closed");
+  } else if (prompt.includes("open") || prompt.includes("active") || prompt.includes("pending")) {
+    parts.push("is:open");
+  }
+
+  // Label/keyword detection
+  if (prompt.includes("bug") || prompt.includes("defect") || prompt.includes("regression")) {
+    parts.push("label:bug");
+  }
+  if (prompt.includes("feature") || prompt.includes("enhancement")) {
+    parts.push("label:enhancement");
+  }
+  if (prompt.includes("critical") || prompt.includes("urgent") || prompt.includes("p0") || prompt.includes("severity")) {
+    parts.push("label:critical");
+  }
+
+  // Time detection
+  const now = new Date();
+  if (prompt.includes("last 24 hours") || prompt.includes("today")) {
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    parts.push(`created:>=${since}`);
+  } else if (prompt.includes("last week") || prompt.includes("past week") || prompt.includes("this week")) {
+    const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    parts.push(`created:>=${since}`);
+  } else if (prompt.includes("last month") || prompt.includes("past month") || prompt.includes("this month")) {
+    const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    parts.push(`created:>=${since}`);
+  } else if (prompt.includes("recent") || prompt.includes("latest")) {
+    const since = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    parts.push(`updated:>=${since}`);
+  }
+
+  // Default: at least show something reasonable
+  if (parts.length === 1) {
+    parts.push("is:open");
+  }
+
+  const q = parts.join(" ");
+  console.log(`[buildGitHubSearchQuery] Generated q="${q}" from prompt: "${prompt.slice(0, 80)}..."`);
+  return q;
 }
 
 /**

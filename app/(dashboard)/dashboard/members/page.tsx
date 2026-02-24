@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +14,12 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { safeFetch } from "@/lib/api/client";
+import {
+  fadeUp,
+  staggerContainer,
+  staggerItem,
+  listItem,
+} from "@/lib/ui/motion";
 
 type OrgRole = "owner" | "editor" | "viewer";
 
@@ -186,6 +193,7 @@ export default function MembersPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
+      <motion.div variants={fadeUp} initial="hidden" animate="visible" custom={0}>
       <Card>
         <CardHeader>
           <CardTitle>Members</CardTitle>
@@ -206,10 +214,16 @@ export default function MembersPage() {
             </div>
           ) : null}
 
-          <div className="divide-y divide-border rounded-md border border-border">
+          <motion.div
+            variants={staggerContainer}
+            initial="hidden"
+            animate="visible"
+            className="divide-y divide-border rounded-md border border-border"
+          >
             {members.map((m) => (
-              <div
+              <motion.div
                 key={m.userId}
+                variants={staggerItem}
                 className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="min-w-0">
@@ -244,9 +258,9 @@ export default function MembersPage() {
                     </Button>
                   ) : null}
                 </div>
-              </div>
+              </motion.div>
             ))}
-          </div>
+          </motion.div>
 
           <div className="flex items-center gap-2">
             <Button type="button" variant="secondary" onClick={() => void loadMembers()} disabled={isLoading}>
@@ -255,8 +269,10 @@ export default function MembersPage() {
           </div>
         </CardContent>
       </Card>
+      </motion.div>
 
       {isOwner ? (
+        <motion.div variants={fadeUp} initial="hidden" animate="visible" custom={0.15}>
         <Card>
           <CardHeader>
             <CardTitle>Invite member</CardTitle>
@@ -289,23 +305,38 @@ export default function MembersPage() {
                 Create invite
               </Button>
             </form>
-            {inviteResult?.expiresAt ? (
-              <div className="text-xs text-muted-foreground">
-                Expires: {new Date(inviteResult.expiresAt).toLocaleString()}
-              </div>
-            ) : null}
-            {inviteResult?.acceptUrl ? (
-              <div className="rounded-md border border-border bg-accent px-3 py-2 text-sm">
-                <div className="text-xs text-muted-foreground">
-                  Dev accept link:
-                </div>
-                <a className="break-all underline" href={inviteResult.acceptUrl}>
-                  {inviteResult.acceptUrl}
-                </a>
-              </div>
-            ) : null}
+            <AnimatePresence>
+              {inviteResult?.expiresAt ? (
+                <motion.div
+                  variants={listItem}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                  className="text-xs text-muted-foreground"
+                >
+                  Expires: {new Date(inviteResult.expiresAt).toLocaleString()}
+                </motion.div>
+              ) : null}
+              {inviteResult?.acceptUrl ? (
+                <motion.div
+                  variants={listItem}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                  className="rounded-md border border-border bg-accent px-3 py-2 text-sm overflow-hidden"
+                >
+                  <div className="text-xs text-muted-foreground">
+                    Dev accept link:
+                  </div>
+                  <a className="break-all underline" href={inviteResult.acceptUrl}>
+                    {inviteResult.acceptUrl}
+                  </a>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
           </CardContent>
         </Card>
+        </motion.div>
       ) : null}
     </div>
   );

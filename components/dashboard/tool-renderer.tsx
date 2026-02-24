@@ -10,7 +10,22 @@ import { ExecutionLog } from "@/components/dashboard/execution-log";
 import { TriggerPanel } from "@/components/dashboard/trigger-panel";
 import { HealthDashboard } from "@/components/dashboard/health-dashboard";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, AlertTriangle, Download, Filter, RefreshCw, ChevronDown, GitBranch, Play, Zap, Activity } from "lucide-react";
+import {
+  InteractiveTableView,
+  InteractiveKanbanView,
+  InteractiveTimelineView,
+  InteractiveDetailView,
+  InteractiveChatView,
+  InteractiveFormView,
+  InteractiveInspectorView,
+  InteractiveCommandView,
+  InteractiveDashboardView,
+  RichDetailSidebar,
+} from "@/components/dashboard/interactive-views";
+import {
+  Sparkles, AlertTriangle, Download, Filter, RefreshCw, ChevronDown, GitBranch, Play, Zap, Activity, FileJson, Search,
+  Send, Edit3, Trash2, Eye, Bell, RotateCw, Plus, Upload, Lock, X, CheckCircle2, Loader2, Circle,
+} from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────
 interface DataEvidence {
@@ -22,12 +37,38 @@ interface DataEvidence {
   confidenceScore: number;
 }
 
+interface KpiMetric {
+  label: string;
+  value: string | number;
+  type: "count" | "percentage" | "currency" | "text";
+  trend?: "up" | "down" | "neutral";
+  color?: "green" | "red" | "amber" | "blue" | "neutral";
+}
+
+interface DataInsightsInfo {
+  kpis: KpiMetric[];
+  summary: string;
+  dataQuality: {
+    totalRecords: number;
+    populatedFields: number;
+    totalFields: number;
+    completeness: number;
+  };
+  fieldMeta: Record<string, {
+    displayName: string;
+    type: string;
+    nullCount: number;
+    uniqueCount: number;
+  }>;
+}
+
 interface ViewProjection {
   id: string;
   name: string;
   type: ViewSpec["type"];
   data: any;
   actions: string[];
+  insights?: DataInsightsInfo;
 }
 
 // ─── Main Component ─────────────────────────────────────────────────
@@ -51,6 +92,10 @@ export function ToolRenderer({
   const [evidenceMap, setEvidenceMap] = React.useState<Record<string, DataEvidence> | null>(null);
   const [allowWrites, setAllowWrites] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<"data" | "workflows" | "runs" | "triggers" | "health">("data");
+  const [warnings, setWarnings] = React.useState<Array<{ id: string; message: string; timestamp: number }>>([]);
+  const [buildSteps, setBuildSteps] = React.useState<Array<{ id: string; title: string; status: string; logs: string[] }>>([]);
+  const [buildLogs, setBuildLogs] = React.useState<string[]>([]);
+  const [lifecycleState, setLifecycleState] = React.useState<string | null>(null);
   const [pendingAction, setPendingAction] = React.useState<{
     actionId: string;
     actionName: string;
@@ -59,6 +104,19 @@ export function ToolRenderer({
     input: Record<string, any>;
   } | null>(null);
   const autoFetchedRef = React.useRef<string | null>(null);
+
+  // Non-blocking warning system — auto-dismiss after 8s
+  const addWarning = React.useCallback((message: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setWarnings((prev) => [...prev.slice(-4), { id, message, timestamp: Date.now() }]);
+    setTimeout(() => {
+      setWarnings((prev) => prev.filter((w) => w.id !== id));
+    }, 8000);
+  }, []);
+
+  const dismissWarning = React.useCallback((id: string) => {
+    setWarnings((prev) => prev.filter((w) => w.id !== id));
+  }, []);
 
   // Result state
   const [resultData, setResultData] = React.useState<any>(null);
@@ -134,12 +192,13 @@ export function ToolRenderer({
         setMaterialized(false);
         setError(err.data?.reason ?? "Tool not materialized");
       } else {
-        setError(err instanceof Error ? err.message : "Failed to load view");
+        // Non-blocking: action failures become warnings, tool keeps rendering
+        addWarning(err instanceof Error ? err.message : "Failed to load view");
       }
     } finally {
       setIsLoading(false);
     }
-  }, [toolId, materialized]);
+  }, [toolId, materialized, addWarning]);
 
   const runAction = React.useCallback(async (actionId: string, input?: Record<string, any>, forceAllow?: boolean) => {
     if (!toolId || materialized === false) {
@@ -188,12 +247,13 @@ export function ToolRenderer({
         setMaterialized(false);
         setError(err.data?.reason ?? "Tool not materialized");
       } else {
-        setError(err instanceof Error ? err.message : "Failed to run action");
+        // Non-blocking: action failures become warnings, tool keeps rendering
+        addWarning(err instanceof Error ? err.message : "Failed to run action");
       }
     } finally {
       setIsLoading(false);
     }
-  }, [activeViewId, toolId, materialized, allowWrites]);
+  }, [activeViewId, toolId, materialized, allowWrites, addWarning]);
 
   const approveAction = React.useCallback(async () => {
     if (!pendingAction) return;
@@ -212,6 +272,7 @@ export function ToolRenderer({
         ok: boolean;
         data: any;
         status: string;
+        build_steps?: Array<{ id: string; title: string; status: string; logs: string[] }>;
       }>(`/api/tools/${toolId}/result`);
 
       if (payload.ok) {
@@ -222,12 +283,14 @@ export function ToolRenderer({
           setResultStatus("materialized");
           setToolState(payload.data.records_json ?? payload.data);
           setAuthStatus("authenticated");
+          setBuildSteps([]);
         } else if (payload.status === "ready_no_data") {
           setMaterialized(true);
           setLifecycle("ACTIVE");
           setResultData(null);
           setResultStatus("empty");
           setAuthStatus("authenticated");
+          setBuildSteps([]);
         } else if (payload.status === "error") {
           setResultStatus("error");
           setMaterialized(false);
@@ -236,6 +299,10 @@ export function ToolRenderer({
           setError(errMsg);
         } else if (payload.status === "pending") {
           setResultStatus("pending");
+          // Capture build steps for progress display
+          if (Array.isArray(payload.build_steps) && payload.build_steps.length > 0) {
+            setBuildSteps(payload.build_steps);
+          }
         }
       }
     } catch (err) {
@@ -257,6 +324,8 @@ export function ToolRenderer({
         status: string | null;
         error: string | null;
         done: boolean;
+        lifecycle_state?: string | null;
+        build_logs?: string[] | null;
       }>(`/api/tools/${toolId}/status`);
 
       if (payload.status === "unauthenticated") {
@@ -264,6 +333,15 @@ export function ToolRenderer({
         return "unauthenticated";
       }
       setAuthStatus("authenticated");
+
+      // Capture progress information
+      if (payload.lifecycle_state) {
+        setLifecycleState(payload.lifecycle_state);
+      }
+      if (Array.isArray(payload.build_logs) && payload.build_logs.length > 0) {
+        setBuildLogs(payload.build_logs);
+      }
+
       return "authenticated";
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
@@ -285,7 +363,7 @@ export function ToolRenderer({
     if (!spec || !isToolSystemSpec(spec)) return;
     if (error) return;
     void fetchResult();
-  }, [spec, authStatus, fetchResult, error]);
+  }, [spec, status, authStatus, fetchResult, error]);
 
   // Polling for status during generation
   React.useEffect(() => {
@@ -343,6 +421,38 @@ export function ToolRenderer({
     return <ToolIdleState />;
   }
 
+  // Show progress animation when pipeline is running but spec hasn't arrived yet
+  if (!spec && (status === "EXECUTING" || status === "PLANNED" || status === "READY_TO_EXECUTE" || status === "CREATED")) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full bg-background">
+        <GeneratingAnimation stage="generating" />
+      </div>
+    );
+  }
+
+  // Show failure when pipeline failed before producing a spec
+  if (!spec && status === "FAILED") {
+    return (
+      <div className="flex flex-col items-center justify-center h-full bg-background p-8 text-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="h-16 w-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
+            <AlertTriangle className="h-8 w-8 text-red-400" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-red-400">Generation Failed</h3>
+            <p className="text-sm text-muted-foreground max-w-md">
+              {error || "Something went wrong during tool generation. Try rephrasing your prompt."}
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   if (!spec) {
     return (
       <div className="flex flex-col items-center justify-center h-full bg-background p-8 text-center">
@@ -375,6 +485,9 @@ export function ToolRenderer({
         <GeneratingAnimation
           stage={isExecuting ? "fetching" : "generating"}
           purpose={systemSpec.purpose}
+          buildSteps={buildSteps}
+          buildLogs={buildLogs}
+          lifecycleState={lifecycleState}
         />
       </div>
     );
@@ -469,9 +582,9 @@ export function ToolRenderer({
             <Sparkles className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-lg font-bold tracking-tight text-white">{systemSpec.purpose}</h1>
+            <h1 className="text-lg font-bold tracking-tight text-white">{systemSpec.name !== "Tool" ? systemSpec.name : systemSpec.purpose}</h1>
             <p className="text-xs text-muted-foreground/80">
-              {systemSpec.entities.map(e => e.name).join(" · ")}
+              {systemSpec.purpose !== systemSpec.name ? systemSpec.purpose : systemSpec.entities.map(e => e.name).join(" · ")}
             </p>
           </div>
         </div>
@@ -505,10 +618,48 @@ export function ToolRenderer({
               </button>
               <button
                 className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                onClick={() => {
+                  if (!projection?.data) return;
+                  const rows = Array.isArray(projection.data) ? projection.data : [projection.data];
+                  if (rows.length === 0) return;
+                  const headers = Object.keys(rows[0]);
+                  const csv = [
+                    headers.join(","),
+                    ...rows.map((r) => headers.map((h) => {
+                      const val = String(r[h] ?? "");
+                      return val.includes(",") || val.includes('"') || val.includes("\n") ? `"${val.replace(/"/g, '""')}"` : val;
+                    }).join(",")),
+                  ].join("\n");
+                  const blob = new Blob([csv], { type: "text/csv" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${systemSpec.purpose.replace(/\s+/g, "_").toLowerCase()}_export.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
                 type="button"
               >
                 <Download className="w-3.5 h-3.5" />
-                Export
+                Export CSV
+              </button>
+              <button
+                className="h-8 px-3 rounded-lg text-xs font-medium text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                onClick={() => {
+                  if (!projection?.data) return;
+                  const json = JSON.stringify(projection.data, null, 2);
+                  const blob = new Blob([json], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${systemSpec.purpose.replace(/\s+/g, "_").toLowerCase()}_export.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                type="button"
+              >
+                <FileJson className="w-3.5 h-3.5" />
+                JSON
               </button>
             </div>
           </div>
@@ -546,7 +697,7 @@ export function ToolRenderer({
         </div>
       )}
 
-      {/* Error Banner */}
+      {/* Blocking Error Banner — only for critical errors (auth, tool not found) */}
       <AnimatePresence>
         {error && (
           <motion.div
@@ -561,13 +712,124 @@ export function ToolRenderer({
         )}
       </AnimatePresence>
 
+      {/* Non-blocking Warnings — auto-dismiss, action failures etc. */}
+      <AnimatePresence>
+        {warnings.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="border-b border-amber-500/20 bg-amber-500/5 px-6 py-2 space-y-1"
+          >
+            {warnings.map((w) => (
+              <div key={w.id} className="flex items-center gap-2 text-xs text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span className="flex-1 truncate">{w.message}</span>
+                <button
+                  onClick={() => dismissWarning(w.id)}
+                  className="shrink-0 text-amber-400/50 hover:text-amber-400 transition-colors"
+                  type="button"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Tool Context Bar — KPIs + data summary when data is visible */}
+      {activeTab === "data" && materialized && rows.length > 0 && (
+        <>
+          {/* KPI Strip */}
+          {projection?.insights?.kpis && projection.insights.kpis.length > 0 && (
+            <div className="flex items-stretch gap-3 px-6 py-3 border-b border-white/5 bg-[#09090b]/90 overflow-x-auto scrollbar-none">
+              {projection.insights.kpis.map((kpi, i) => {
+                const colorMap: Record<string, string> = {
+                  green: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
+                  red: "text-red-400 bg-red-500/10 border-red-500/20",
+                  amber: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+                  blue: "text-blue-400 bg-blue-500/10 border-blue-500/20",
+                  neutral: "text-muted-foreground bg-white/5 border-white/10",
+                };
+                const style = colorMap[kpi.color ?? "neutral"] ?? colorMap.neutral;
+                return (
+                  <motion.div
+                    key={kpi.label}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                    className={`flex flex-col gap-0.5 px-4 py-2 rounded-xl border ${style} min-w-[120px]`}
+                  >
+                    <span className="text-[10px] font-medium uppercase tracking-wider opacity-70">{kpi.label}</span>
+                    <span className="text-lg font-bold tabular-nums">{kpi.value}</span>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Data Summary + Stats Strip */}
+          <div className="flex items-center gap-4 px-6 py-1.5 border-b border-white/5 bg-[#09090b]/80 text-[10px] text-muted-foreground/50">
+            {projection?.insights?.summary ? (
+              <span className="text-muted-foreground/70">{projection.insights.summary}</span>
+            ) : (
+              <>
+                <span className="tabular-nums">{rows.length} records</span>
+                <span className="text-white/10">|</span>
+                <span>{systemSpec.integrations.map((i) => i.id).join(", ")}</span>
+              </>
+            )}
+            <span className="ml-auto flex items-center gap-3">
+              <span>{systemSpec.views.length} view{systemSpec.views.length !== 1 ? "s" : ""}</span>
+              <span className="text-white/10">|</span>
+              <span>{systemSpec.actions.length} action{systemSpec.actions.length !== 1 ? "s" : ""}</span>
+              {projection?.insights?.dataQuality && (
+                <>
+                  <span className="text-white/10">|</span>
+                  <span className={projection.insights.dataQuality.completeness >= 0.8 ? "text-emerald-400/60" : projection.insights.dataQuality.completeness >= 0.5 ? "text-amber-400/60" : "text-red-400/60"}>
+                    {Math.round(projection.insights.dataQuality.completeness * 100)}% complete
+                  </span>
+                </>
+              )}
+              {resultData?.materialized_at && (
+                <>
+                  <span className="text-white/10">|</span>
+                  <span>Updated {new Date(resultData.materialized_at).toLocaleTimeString()}</span>
+                </>
+              )}
+            </span>
+          </div>
+        </>
+      )}
+
+      {/* Tool Description — shows on first load to help users understand the tool */}
+      {activeTab === "data" && materialized && rows.length > 0 && (systemSpec as any).toolDescription && !(systemSpec as any)._descriptionDismissed && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          className="px-6 py-3 border-b border-primary/10 bg-primary/5"
+        >
+          <div className="flex items-start gap-3">
+            <Sparkles className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+            <p className="text-xs text-primary/80 leading-relaxed flex-1">{(systemSpec as any).toolDescription}</p>
+          </div>
+        </motion.div>
+      )}
+
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
         {activeTab === "data" ? (
           /* ── Data Tab ── */
           resultStatus === "pending" || resultStatus === "loading" ? (
             <div className="flex items-center justify-center h-full">
-              <GeneratingAnimation stage="fetching" purpose={systemSpec.purpose} />
+              <GeneratingAnimation
+                stage="fetching"
+                purpose={systemSpec.purpose}
+                buildSteps={buildSteps}
+                buildLogs={buildLogs}
+                lifecycleState={lifecycleState}
+              />
             </div>
           ) : resultStatus === "empty" ? (
             <EmptyDataState />
@@ -599,33 +861,12 @@ export function ToolRenderer({
                 {/* Detail Sidebar */}
                 <AnimatePresence>
                   {selectedRow && (
-                    <motion.div
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 20 }}
-                      className="w-80 shrink-0 border-l border-white/10 bg-[#0a0a0c] overflow-auto"
-                    >
-                      <div className="p-4">
-                        <div className="flex items-center justify-between mb-4">
-                          <span className="text-xs font-semibold uppercase text-muted-foreground tracking-wider">Details</span>
-                          <button
-                            onClick={() => setSelectedRow(null)}
-                            className="text-muted-foreground hover:text-foreground text-xs"
-                            type="button"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                        <div className="space-y-2.5">
-                          {Object.entries(selectedRow).map(([key, value]) => (
-                            <div key={key} className="flex flex-col gap-0.5 border-b border-white/5 pb-2.5 last:border-b-0">
-                              <span className="text-[11px] text-muted-foreground/60 uppercase tracking-wider">{key}</span>
-                              <span className="text-sm text-foreground break-all">{String(value ?? "—")}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </motion.div>
+                    <RichDetailSidebar
+                      row={selectedRow}
+                      onClose={() => setSelectedRow(null)}
+                      onAction={(actionId, input) => runAction(actionId, input)}
+                      actions={actionSpecs.map((a) => ({ id: a.id, name: a.name }))}
+                    />
                   )}
                 </AnimatePresence>
               </div>
@@ -682,16 +923,38 @@ export function ToolRenderer({
   );
 }
 
-// ─── Generating Animation ───────────────────────────────────────────
-function GeneratingAnimation({ stage, purpose }: { stage: "waiting" | "generating" | "fetching"; purpose?: string }) {
+// ─── Generating Animation with Time-Based Progress ──────────────────
+const PIPELINE_STEPS = [
+  { id: "understand", title: "Understanding your request", detail: "Analyzing intent and requirements", durationMs: 2000 },
+  { id: "integrations", title: "Resolving integrations", detail: "Selecting the best data sources", durationMs: 3000 },
+  { id: "entities", title: "Extracting data models", detail: "Identifying entities and relationships", durationMs: 3000 },
+  { id: "actions", title: "Defining data operations", detail: "Building query and action plans", durationMs: 3500 },
+  { id: "fetch", title: "Fetching live data", detail: "Connecting to APIs and pulling records", durationMs: 6000 },
+  { id: "views", title: "Designing views", detail: "Creating the best layout for your data", durationMs: 2500 },
+  { id: "finalize", title: "Finalizing tool", detail: "Validating and materializing output", durationMs: 2000 },
+];
+
+function GeneratingAnimation({
+  stage,
+  purpose,
+  buildSteps,
+  buildLogs,
+  lifecycleState,
+}: {
+  stage: "waiting" | "generating" | "fetching";
+  purpose?: string;
+  buildSteps?: Array<{ id: string; title: string; status: string; logs: string[] }>;
+  buildLogs?: string[];
+  lifecycleState?: string | null;
+}) {
   const messages = {
     waiting: {
       title: "Describe what you want to build",
       subtitle: "The canvas is ready for your vision. Use the chat to define your tool.",
     },
     generating: {
-      title: "Generating your tool…",
-      subtitle: purpose || "Building the perfect interface for your request",
+      title: "Building your tool…",
+      subtitle: purpose || "Assembling the perfect interface for your request",
     },
     fetching: {
       title: "Fetching live data…",
@@ -700,12 +963,76 @@ function GeneratingAnimation({ stage, purpose }: { stage: "waiting" | "generatin
   };
 
   const { title, subtitle } = messages[stage];
+  const hasBuildSteps = buildSteps && buildSteps.length > 0;
+
+  // Time-based progress: track elapsed time since mount to drive step progression
+  const [elapsedMs, setElapsedMs] = React.useState(0);
+  const mountTimeRef = React.useRef(Date.now());
+
+  React.useEffect(() => {
+    if (stage === "waiting") return;
+    const interval = setInterval(() => {
+      setElapsedMs(Date.now() - mountTimeRef.current);
+    }, 300);
+    return () => clearInterval(interval);
+  }, [stage]);
+
+  // Compute which step is active based on elapsed time
+  const timeSteps = React.useMemo(() => {
+    if (stage === "waiting") return [];
+    let cumulative = 0;
+    return PIPELINE_STEPS.map((step) => {
+      const startMs = cumulative;
+      cumulative += step.durationMs;
+      const endMs = cumulative;
+      const isComplete = elapsedMs >= endMs;
+      const isActive = !isComplete && elapsedMs >= startMs;
+      const isPending = elapsedMs < startMs;
+      return { ...step, isComplete, isActive, isPending };
+    });
+  }, [stage, elapsedMs]);
+
+  // Map server lifecycle state to step index for more accurate progress
+  const serverStepIndex = React.useMemo(() => {
+    if (!lifecycleState) return -1;
+    const mapping: Record<string, number> = {
+      UNDERSTANDING: 0,
+      ENTITIES_EXTRACTED: 2,
+      INTEGRATIONS_RESOLVED: 1,
+      ACTIONS_DEFINED: 3,
+      WORKFLOWS_COMPILED: 3,
+      RUNTIME_READY: 5,
+      MATERIALIZED: 6,
+    };
+    return mapping[lifecycleState] ?? -1;
+  }, [lifecycleState]);
+
+  // If server reports a step, override time-based progress to be at least that far
+  const displaySteps = React.useMemo(() => {
+    if (stage === "waiting" || timeSteps.length === 0) return timeSteps;
+    if (serverStepIndex < 0) return timeSteps;
+    return timeSteps.map((step, i) => {
+      if (i < serverStepIndex) return { ...step, isComplete: true, isActive: false, isPending: false };
+      if (i === serverStepIndex) return { ...step, isComplete: false, isActive: true, isPending: false };
+      return step;
+    });
+  }, [timeSteps, serverStepIndex, stage]);
+
+  // Progress percentage
+  const completedCount = displaySteps.filter((s) => s.isComplete).length;
+  const activeExists = displaySteps.some((s) => s.isActive);
+  const progressPct = displaySteps.length > 0
+    ? Math.min(95, Math.round(((completedCount + (activeExists ? 0.5 : 0)) / displaySteps.length) * 100))
+    : 0;
+
+  // Active step detail text
+  const activeDetail = displaySteps.find((s) => s.isActive)?.detail ?? null;
 
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="flex flex-col items-center gap-6 max-w-md text-center"
+      className="flex flex-col items-center gap-6 max-w-lg text-center px-4"
     >
       {/* Animated orb */}
       <div className="relative">
@@ -718,9 +1045,7 @@ function GeneratingAnimation({ stage, purpose }: { stage: "waiting" | "generatin
           className="absolute -inset-6 rounded-full bg-primary/10 blur-2xl"
         />
         <motion.div
-          animate={stage !== "waiting" ? {
-            rotate: 360,
-          } : undefined}
+          animate={stage !== "waiting" ? { rotate: 360 } : undefined}
           transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
           className="relative h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center"
         >
@@ -748,21 +1073,79 @@ function GeneratingAnimation({ stage, purpose }: { stage: "waiting" | "generatin
         </motion.p>
       </div>
 
-      {stage !== "waiting" && (
+      {/* Progress Steps — always visible during generation/fetching */}
+      {stage !== "waiting" && displaySteps.length > 0 && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.3 }}
-          className="flex items-center gap-1.5"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="w-full max-w-sm"
         >
-          {[0, 1, 2].map(i => (
-            <motion.div
-              key={i}
-              animate={{ opacity: [0.3, 1, 0.3] }}
-              transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2, ease: "easeInOut" }}
-              className="h-1.5 w-1.5 rounded-full bg-primary"
-            />
-          ))}
+          {/* Progress bar */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <motion.div
+                animate={{ width: `${progressPct}%` }}
+                transition={{ duration: 0.6, ease: "easeOut" }}
+                className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary"
+              />
+            </div>
+            <span className="text-[10px] text-muted-foreground/50 tabular-nums w-8 text-right">
+              {progressPct}%
+            </span>
+          </div>
+
+          {/* Step list */}
+          <div className="space-y-1 text-left">
+            {displaySteps.map((step, i) => (
+              <motion.div
+                key={step.id}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: i * 0.06 }}
+                className={`flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all ${
+                  step.isActive ? "bg-primary/5 border border-primary/10" : ""
+                }`}
+              >
+                {/* Status icon */}
+                <div className="shrink-0">
+                  {step.isComplete ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : step.isActive ? (
+                    <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
+                  ) : (
+                    <Circle className="w-3.5 h-3.5 text-muted-foreground/15" />
+                  )}
+                </div>
+
+                {/* Step title */}
+                <span className={`text-xs font-medium ${
+                  step.isComplete
+                    ? "text-emerald-400/70"
+                    : step.isActive
+                    ? "text-white"
+                    : "text-muted-foreground/30"
+                }`}>
+                  {step.title}
+                </span>
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Active step detail / log line */}
+          <AnimatePresence mode="wait">
+            {activeDetail && (
+              <motion.div
+                key={activeDetail}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                className="mt-3 text-[11px] text-muted-foreground/40 text-center"
+              >
+                {activeDetail}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       )}
     </motion.div>
@@ -809,184 +1192,26 @@ function ViewSurface({
   const data = projection?.data;
   switch (view.type) {
     case "table":
-      return <TableView view={view} data={data} onSelectRow={onSelectRow} />;
+      return <InteractiveTableView view={view} data={data} onSelectRow={onSelectRow} />;
     case "kanban":
-      return <KanbanView view={view} data={data} onSelectRow={onSelectRow} />;
+      return <InteractiveKanbanView view={view} data={data} onSelectRow={onSelectRow} />;
     case "timeline":
-      return <TimelineView data={data} onSelectRow={onSelectRow} />;
+      return <InteractiveTimelineView view={view} data={data} onSelectRow={onSelectRow} />;
     case "detail":
-      return <DetailView data={data} />;
+      return <InteractiveDetailView data={data} />;
     case "chat":
-      return <ChatView data={data} />;
+      return <InteractiveChatView data={data} />;
+    case "form":
+      return <InteractiveFormView view={view} data={data} />;
+    case "inspector":
+      return <InteractiveInspectorView data={data} onSelectRow={onSelectRow} />;
+    case "command":
+      return <InteractiveCommandView data={data} />;
+    case "dashboard":
+      return <InteractiveDashboardView view={view} data={data} onSelectRow={onSelectRow} />;
     default:
-      return <TableView view={view} data={data} onSelectRow={onSelectRow} />;
+      return <InteractiveTableView view={view} data={data} onSelectRow={onSelectRow} />;
   }
-}
-
-// ─── Table View ─────────────────────────────────────────────────────
-function TableView({
-  view,
-  data,
-  onSelectRow,
-}: {
-  view: ViewSpec;
-  data: any;
-  onSelectRow: (row: Record<string, any>) => void;
-}) {
-  const rows = normalizeRows(view, data);
-  const columns = view.fields?.length > 0 ? view.fields : rows.length > 0 ? Object.keys(rows[0]) : [];
-
-  return (
-    <div className="rounded-lg border border-white/5 overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-white/10 bg-white/[0.02]">
-            {columns.map((col) => (
-              <th key={col} className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <motion.tr
-              key={i}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.02 }}
-              className="border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors"
-              onClick={() => onSelectRow(row)}
-            >
-              {columns.map((col) => (
-                <td key={col} className="px-4 py-3 text-foreground/90 max-w-[300px] truncate">
-                  {String(row[col] ?? "—")}
-                </td>
-              ))}
-            </motion.tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ─── Kanban View ────────────────────────────────────────────────────
-function KanbanView({
-  view,
-  data,
-  onSelectRow,
-}: {
-  view: ViewSpec;
-  data: any;
-  onSelectRow: (row: Record<string, any>) => void;
-}) {
-  const rows = normalizeRows(view, data);
-  const groupField = view.fields?.[0] ?? "status";
-  const groups: Record<string, any[]> = {};
-  for (const row of rows) {
-    const key = String(row[groupField] ?? "Other");
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(row);
-  }
-
-  return (
-    <div className="flex gap-4 overflow-x-auto pb-4">
-      {Object.entries(groups).map(([group, items]) => (
-        <div key={group} className="w-72 shrink-0 rounded-lg border border-white/5 bg-white/[0.02]">
-          <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group}</span>
-            <span className="text-[10px] font-medium text-muted-foreground/60 bg-white/5 rounded-full px-2 py-0.5">{items.length}</span>
-          </div>
-          <div className="p-2 space-y-2">
-            {items.map((item, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.03 }}
-                className="rounded-md border border-white/5 bg-white/[0.03] p-3 cursor-pointer hover:bg-white/[0.06] transition-colors"
-                onClick={() => onSelectRow(item)}
-              >
-                <div className="text-sm font-medium text-foreground/90 line-clamp-2">
-                  {String(item[view.fields?.[1] ?? "title"] ?? item[Object.keys(item)[1]] ?? "—")}
-                </div>
-                {view.fields?.[2] && (
-                  <div className="mt-1 text-xs text-muted-foreground/60 line-clamp-1">
-                    {String(item[view.fields[2]] ?? "")}
-                  </div>
-                )}
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Timeline View ──────────────────────────────────────────────────
-function TimelineView({
-  data,
-  onSelectRow,
-}: {
-  data: any;
-  onSelectRow: (row: Record<string, any>) => void;
-}) {
-  const rows = Array.isArray(data) ? data : [];
-
-  return (
-    <div className="space-y-3">
-      {rows.map((event, i) => (
-        <motion.div
-          key={i}
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: i * 0.03 }}
-          className="flex gap-4 rounded-lg border border-white/5 bg-white/[0.02] p-4 cursor-pointer hover:bg-white/[0.04] transition-colors"
-          onClick={() => onSelectRow(event)}
-        >
-          <div className="flex flex-col items-center">
-            <div className="h-3 w-3 rounded-full bg-primary/40 border-2 border-primary" />
-            {i < rows.length - 1 && <div className="flex-1 w-px bg-white/10 mt-1" />}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-foreground/90">{event.title || event.name || event.message || "Event"}</div>
-            <div className="text-xs text-muted-foreground/60 mt-0.5">{event.timestamp || event.date || event.created_at || ""}</div>
-          </div>
-        </motion.div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Detail View ────────────────────────────────────────────────────
-function DetailView({ data }: { data: any }) {
-  if (!data) return <div className="text-sm text-muted-foreground p-4">No data available.</div>;
-  return (
-    <div className="space-y-3 p-4">
-      {Object.entries(data).map(([key, value]) => (
-        <div key={key} className="flex flex-col gap-0.5 border-b border-white/5 pb-3">
-          <span className="text-[11px] text-muted-foreground/60 uppercase tracking-wider">{key}</span>
-          <span className="text-sm text-foreground">{String(value ?? "—")}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Chat View ──────────────────────────────────────────────────────
-function ChatView({ data }: { data: any }) {
-  const messages = Array.isArray(data) ? data : [];
-  return (
-    <div className="space-y-3 p-4">
-      {messages.map((msg, i) => (
-        <div key={i} className={`rounded-lg p-3 text-sm ${msg.role === "user" ? "bg-primary/10 ml-12" : "bg-white/[0.03] mr-12"}`}>
-          {msg.content || String(msg)}
-        </div>
-      ))}
-    </div>
-  );
 }
 
 // ─── Action Button ──────────────────────────────────────────────────
@@ -999,21 +1224,134 @@ function ActionButton({
   onExecute: (input?: Record<string, any>) => void;
   allowWrites: boolean;
 }) {
-  const disabled = isWriteAction(action) && !allowWrites;
+  const [showInputForm, setShowInputForm] = React.useState(false);
+  const [inputValues, setInputValues] = React.useState<Record<string, string>>({});
+  const [isRunning, setIsRunning] = React.useState(false);
+
+  const isWrite = isWriteAction(action);
+  const disabled = isWrite && !allowWrites;
+  const hasInputs = action.inputSchema && Object.keys(action.inputSchema).length > 0;
+  const ActionIcon = getActionIcon(action);
+
+  const handleExecute = async (input?: Record<string, any>) => {
+    setIsRunning(true);
+    setShowInputForm(false);
+    try {
+      await onExecute(input);
+    } finally {
+      setTimeout(() => setIsRunning(false), 800);
+    }
+  };
+
+  const actionStyle = isWrite
+    ? disabled
+      ? "border-white/5 text-muted-foreground/30 cursor-not-allowed"
+      : "border-amber-500/20 bg-amber-500/5 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+    : isRunning
+    ? "border-primary/30 bg-primary/10 text-primary"
+    : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground";
+
   return (
-    <button
-      className={`h-8 px-3 rounded-lg border text-xs font-medium transition-colors flex items-center gap-1.5 ${disabled
-        ? "border-white/5 text-muted-foreground/40 cursor-not-allowed"
-        : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
-        }`}
-      onClick={() => !disabled && onExecute()}
-      title={action.description}
-      disabled={disabled}
-      type="button"
-    >
-      {action.name}
-    </button>
+    <div className="relative">
+      <button
+        className={`h-8 px-3 rounded-lg border text-xs font-medium transition-all flex items-center gap-1.5 ${actionStyle}`}
+        onClick={() => {
+          if (disabled) return;
+          if (hasInputs) {
+            setShowInputForm(!showInputForm);
+          } else {
+            void handleExecute();
+          }
+        }}
+        title={action.description}
+        disabled={disabled}
+        type="button"
+      >
+        {isRunning ? (
+          <RotateCw className="w-3.5 h-3.5 animate-spin" />
+        ) : disabled ? (
+          <Lock className="w-3 h-3" />
+        ) : (
+          <ActionIcon className="w-3.5 h-3.5" />
+        )}
+        {action.name}
+        {hasInputs && !disabled && (
+          <ChevronDown className={`w-3 h-3 transition-transform ${showInputForm ? "rotate-180" : ""}`} />
+        )}
+      </button>
+
+      {/* Input form dropdown */}
+      <AnimatePresence>
+        {showInputForm && hasInputs && (
+          <motion.div
+            initial={{ opacity: 0, y: 4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.98 }}
+            className="absolute bottom-full mb-2 left-0 z-50 w-72 bg-[#1a1a1d] border border-white/10 rounded-xl shadow-2xl overflow-hidden"
+          >
+            <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                {action.name} Parameters
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">
+                {Object.keys(action.inputSchema).length} fields
+              </span>
+            </div>
+            <div className="p-3 space-y-2.5">
+              {Object.entries(action.inputSchema).map(([key, schema]: [string, any]) => (
+                <div key={key} className="space-y-1">
+                  <label className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">{key}</label>
+                  <input
+                    type={typeof schema === "object" && schema.type === "number" ? "number" : "text"}
+                    value={inputValues[key] ?? ""}
+                    onChange={(e) => setInputValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                    placeholder={typeof schema === "object" ? (schema.description ?? key) : key}
+                    className="w-full h-8 rounded-md bg-white/5 border border-white/10 text-xs text-white px-2 placeholder:text-muted-foreground/30 focus:outline-none focus:border-primary/30 transition-all"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="px-3 pb-3 flex items-center gap-2">
+              <button
+                className="flex-1 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors flex items-center justify-center gap-1.5"
+                onClick={() => {
+                  const parsed: Record<string, any> = {};
+                  for (const [k, v] of Object.entries(inputValues)) {
+                    parsed[k] = v;
+                  }
+                  void handleExecute(parsed);
+                }}
+                type="button"
+              >
+                <Play className="w-3 h-3" />
+                Execute
+              </button>
+              <button
+                className="h-8 px-3 rounded-lg text-xs text-muted-foreground hover:text-white hover:bg-white/5 transition-colors"
+                onClick={() => setShowInputForm(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
+}
+
+function getActionIcon(action: ActionSpec) {
+  const name = (action.name ?? "").toLowerCase();
+  if (name.includes("create") || name.includes("add") || name.includes("new")) return Plus;
+  if (name.includes("update") || name.includes("edit") || name.includes("modify")) return Edit3;
+  if (name.includes("delete") || name.includes("remove")) return Trash2;
+  if (name.includes("send") || name.includes("notify") || name.includes("post")) return Send;
+  if (name.includes("fetch") || name.includes("get") || name.includes("load") || name.includes("list")) return Eye;
+  if (name.includes("refresh") || name.includes("sync")) return RefreshCw;
+  if (name.includes("upload") || name.includes("import")) return Upload;
+  if (name.includes("alert") || name.includes("notify")) return Bell;
+  return Play;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
