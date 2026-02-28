@@ -30,7 +30,7 @@ function EnterSystemButton({ children, className, size = "lg" }: { children: Rea
     const supabase = createSupabaseClient();
     const { data } = await supabase.auth.getSession();
     if (data.session) {
-      router.push("/app/chat");
+      router.push("/app");
     } else {
       router.push("/login");
     }

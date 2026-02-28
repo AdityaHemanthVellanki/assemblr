@@ -36,7 +36,7 @@ function LoginForm() {
       });
       if (error) throw error;
 
-      const next = searchParams.get("returnTo") || searchParams.get("next") || "/app/chat";
+      const next = searchParams.get("returnTo") || searchParams.get("next") || "/app";
       router.push(next);
       router.refresh();
     } catch (e: any) {
@@ -55,7 +55,7 @@ function LoginForm() {
       }
 
       const next =
-        searchParams.get("returnTo") || searchParams.get("next") || "/app/chat";
+        searchParams.get("returnTo") || searchParams.get("next") || "/app";
 
       const origin = window.location.origin;
       const redirectTo = new URL(`${origin}/auth/callback`);

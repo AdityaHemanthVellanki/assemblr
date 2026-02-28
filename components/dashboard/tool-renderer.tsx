@@ -126,9 +126,9 @@ export function ToolRenderer({
   const [lifecycle, setLifecycle] = React.useState<string>("INIT");
   const [materialized, setMaterialized] = React.useState<boolean | null>(null);
   const [authStatus, setAuthStatus] = React.useState<"authenticated" | "unauthenticated" | "unknown">("unknown");
-  const [pollingInterval, setPollingInterval] = React.useState<number | null>(1500);
+  const [pollingInterval, setPollingInterval] = React.useState<number | null>(2000);
   const [pollCount, setPollCount] = React.useState(0);
-  const MAX_POLL_ATTEMPTS = 200;
+  const MAX_POLL_ATTEMPTS = 60;
   const authBackoffRef = React.useRef<number | null>(null);
 
   const systemSpec = spec && isToolSystemSpec(spec) ? spec : null;
@@ -342,6 +342,12 @@ export function ToolRenderer({
         setBuildLogs(payload.build_logs);
       }
 
+      // When done, fetch the full result once and stop polling
+      if (payload.done) {
+        setPollingInterval(null);
+        void fetchResult();
+      }
+
       return "authenticated";
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
@@ -350,7 +356,7 @@ export function ToolRenderer({
       }
       return null;
     }
-  }, [toolId]);
+  }, [toolId, fetchResult]);
 
   // ─── Effects ──────────────────────────────────────────────────
   React.useEffect(() => {
@@ -381,12 +387,24 @@ export function ToolRenderer({
         setPollingInterval(null);
         return;
       }
-      await fetchStatus();
+      const authResult = await fetchStatus();
       setPollCount(c => c + 1);
       if (cancelled) return;
 
-      // Re-fetch result to see if materialization happened
-      await fetchResult();
+      // Only fetch the heavy result payload when status indicates completion.
+      // During building, the lightweight /status endpoint provides progress info.
+      if (status === "MATERIALIZED" || status === "READY" || status === "FAILED") {
+        await fetchResult();
+      }
+
+      // Exponential backoff: 2s → 3s → 5s → 8s (capped)
+      if (pollCount > 20) {
+        setPollingInterval(8000);
+      } else if (pollCount > 10) {
+        setPollingInterval(5000);
+      } else if (pollCount > 5) {
+        setPollingInterval(3000);
+      }
     };
 
     void poll();

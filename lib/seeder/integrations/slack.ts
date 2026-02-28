@@ -1,87 +1,89 @@
-import { SeederContext } from "../context";
-import { SeederProfile } from "../types";
+/**
+ * Slack bulk seeder — creates channels and messages via Composio.
+ *
+ * Used for profile-based bulk seeding (not scenario-based).
+ */
+
+import type { SeederContext } from "../context";
+import type { SeederProfile } from "../types";
+import { SEED_TAG } from "../types";
 import { gen } from "../generator";
-import { WebClient } from "@slack/web-api";
+import { extractPayloadArray } from "@/lib/integrations/composio/execution";
 
 export class SlackSeeder {
-    async run(ctx: SeederContext, profile: SeederProfile) {
-        if (!ctx.slack) {
-            ctx.log("warn", "Skipping Slack seeder: No client available");
-            return;
-        }
-
-        ctx.log("info", `Starting Slack Seeder...`);
-        // NOTE: Creating channels might fail if insufficient permissions
-        // We try to create public channels.
-
-        for (let i = 0; i < profile.slack.channelsPerTeam; i++) {
-            const channelName = ("se-" + gen.repoName().toLowerCase().replace(/_/g, "-")).substring(0, 80); // Slack max length
-            // Slack channels must be lowercase, no spaces, specialized chars.
-
-            try {
-                // Check if exists?
-                // Just create.
-                const res = await ctx.slack.conversations.create({ name: channelName });
-                if (!res.ok) throw new Error(res.error);
-
-                const channel = res.channel;
-                ctx.log("info", `Created Slack Channel: #${channel.name}`);
-
-                ctx.registry.add({
-                    id: channel.id,
-                    type: "slack_channel",
-                    integration: "slack",
-                    metadata: { name: channel.name }
-                });
-
-                // Seed Messages
-                await this.seedMessages(ctx, profile, channel.id);
-
-            } catch (e: any) {
-                if (e.data?.error === "name_taken") {
-                    ctx.log("warn", `Slack channel ${channelName} exists, skipping creation.`);
-                    // Could try to find it and populate? But skip for now.
-                } else {
-                    ctx.log("error", `Slack Seeder failed for ${channelName}: ${e.message}`);
-                }
-            }
-        }
+  async run(ctx: SeederContext, profile: SeederProfile) {
+    if (!ctx.hasConnection("slack")) {
+      ctx.log("warn", "Skipping Slack seeder: No connection available");
+      return;
     }
 
-    async seedMessages(ctx: SeederContext, profile: SeederProfile, channelId: string) {
-        for (let j = 0; j < profile.slack.messagesPerChannel; j++) {
-            // Simulate "Incident" or "Discussion"
-            const isIncident = Math.random() < profile.slack.incidentChance;
-            let text = gen.technobabble();
+    ctx.log("info", "Starting Slack Seeder...");
 
-            if (isIncident) {
-                text = `🚨 INCIDENT: ${gen.issueTitle()} is down! Investigating...`;
-            } else {
-                // Maybe link a Linear Issue?
-                const issue = ctx.registry.getRandom("linear_issue");
-                if (issue) {
-                    text += `\nReferencing ${issue.metadata.name}`; // Need key but stored name
-                }
-            }
+    // List existing channels to find targets
+    const channelsResult = await ctx.execAction(
+      "slack",
+      "SLACKBOT_LIST_ALL_CHANNELS",
+      { limit: 50 },
+    );
+    const channels = Array.isArray(channelsResult)
+      ? channelsResult
+      : extractPayloadArray(channelsResult);
 
-            const res = await ctx.slack.chat.postMessage({
-                channel: channelId,
-                text
-            });
-
-            if (isIncident && res.ts) {
-                // Thread
-                await ctx.slack.chat.postMessage({
-                    channel: channelId,
-                    thread_ts: res.ts,
-                    text: "Looking into logs..."
-                });
-                await ctx.slack.chat.postMessage({
-                    channel: channelId,
-                    thread_ts: res.ts,
-                    text: "Fix deployed."
-                });
-            }
-        }
+    if (channels.length === 0) {
+      ctx.log("warn", "No Slack channels found. Skipping.");
+      return;
     }
+
+    // Post seed messages into existing channels
+    const targetChannels = channels.slice(0, Math.min(profile.slack.channelsPerTeam, channels.length));
+    for (const channel of targetChannels) {
+      ctx.registry.add({
+        id: channel.id,
+        type: "slack_channel",
+        integration: "slack",
+        metadata: { name: channel.name },
+      });
+
+      await this.seedMessages(ctx, profile, channel.id);
+    }
+  }
+
+  private async seedMessages(ctx: SeederContext, profile: SeederProfile, channelId: string) {
+    for (let j = 0; j < profile.slack.messagesPerChannel; j++) {
+      try {
+        const isIncident = Math.random() < profile.slack.incidentChance;
+        let text = `${SEED_TAG} ${gen.technobabble()}`;
+
+        if (isIncident) {
+          text = `${SEED_TAG} :rotating_light: INCIDENT: ${gen.issueTitle()} is down! Investigating...`;
+        } else {
+          const issue = ctx.registry.getRandom("linear_issue");
+          if (issue) {
+            text += `\nReferencing Linear: ${issue.metadata.title || issue.id}`;
+          }
+        }
+
+        const res = await ctx.execAction("slack", "SLACKBOT_SEND_MESSAGE", {
+          channel: channelId,
+          text,
+        });
+
+        // Add thread replies for incidents
+        if (isIncident && res?.ts) {
+          await ctx.execAction("slack", "SLACKBOT_SEND_MESSAGE", {
+            channel: channelId,
+            thread_ts: res.ts,
+            text: `${SEED_TAG} Looking into logs...`,
+          });
+          await ctx.execAction("slack", "SLACKBOT_SEND_MESSAGE", {
+            channel: channelId,
+            thread_ts: res.ts,
+            text: `${SEED_TAG} Fix deployed.`,
+          });
+        }
+      } catch (e: any) {
+        ctx.log("error", `Failed to send Slack message: ${e.message}`);
+      }
+    }
+  }
 }

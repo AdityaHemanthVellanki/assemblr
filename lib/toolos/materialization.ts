@@ -173,7 +173,7 @@ export async function getLatestToolResult(toolId: string, orgId: string): Promis
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase
     .from("tool_results")
-    .select("*")
+    .select("id, tool_id, org_id, records_json, status, error_log, materialized_at, version_id, environment")
     .eq("tool_id", toolId)
     .eq("org_id", orgId)
     .order("materialized_at", { ascending: false })

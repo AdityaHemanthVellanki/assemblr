@@ -1,8 +1,14 @@
+import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { jsonResponse, errorResponse } from "@/lib/api/response";
 import { getLatestToolResult } from "@/lib/toolos/materialization";
 import { getActiveExecution } from "@/lib/toolos/executions";
+
+function withCache(response: NextResponse, maxAge: number = 10) {
+  response.headers.set("Cache-Control", `private, max-age=${maxAge}, stale-while-revalidate=15`);
+  return response;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,36 +47,38 @@ export async function GET(
     if (!result) {
       // Check if the tool is actually materialized but just has no data (e.g. monitoring/alert tool)
       if (tool.status === "MATERIALIZED" || tool.status === "READY") {
-        return jsonResponse({
+        return withCache(jsonResponse({
           ok: true,
           data: null,
           status: "ready_no_data"
-        });
+        }), 30);
       }
 
       // Tool exists but no result yet — return structured pending with build progress
+      // Short cache for pending status since it changes frequently
       const activeExec = await getActiveExecution(toolId);
-      return jsonResponse({
+      return withCache(jsonResponse({
         ok: true,
         data: null,
         status: "pending",
         build_steps: activeExec?.buildSteps ?? [],
-      });
+      }), 2);
     }
 
     if (result.status === "FAILED") {
-      return jsonResponse({
+      return withCache(jsonResponse({
         ok: true,
         data: result,
         status: "error"
-      });
+      }), 30);
     }
 
-    return jsonResponse({
+    // Materialized results are stable — cache longer
+    return withCache(jsonResponse({
       ok: true,
       data: result,
       status: "materialized"
-    });
+    }), 30);
 
   } catch (error) {
     console.error("[ToolResult] Error:", error);

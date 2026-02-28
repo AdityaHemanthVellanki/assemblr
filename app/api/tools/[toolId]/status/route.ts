@@ -31,8 +31,9 @@ export async function GET(
         { status: 200 },
       );
     }
+    // Only fetch lightweight status flags — NOT spec/data_snapshot (100KB+ each)
     const { data: project, error: projectError } = await (supabase.from("projects") as any)
-      .select("id, org_id, spec, active_version_id, status, error_message, updated_at, lifecycle_done, view_ready, view_spec, data_snapshot, data_ready, data_fetched_at, finalized_at, finalizing")
+      .select("id, org_id, status, error_message, lifecycle_done, view_ready, data_ready, data_fetched_at")
       .eq("id", toolId)
       .single();
 
@@ -40,54 +41,78 @@ export async function GET(
       return errorResponse("Tool not found", 404);
     }
 
-    console.log("[STATUS] Reading flags for toolId:", toolId);
-    console.error("[STATUS CONTEXT]", {
-      toolId,
-      supabaseUrl: process.env.SUPABASE_URL ?? null,
-      schema: "public",
-      client: "server",
-    });
+    // Check render state flags (lightweight)
     const { data: renderState } = await (supabase.from("tool_render_state") as any)
-      .select("snapshot, view_spec, data_ready, view_ready")
+      .select("data_ready, view_ready")
       .eq("tool_id", toolId)
       .eq("org_id", project.org_id)
       .maybeSingle();
 
-    const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
-    const lifecycleState = await loadMemory({
-      scope,
-      namespace: "tool_builder",
-      key: "lifecycle_state",
-    });
-    const buildLogs = await loadMemory({
-      scope,
-      namespace: "tool_builder",
-      key: "build_logs",
-    });
-
-    const resolvedLifecycleState =
-      typeof lifecycleState === "string"
-        ? lifecycleState
-        : (lifecycleState as any)?.state ?? null;
-    const resolvedBuildLogs = Array.isArray(buildLogs)
-      ? buildLogs
-      : (buildLogs as any)?.logs ?? null;
-
-    const responseSnapshot = renderState?.snapshot ?? project.data_snapshot ?? null;
-    const responseViewSpec = renderState?.view_spec ?? project.view_spec ?? null;
     const responseDataReady = renderState?.data_ready === true || project.data_ready === true;
     const responseViewReady = renderState?.view_ready === true || project.view_ready === true;
-    const responseBuildLogs = Array.isArray(resolvedBuildLogs) ? resolvedBuildLogs : null;
     const terminalStatus = ["MATERIALIZED", "READY", "FAILED"].includes(project.status);
     const done = Boolean(project.lifecycle_done || terminalStatus || responseViewReady || responseDataReady);
 
-    console.log("[STATUS]", { toolId, data_ready: project.data_ready, view_ready: project.view_ready });
+    // Only fetch heavy payloads (view_spec, data_snapshot) when done — not during polling
+    let responseViewSpec = null;
+    let responseSnapshot = null;
+    let responseBuildLogs = null;
+    let resolvedLifecycleState = null;
 
-    return jsonResponse({
+    if (done) {
+      // Fetch large columns only once when complete
+      const { data: fullRender } = await (supabase.from("tool_render_state") as any)
+        .select("snapshot, view_spec")
+        .eq("tool_id", toolId)
+        .eq("org_id", project.org_id)
+        .maybeSingle();
+
+      if (fullRender) {
+        responseSnapshot = fullRender.snapshot ?? null;
+        responseViewSpec = fullRender.view_spec ?? null;
+      }
+
+      // Fallback to project columns if render state doesn't have them
+      if (!responseSnapshot || !responseViewSpec) {
+        const { data: projectFull } = await (supabase.from("projects") as any)
+          .select("data_snapshot, view_spec")
+          .eq("id", toolId)
+          .single();
+        if (projectFull) {
+          responseSnapshot = responseSnapshot ?? projectFull.data_snapshot ?? null;
+          responseViewSpec = responseViewSpec ?? projectFull.view_spec ?? null;
+        }
+      }
+    }
+
+    // Only fetch build logs/lifecycle when not yet done (for progress display)
+    if (!done) {
+      const scope: MemoryScope = { type: "tool_org", toolId, orgId: project.org_id };
+      const lifecycleState = await loadMemory({
+        scope,
+        namespace: "tool_builder",
+        key: "lifecycle_state",
+      });
+      const buildLogs = await loadMemory({
+        scope,
+        namespace: "tool_builder",
+        key: "build_logs",
+      });
+      resolvedLifecycleState =
+        typeof lifecycleState === "string"
+          ? lifecycleState
+          : (lifecycleState as any)?.state ?? null;
+      const rawLogs = Array.isArray(buildLogs)
+        ? buildLogs
+        : (buildLogs as any)?.logs ?? null;
+      responseBuildLogs = Array.isArray(rawLogs) ? rawLogs : null;
+    }
+
+    const response = jsonResponse({
       status: project.status,
       error: project.error_message ?? null,
       done,
-      lifecycle_state: resolvedLifecycleState ?? null,
+      lifecycle_state: resolvedLifecycleState,
       build_logs: responseBuildLogs,
       view_ready: responseViewReady,
       view_spec: responseViewSpec,
@@ -95,6 +120,14 @@ export async function GET(
       data_snapshot: responseSnapshot,
       data_fetched_at: project.data_fetched_at ?? null,
     });
+    // Cache: stable (done) results cached longer; in-progress cached briefly
+    response.headers.set(
+      "Cache-Control",
+      done
+        ? "private, max-age=15, stale-while-revalidate=30"
+        : "private, max-age=2, stale-while-revalidate=5",
+    );
+    return response;
 
   } catch (e) {
     return handleApiError(e);

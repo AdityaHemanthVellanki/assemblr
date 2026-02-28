@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { AlertTriangle, Search, Plus, Pencil, Trash2, Loader2, MoreHorizontal, Plug, Sparkles, PanelLeftClose, PanelLeftOpen, GitBranch, Settings } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { cn } from "@/lib/ui/cn";
@@ -162,8 +162,12 @@ export function Sidebar({
   // Navigation Items
   const integrationsHref = "/dashboard/integrations";
   const useCasesHref = "/use-cases";
+  const skillGraphHref = "/app";
+  const settingsHref = "/dashboard/settings";
   const integrationsActive = pathname?.startsWith(integrationsHref);
   const useCasesActive = pathname?.startsWith(useCasesHref);
+  const skillGraphActive = pathname === "/app";
+  const settingsActive = pathname?.startsWith(settingsHref);
   const canManage = canManageIntegrations(role);
 
   return (
@@ -218,6 +222,19 @@ export function Sidebar({
         <div className="flex flex-col gap-0.5 mt-2 pb-2">
           <motion.div variants={fadeIn} initial="hidden" animate="visible" custom={0.1} className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Platform</motion.div>
           <Link
+            href={skillGraphHref}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
+              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
+              skillGraphActive ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5 hover:text-white"
+            )}
+            title="Skill Graph"
+          >
+            <GitBranch className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span>Skill Graph</span>}
+          </Link>
+
+          <Link
             href={useCasesHref}
             className={cn(
               "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
@@ -241,6 +258,19 @@ export function Sidebar({
           >
             <Plug className="h-4 w-4 shrink-0" />
             {!isCollapsed && <span>Integrations</span>}
+          </Link>
+
+          <Link
+            href={settingsHref}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
+              isCollapsed ? "justify-center px-0 h-10 w-10 mx-auto" : "",
+              settingsActive ? "bg-white/10 text-white" : "text-muted-foreground hover:bg-white/5 hover:text-white"
+            )}
+            title="Settings"
+          >
+            <Settings className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span>Settings</span>}
           </Link>
         </div>
 

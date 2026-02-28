@@ -104,6 +104,11 @@ const serverEnvSchema = z
     // COMPOSIO CONFIGURATION
     // --------------------------------------------------------------------------
     COMPOSIO_API_KEY: z.string().min(1).optional(),
+
+    // --------------------------------------------------------------------------
+    // SEEDER ENGINE (DEV/DEMO ONLY)
+    // --------------------------------------------------------------------------
+    ENABLE_SEEDER_ENGINE: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.APP_BASE_URL?.startsWith("http://")) {

@@ -42,8 +42,9 @@ export async function GET(
       .eq("org_id", ctx.orgId)
       .single();
 
+    // Exclude data_snapshot from list query — it's 100KB+ per row and not needed for version list
     const { data, error } = await (supabase.from("tool_versions") as any)
-      .select("id, status, created_at, purpose, prompt_used, tool_spec, view_spec, data_snapshot, diff, compiled_intent") // REMOVED: created_by
+      .select("id, status, created_at, purpose, prompt_used, tool_spec, diff, compiled_intent")
       .eq("tool_id", toolId)
       .eq("org_id", ctx.orgId)
       .order("created_at", { ascending: false });
@@ -84,8 +85,6 @@ export async function GET(
         workflows_count: workflowsCount,
         triggers_count: triggersCount,
         tool_spec: spec ?? null,
-        view_spec: row.view_spec ?? null,
-        data_snapshot: row.data_snapshot ?? null,
       };
     });
 

@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   console.log("[AuthCallback] Hit with URL:", request.url);
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
-  const next = requestUrl.searchParams.get("next") ?? "/app/chat";
+  const next = requestUrl.searchParams.get("next") ?? "/app";
 
   console.log("[AuthCallback] Code present:", !!code);
 

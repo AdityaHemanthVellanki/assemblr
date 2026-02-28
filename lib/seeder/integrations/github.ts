@@ -1,68 +1,75 @@
-import { SeederContext } from "../context";
-import { SeederProfile } from "../types";
+/**
+ * GitHub bulk seeder — creates issues via Composio.
+ *
+ * Used for profile-based bulk seeding (not scenario-based).
+ */
+
+import type { SeederContext } from "../context";
+import type { SeederProfile } from "../types";
+import { SEED_TAG } from "../types";
 import { gen } from "../generator";
 
 export class GitHubSeeder {
-    async run(ctx: SeederContext, profile: SeederProfile) {
-        if (!ctx.github) {
-            ctx.log("warn", "Skipping GitHub seeder: No client available");
-            return;
-        }
-
-        ctx.log("info", `Starting GitHub Seeder for profile: ${profile.name}`);
-        const org = await this.getTargetOrg(ctx); // Assume we seed into authenticated user's personal context or specified org
-
-        // Create Repos
-        for (let i = 0; i < profile.github.repoCount; i++) {
-            const name = gen.repoName();
-            // Check if exists? Or just try create?
-            try {
-                ctx.log("info", `Creating repo: ${name}`);
-                const repo = await ctx.github.rest.repos.createForAuthenticatedUser({
-                    name,
-                    description: gen.technobabble(),
-                    auto_init: true
-                });
-
-                ctx.registry.add({
-                    id: repo.data.id.toString(),
-                    type: "github_repo",
-                    integration: "github",
-                    metadata: {
-                        name,
-                        full_name: repo.data.full_name,
-                        owner: repo.data.owner.login
-                    }
-                });
-
-                await this.seedIssuesAndPRs(ctx, profile, repo.data);
-
-            } catch (e: any) {
-                ctx.log("error", `Failed to create repo ${name}: ${e.message}`);
-            }
-        }
+  async run(ctx: SeederContext, profile: SeederProfile) {
+    if (!ctx.hasConnection("github")) {
+      ctx.log("warn", "Skipping GitHub seeder: No connection available");
+      return;
     }
 
-    async getTargetOrg(ctx: SeederContext) {
-        // For now, seed into Authenticated User
-        return "user";
+    ctx.log("info", `Starting GitHub Seeder for profile: ${profile.name}`);
+
+    // List existing repos to get owner name
+    const reposResult = await ctx.execAction(
+      "github",
+      "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER",
+      { per_page: 5, sort: "updated" },
+    );
+
+    const repos = Array.isArray(reposResult) ? reposResult : [];
+    if (repos.length === 0) {
+      ctx.log("warn", "No GitHub repos found. Skipping issue creation.");
+      return;
     }
 
-    async seedIssuesAndPRs(ctx: SeederContext, profile: SeederProfile, repo: any) {
-        const owner = repo.owner.login;
-        const repoName = repo.name;
+    // Seed issues into existing repos
+    const targetRepos = repos.slice(0, Math.min(profile.github.repoCount, repos.length));
+    for (const repo of targetRepos) {
+      const owner = repo.owner?.login || repo.full_name?.split("/")[0];
+      const repoName = repo.name;
+      if (!owner || !repoName) continue;
 
-        // Create Issues
-        for (let j = 0; j < profile.github.issuesPerRepo; j++) {
-            await ctx.github!.rest.issues.create({
-                owner,
-                repo: repoName,
-                title: gen.issueTitle(),
-                body: gen.technobabble()
-            });
+      ctx.registry.add({
+        id: String(repo.id),
+        type: "github_repo",
+        integration: "github",
+        metadata: { name: repoName, full_name: repo.full_name, owner },
+      });
+
+      await this.seedIssues(ctx, profile, owner, repoName);
+    }
+  }
+
+  private async seedIssues(ctx: SeederContext, profile: SeederProfile, owner: string, repo: string) {
+    for (let i = 0; i < profile.github.issuesPerRepo; i++) {
+      try {
+        const result = await ctx.execAction("github", "GITHUB_CREATE_AN_ISSUE", {
+          owner,
+          repo,
+          title: `${SEED_TAG} ${gen.issueTitle()}`,
+          body: `${SEED_TAG}\n\n${gen.technobabble()}`,
+        });
+
+        if (result?.number) {
+          ctx.registry.add({
+            id: String(result.number),
+            type: "github_issue",
+            integration: "github",
+            metadata: { owner, repo, number: result.number },
+          });
         }
-
-        // Create PRs (needs managing branches, simplified for now: just empty PRs?)
-        // PRs require commits. This is complex. Use simple file creation.
+      } catch (e: any) {
+        ctx.log("error", `Failed to create GitHub issue in ${owner}/${repo}: ${e.message}`);
+      }
     }
+  }
 }

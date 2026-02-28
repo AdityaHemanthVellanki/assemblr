@@ -16,9 +16,10 @@ export async function GET() {
     const { ctx } = await requireOrgMember();
 
     const supabase = await createSupabaseServerClient();
+    // Only fetch lightweight columns — NOT spec (100KB+ JSONB per row)
     const projectsRes = await supabase
       .from("projects")
-      .select("id, name, spec, created_at, updated_at")
+      .select("id, name, status, created_at, updated_at")
       .eq("org_id", ctx.orgId)
       .order("updated_at", { ascending: false });
 
@@ -36,14 +37,15 @@ export async function GET() {
     }
 
     const projects = projectsRes.data.map((p) => {
-      const specResult = parseToolSpec(p.spec);
+      // Infer validity from status instead of parsing full spec
+      const validStatuses = ["MATERIALIZED", "READY", "READY_TO_EXECUTE", "EXECUTING", "PLANNED"];
       return {
         id: p.id as string,
         name: p.name as string,
         createdAt: new Date(p.created_at as string),
         updatedAt: new Date(p.updated_at as string),
-        isValidSpec: specResult.ok && hasMinimalToolSpecFields(specResult.spec),
-        specError: specResult.ok ? null : specResult.error,
+        isValidSpec: validStatuses.includes(p.status as string) || p.status === "CREATED",
+        specError: null,
       };
     });
 

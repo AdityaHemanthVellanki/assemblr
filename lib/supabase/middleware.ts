@@ -53,7 +53,11 @@ export async function updateSession(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     // Protected routes logic
-    if (request.nextUrl.pathname.startsWith("/app") || request.nextUrl.pathname.startsWith("/dashboard")) {
+    if (
+        request.nextUrl.pathname.startsWith("/app") ||
+        request.nextUrl.pathname.startsWith("/dashboard") ||
+        request.nextUrl.pathname.startsWith("/onboarding")
+    ) {
         if (!user) {
             const url = new URL("/login", request.url);
             url.searchParams.set("next", request.nextUrl.pathname);
@@ -64,7 +68,7 @@ export async function updateSession(request: NextRequest) {
     // Auth routes logic (redirect if already logged in)
     if (request.nextUrl.pathname === "/login") {
         if (user) {
-            return NextResponse.redirect(new URL("/app/chat", request.url));
+            return NextResponse.redirect(new URL("/app", request.url));
         }
     }
 

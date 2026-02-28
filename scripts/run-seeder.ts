@@ -1,110 +1,131 @@
+/**
+ * CLI script to run the Integration Seeder Engine.
+ *
+ * Usage:
+ *   npx tsx scripts/run-seeder.ts --scenario incident-response
+ *   npx tsx scripts/run-seeder.ts --scenario deal-escalation --force
+ *   npx tsx scripts/run-seeder.ts --profile startup
+ *   npx tsx scripts/run-seeder.ts --list
+ *
+ * Requires:
+ *   - ENABLE_SEEDER_ENGINE=true in .env.local
+ *   - Org must be marked as sandbox (is_sandbox=true)
+ */
+
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { bootstrapRealUserSession } from "./auth-bootstrap";
-import { Octokit } from "@octokit/rest";
-import { SeederContext } from "@/lib/seeder/context";
-import { EntityRegistry } from "@/lib/seeder/registry";
+import { runSeeder } from "@/lib/seeder/orchestrator";
+import { listScenarios } from "@/lib/seeder/scenarios";
+import { cleanupSeedExecution } from "@/lib/seeder/cleanup";
+import { loadSeederConnections } from "@/lib/seeder/composio-exec";
+import { createSeederContext } from "@/lib/seeder/context";
 import { PROFILES } from "@/lib/seeder/profiles";
 import { GitHubSeeder } from "@/lib/seeder/integrations/github";
 import { LinearSeeder } from "@/lib/seeder/integrations/linear";
-import { SeederLog } from "@/lib/seeder/types";
-
-// Stub for token retrieval since we moved to Composio and it hides tokens.
-async function getValidAccessToken(orgId: string, integrationId: string): Promise<string> {
-    console.warn(`[Seeder] Skipping token retrieval for ${integrationId} (Composio Managed). Seeding might fail if raw token is needed.`);
-    throw new Error("Raw token retrieval not supported with Composio yet.");
-}
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { LinearClient } from "@linear/sdk";
-import { WebClient } from "@slack/web-api";
 import { SlackSeeder } from "@/lib/seeder/integrations/slack";
-import { Client } from "@notionhq/client";
 import { NotionSeeder } from "@/lib/seeder/integrations/notion";
+import type { SeederLog } from "@/lib/seeder/types";
 
 async function run() {
-    console.log("🌱 Starting Synthetic Enterprise Seeder...");
+  const args = process.argv.slice(2);
 
-    // 1. Bootstrap Auth
-    const { user, orgId } = await bootstrapRealUserSession();
-    const supabase = createSupabaseAdminClient();
-    console.log(`✅ Authenticated as ${user.email} (Org: ${orgId})`);
-
-    // 2. Prepare Clients
-    let githubClient: Octokit | undefined;
-    try {
-        const githubToken = await getValidAccessToken(orgId, "github");
-        githubClient = new Octokit({ auth: githubToken });
-        console.log("✅ GitHub Client Initialized");
-    } catch (e) {
-        console.warn("⚠️ GitHub not connected or token invalid");
+  // Parse CLI args
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith("--")) {
+      const key = args[i].slice(2);
+      flags[key] = args[i + 1] || "true";
+      i++;
     }
+  }
 
-    let linearClient: LinearClient | undefined;
-    try {
-        const linearToken = await getValidAccessToken(orgId, "linear");
-        linearClient = new LinearClient({ accessToken: linearToken });
-        console.log("✅ Linear Client Initialized");
-    } catch (e) {
-        console.warn("⚠️ Linear not connected or token invalid");
+  // List scenarios
+  if (flags.list) {
+    console.log("\nAvailable scenarios:");
+    for (const s of listScenarios()) {
+      console.log(`  ${s.name} — ${s.description} (requires: ${s.requiredIntegrations.join(", ")})`);
     }
-
-    let slackClient: WebClient | undefined;
-    try {
-        const slackToken = await getValidAccessToken(orgId, "slack");
-        slackClient = new WebClient(slackToken);
-        console.log("✅ Slack Client Initialized");
-    } catch (e) {
-        console.warn("⚠️ Slack not connected or token invalid");
+    console.log("\nAvailable profiles:");
+    for (const [id, p] of Object.entries(PROFILES)) {
+      console.log(`  ${id} — ${p.name}: ${p.description}`);
     }
+    return;
+  }
 
-    let notionClient: Client | undefined;
-    try {
-        const notionToken = await getValidAccessToken(orgId, "notion");
-        notionClient = new Client({ auth: notionToken });
-        console.log("✅ Notion Client Initialized");
-    } catch (e) {
-        console.warn("⚠️ Notion not connected or token invalid");
+  // Bootstrap auth
+  console.log("Bootstrapping auth...");
+  const { user, orgId } = await bootstrapRealUserSession();
+  console.log(`Authenticated as ${user.email} (Org: ${orgId})`);
+
+  // Scenario-based seeding
+  if (flags.scenario) {
+    console.log(`\nRunning scenario: ${flags.scenario}`);
+    const result = await runSeeder({
+      orgId,
+      scenarioName: flags.scenario,
+      force: flags.force === "true",
+    });
+
+    console.log("\n--- Seeder Result ---");
+    console.log(`Status: ${result.status}`);
+    console.log(`Execution ID: ${result.executionId}`);
+    console.log(`Resources created: ${result.resourceCount}`);
+    console.log(`Duration: ${result.totalDurationMs}ms`);
+    if (result.error) console.log(`Error: ${result.error}`);
+    console.log("\nSteps:");
+    for (const step of result.steps) {
+      const icon = step.status === "success" ? "+" : "x";
+      console.log(`  [${icon}] ${step.stepId}: ${step.action} (${step.durationMs}ms)${step.externalResourceId ? ` -> ${step.externalResourceId}` : ""}${step.error ? ` ERROR: ${step.error}` : ""}`);
     }
+    return;
+  }
 
-    // 3. Build Context
-    const registry = new EntityRegistry();
-    const log: SeederLog = (level, msg) => console.log(`[${level.toUpperCase()}] ${msg}`);
+  // Cleanup
+  if (flags.cleanup) {
+    console.log(`\nCleaning up execution: ${flags.cleanup}`);
+    const result = await cleanupSeedExecution(orgId, flags.cleanup);
+    console.log(`Cleaned: ${result.cleaned}, Failed: ${result.failed}, Skipped: ${result.skipped}`);
+    if (result.errors.length > 0) {
+      console.log("Errors:", result.errors);
+    }
+    return;
+  }
 
-    const ctx: SeederContext = {
-        registry,
-        log,
-        supabase,
-        orgId,
-        github: githubClient,
-        linear: linearClient,
-        slack: slackClient,
-        notion: notionClient
-    };
+  // Profile-based bulk seeding
+  const profileName = flags.profile || "startup";
+  const profile = PROFILES[profileName];
+  if (!profile) {
+    console.error(`Unknown profile: ${profileName}. Available: ${Object.keys(PROFILES).join(", ")}`);
+    process.exit(1);
+  }
 
-    // 4. Select Profile
-    const profileName = process.env.SEEDER_PROFILE || "startup";
-    const profile = PROFILES[profileName];
-    if (!profile) throw new Error(`Unknown profile: ${profileName}`);
+  console.log(`\nBulk seeding with profile: ${profile.name}`);
 
-    console.log(`🚀 Seeding Profile: ${profile.name}`);
+  const connectionMap = await loadSeederConnections(orgId);
+  console.log(`Loaded ${connectionMap.size} connections: ${[...connectionMap.keys()].join(", ")}`);
 
-    // 5. Run Seeders
-    const githubSeeder = new GitHubSeeder();
-    await githubSeeder.run(ctx, profile);
+  const log: SeederLog = (level, msg) => console.log(`[${level.toUpperCase()}] ${msg}`);
+  const ctx = createSeederContext({
+    orgId,
+    executionId: `bulk_${Date.now()}`,
+    connectionMap,
+    log,
+  });
 
-    const linearSeeder = new LinearSeeder();
-    await linearSeeder.run(ctx, profile);
+  // Run bulk seeders sequentially
+  await new GitHubSeeder().run(ctx, profile);
+  await new LinearSeeder().run(ctx, profile);
+  await new SlackSeeder().run(ctx, profile);
+  await new NotionSeeder().run(ctx, profile);
 
-    const slackSeeder = new SlackSeeder();
-    await slackSeeder.run(ctx, profile);
-
-    const notionSeeder = new NotionSeeder();
-    await notionSeeder.run(ctx, profile);
-
-    // 6. Save Registry
-    const manifestPath = await registry.saveManifest(orgId, Date.now().toString());
-    console.log(`💾 Manifest saved to ${manifestPath}`);
+  // Save manifest
+  const manifestPath = await ctx.registry.saveManifest(orgId, Date.now().toString());
+  console.log(`\nManifest saved to ${manifestPath}`);
 }
 
-run().catch(console.error);
+run().catch((e) => {
+  console.error("Seeder failed:", e.message);
+  process.exit(1);
+});

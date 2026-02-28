@@ -70,7 +70,7 @@ export function ChatPanel({
   const [isExecuting, setIsExecuting] = React.useState(false);
   const [buildSteps, setBuildSteps] = React.useState<TimelineStep[]>([]);
 
-  // Poll for build progress while executing
+  // Poll for build progress while executing (uses lightweight /status endpoint)
   React.useEffect(() => {
     if (!isExecuting || !toolId) {
       setBuildSteps([]);
@@ -79,22 +79,26 @@ export function ChatPanel({
     let cancelled = false;
     const poll = async () => {
       try {
-        const res = await fetch(`/api/tools/${toolId}/result`, { cache: "no-store" });
+        const res = await fetch(`/api/tools/${toolId}/status`, { cache: "no-store" });
         if (!res.ok || cancelled) return;
         const json = await res.json();
-        const rawSteps = json.data?.build_steps;
-        if (Array.isArray(rawSteps) && rawSteps.length > 0) {
-          setBuildSteps(rawSteps.map((s: any) => ({
-            id: s.id,
-            label: s.title || s.label || s.id,
-            status: s.status === "running" ? "running" : s.status,
-            narrative: Array.isArray(s.logs) && s.logs.length > 0 ? s.logs[s.logs.length - 1] : undefined,
+        const rawLogs = json.build_logs;
+        if (Array.isArray(rawLogs) && rawLogs.length > 0) {
+          setBuildSteps(rawLogs.map((log: any, i: number) => ({
+            id: log.id || `step-${i}`,
+            label: log.title || log.label || log.id || `Step ${i + 1}`,
+            status: log.status === "running" ? "running" : (log.status || "completed"),
+            narrative: typeof log === "string" ? log : (Array.isArray(log.logs) && log.logs.length > 0 ? log.logs[log.logs.length - 1] : undefined),
           })));
+        }
+        // Stop polling if build is done
+        if (json.done) {
+          cancelled = true;
         }
       } catch { /* ignore polling errors */ }
     };
     void poll();
-    const intervalId = setInterval(poll, 1500);
+    const intervalId = setInterval(poll, 4000);
     return () => { cancelled = true; clearInterval(intervalId); };
   }, [isExecuting, toolId]);
 

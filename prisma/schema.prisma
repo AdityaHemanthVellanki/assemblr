@@ -16,6 +16,7 @@ enum OrgRole {
 model Organization {
   id        String   @id @default(cuid())
   name      String
+  isSandbox Boolean  @default(false) @map("is_sandbox")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -24,7 +25,7 @@ model Organization {
   dataSources DataSource[]
   memberships Membership[]
   invites Invite[]
-  
+
   brokerConnections BrokerConnection[]
   brokerSchemas BrokerSchema[]
   brokerActionLogs BrokerActionLog[]
